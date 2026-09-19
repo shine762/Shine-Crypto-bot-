@@ -217,20 +217,33 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_price_worker():
-    url = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT"
+    urls = [
+        "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
+        "https://api.coinbase.com/v2/prices/SOL-USD/spot",
+        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT"
+    ]
     async with aiohttp.ClientSession() as session:
         while True:
-            try:
-                async with session.get(url, timeout=5) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        price = float(data.get("price", 0.0))
-                        if price > 0:
-                            bot.update_price_tick(price)
-                            state_payload = json.dumps(bot.get_state())
-                            await manager.broadcast(state_payload)
-            except Exception:
-                pass
+            price = 0.0
+            for url in urls:
+                try:
+                    async with session.get(url, timeout=3) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if "price" in data:
+                                price = float(data["price"])
+                            elif "data" in data and "amount" in data["data"]:
+                                price = float(data["data"]["amount"])
+                            if price > 0:
+                                break
+                except Exception:
+                    continue
+
+            if price > 0:
+                bot.update_price_tick(price)
+                state_payload = json.dumps(bot.get_state())
+                await manager.broadcast(state_payload)
+
             await asyncio.sleep(1.5)
 
 @app.on_event("startup")
