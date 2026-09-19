@@ -1,0 +1,4 @@
+fastapi==0.110.0
+uvicorn==0.28.0
+aiohttp==3.9.3
+websockets==12.0
