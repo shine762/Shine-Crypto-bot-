@@ -16,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class SpotMartingaleBot:
+class UltraQuantSpotBot:
     def __init__(self):
         self.is_paused = False
         self.live_price = 0.0
@@ -26,17 +26,21 @@ class SpotMartingaleBot:
         self.avg_entry_price = 0.0
         self.ts_high = 0.0
         self.ts_low = 0.0
+        self.ts_stage = "1.0%"
+        self.tb_active = False
+        self.tb_lowest_price = 0.0
         self.active_phase = 1
         self.active_round = 6
         self.sub_trade_count = 0
         self.max_sub_trades = 3
-        self.sub_trade_gap = 2.0
+        self.sub_trade_gap_pct = 0.018
         self.round_range_size = 25.0
         self.round_base_price = 110.0
         self.realized_pnl = 0.0
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
+        self.price_history = []
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27
@@ -65,6 +69,7 @@ class SpotMartingaleBot:
             "totalCapital": round(total_cap, 2),
             "tsHigh": round(self.ts_high, 2),
             "tsLow": round(self.ts_low, 2),
+            "trailingStage": self.ts_stage,
             "activePhase": self.active_phase,
             "activeRound": self.active_round,
             "allocationPct": str(alloc_pct),
@@ -118,8 +123,10 @@ class SpotMartingaleBot:
             "txHash": tx_hash
         })
 
-        self.ts_high = 0.0
-        self.ts_low = 0.0
+        self.ts_high = round(self.live_price, 2)
+        self.ts_low = round(self.live_price * 0.99, 2)
+        self.ts_stage = "1.0%"
+        self.tb_active = False
 
     def execute_sell_all_in_profit(self):
         if self.sol_balance <= 0 or self.live_price <= 0:
@@ -150,15 +157,31 @@ class SpotMartingaleBot:
         self.avg_entry_price = 0.0
         self.ts_high = 0.0
         self.ts_low = 0.0
+        self.ts_stage = "IDLE"
         self.sub_trade_count = 0
         self.active_positions = []
-        self.cooldown_remaining = 60
+        self.cooldown_remaining = 30
+        self.tb_active = False
+
+    def check_market_exhaustion(self):
+        if len(self.price_history) < 6:
+            return False
+        recent = self.price_history[-6:]
+        deltas = [recent[i] - recent[i - 1] for i in range(1, len(recent))]
+        up_momentum = sum(d for d in deltas if d > 0)
+        down_momentum = abs(sum(d for d in deltas if d < 0))
+        if down_momentum > up_momentum * 1.5:
+            return True
+        return False
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
             return
 
         self.live_price = new_price
+        self.price_history.append(new_price)
+        if len(self.price_history) > 50:
+            self.price_history.pop(0)
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
@@ -172,28 +195,52 @@ class SpotMartingaleBot:
             return
 
         last_entry = self.active_positions[-1]["entryPrice"]
+        dynamic_gap = max(1.8, last_entry * self.sub_trade_gap_pct)
 
-        if self.live_price <= (last_entry - self.sub_trade_gap):
-            if self.sub_trade_count < self.max_sub_trades:
-                self.execute_buy(is_sub_trade=True)
-                return
-            elif self.live_price <= (self.round_base_price - self.round_range_size):
-                if self.active_round < 8:
+        if self.live_price <= (last_entry - dynamic_gap):
+            if not self.tb_active:
+                self.tb_active = True
+                self.tb_lowest_price = self.live_price
+
+            if self.live_price < self.tb_lowest_price:
+                self.tb_lowest_price = self.live_price
+
+            bounce_callback = self.tb_lowest_price * 1.002
+            if self.live_price >= bounce_callback:
+                if self.sub_trade_count < self.max_sub_trades:
+                    self.execute_buy(is_sub_trade=True)
+                    return
+                elif self.active_round < 8:
                     self.active_round += 1
                     self.execute_buy(is_sub_trade=False)
                     return
 
-        profit_target_price = self.avg_entry_price * 1.012
+        if self.avg_entry_price > 0:
+            gain_pct = (self.live_price - self.avg_entry_price) / self.avg_entry_price
 
-        if self.live_price >= profit_target_price:
             if self.live_price > self.ts_high:
-                self.ts_high = self.live_price
-                self.ts_low = round(self.ts_high * 0.99, 2)
+                self.ts_high = round(self.live_price, 2)
 
-            if self.ts_low > self.avg_entry_price and self.live_price <= self.ts_low:
+            is_exhausted = self.check_market_exhaustion()
+
+            if gain_pct >= 0.03 or is_exhausted:
+                trail_factor = 0.9999
+                self.ts_stage = "0.01%"
+            elif gain_pct >= 0.018:
+                trail_factor = 0.995
+                self.ts_stage = "0.5%"
+            else:
+                trail_factor = 0.990
+                self.ts_stage = "1.0%"
+
+            calculated_stop = round(self.ts_high * trail_factor, 2)
+            if calculated_stop > self.ts_low:
+                self.ts_low = calculated_stop
+
+            if gain_pct >= 0.008 and self.ts_low > self.avg_entry_price and self.live_price <= self.ts_low:
                 self.execute_sell_all_in_profit()
 
-bot = SpotMartingaleBot()
+bot = UltraQuantSpotBot()
 
 class ConnectionManager:
     def __init__(self):
@@ -252,7 +299,7 @@ async def startup_event():
 
 @app.get("/")
 def home():
-    return {"status": "SHINE Dynamic DCA Engine Active"}
+    return {"status": "SHINE Ultra Quant DCA Engine 3-Stage Active"}
 
 @app.get("/status")
 def get_status():
