@@ -1,6 +1,6 @@
-import asyncio
+  import asyncio
 import json
-import random
+import uuid
 from datetime import datetime, timezone
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -55,6 +55,7 @@ class UltraQuantSpotBot:
         self.whale_sell_vol = 0.0
         self.whale_orderflow_ratio = 50.0
         self.whale_sentiment = "NEUTRAL"
+        self.taker_fee_pct = 0.001
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27
@@ -113,7 +114,27 @@ class UltraQuantSpotBot:
         alloc_pct = self.round_allocations.get(self.active_round, 0.20) * 100.0
         combined_entry = (all_invested / all_sol) if all_sol > 0 else 0.0
 
+        ai_thoughts = ""
+        regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
+        if self.is_paused:
+            ai_thoughts = "Main abhi paused hoon. Aap jab chaho RUNNING button daba kar mujhe market scan karne ki ijazat de sakte ho."
+        elif self.cooldown_remaining > 0:
+            ai_thoughts = f"Pichla profit kamyabi se book ho gaya hai! Main abhi {self.cooldown_remaining} seconds ke cool-down par hoon taake jaldbaazi mein galat trade na le loon."
+        elif len(regular_pos) == 0:
+            if self.whale_sentiment == "BEARISH":
+                ai_thoughts = f"Market mein barhay sellers (Whales) dabao daal rahay hain ({self.whale_orderflow_ratio}% sell volume). Is liye main safe side par baith kar entry roak raha hoon."
+            else:
+                drop_needed = round(self.initial_tb_peak * 0.005, 2)
+                ai_thoughts = f"Main $108-$112 ke peak par andha buy nahi kar raha. Main market ke taqreeban ${drop_needed} girnay aur neechay se bounce lenay ka intezar kar raha hoon taake aap ka loss na ho."
+        else:
+            last_entry = regular_pos[-1]["entryPrice"]
+            if self.live_price > self.avg_entry_price:
+                ai_thoughts = f"Zabardast! Trade munafay mein hai. Entry ${round(self.avg_entry_price, 2)} thi aur ab price ${round(self.live_price, 2)} hai. Trailing Stop active hai taake zyada se zyada faida lock kiya ja sakay."
+            else:
+                ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
+
         return {
+            "isPaused": self.is_paused,
             "price": self.live_price,
             "livePrice": self.live_price,
             "pnl": round(unrealized_pnl, 2),
@@ -136,7 +157,8 @@ class UltraQuantSpotBot:
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
             "activePositions": self.active_positions,
-            "tradesHistory": self.trades_history
+            "tradesHistory": self.trades_history,
+            "botThought": ai_thoughts
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -155,7 +177,9 @@ class UltraQuantSpotBot:
         if invest_target > self.usdt_balance:
             invest_target = self.usdt_balance
 
-        sol_bought = invest_target / self.live_price
+        fee = invest_target * self.taker_fee_pct
+        net_invest = invest_target - fee
+        sol_bought = net_invest / self.live_price
         self.usdt_balance -= invest_target
 
         if is_sub_trade:
@@ -164,6 +188,8 @@ class UltraQuantSpotBot:
             self.sub_trade_count = 0
             self.round_base_price = self.live_price
 
+        pos_id = str(uuid.uuid4())[:8]
+
         if self.active_round == 8:
             self.macro_vault_sol += sol_bought
             self.macro_vault_invested += invest_target
@@ -171,6 +197,7 @@ class UltraQuantSpotBot:
             self.macro_target_price = round(self.macro_vault_entry * 2.0, 2)
             pos_label = f"R8 27% MACRO VAULT (Entry {self.sub_trade_count + 1})"
             pos = {
+                "id": pos_id,
                 "round": 8,
                 "subTrade": self.sub_trade_count,
                 "label": pos_label,
@@ -187,6 +214,7 @@ class UltraQuantSpotBot:
             target_exit = round(self.live_price * 1.05, 2)
             pos_label = f"R{self.active_round} (Entry {self.sub_trade_count + 1})"
             pos = {
+                "id": pos_id,
                 "round": self.active_round,
                 "subTrade": self.sub_trade_count,
                 "label": pos_label,
@@ -198,14 +226,14 @@ class UltraQuantSpotBot:
             }
 
         self.active_positions.append(pos)
-        tx_hash = "5KqW" + str(len(self.trades_history) + 1) + "xP" + str(random.randint(1000, 9999)) + "DEX"
         self.trades_history.insert(0, {
+            "orderId": pos_id,
             "side": "BUY",
             "price": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
+            "fee": round(fee, 4),
             "round": self.active_round,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "txHash": tx_hash
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
         self.ts_high = round(self.live_price, 2)
@@ -219,23 +247,25 @@ class UltraQuantSpotBot:
             return
 
         sold_value = self.macro_vault_sol * self.live_price
-        profit = sold_value - self.macro_vault_invested
+        fee = sold_value * self.taker_fee_pct
+        net_return = sold_value - fee
+        profit = net_return - self.macro_vault_invested
 
         if profit <= 0:
             return
 
-        self.usdt_balance += sold_value
+        self.usdt_balance += net_return
         self.realized_pnl += profit
 
-        tx_hash = "5KqW" + str(len(self.trades_history) + 1) + "xP" + str(random.randint(1000, 9999)) + "DEX"
         self.trades_history.insert(0, {
-            "side": "SELL (MACRO 2X-3X)",
+            "orderId": str(uuid.uuid4())[:8],
+            "side": "SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(self.macro_vault_sol, 4),
+            "fee": round(fee, 4),
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "txHash": tx_hash
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
         self.active_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
@@ -250,23 +280,25 @@ class UltraQuantSpotBot:
             return
 
         sold_value = self.sol_balance * self.live_price
-        profit = sold_value - self.invested_amount
+        fee = sold_value * self.taker_fee_pct
+        net_return = sold_value - fee
+        profit = net_return - self.invested_amount
 
         if profit <= 0:
             return
 
-        self.usdt_balance += sold_value
+        self.usdt_balance += net_return
         self.realized_pnl += profit
 
-        tx_hash = "5KqW" + str(len(self.trades_history) + 1) + "xP" + str(random.randint(1000, 9999)) + "DEX"
         self.trades_history.insert(0, {
+            "orderId": str(uuid.uuid4())[:8],
             "side": "SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(self.sol_balance, 4),
+            "fee": round(fee, 4),
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "txHash": tx_hash
+            "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
         self.sol_balance = 0.0
@@ -493,10 +525,37 @@ async def binance_price_worker():
                 await manager.broadcast(state_payload)
 
             await asyncio.sleep(1.5)
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(binance_price_worker())
 
 @app.get("/")
 def home():
-    return {"status": "SHINE Ultra"}
+    return {"status": "SHINE Ultra", "active": True}
+
+@app.get("/status")
+def get_bot_status():
+    return bot.get_state()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        await websocket.send_text(json.dumps(bot.get_state()))
+        while True:
+            data = await websocket.receive_text()
+            try:
+                msg = json.loads(data)
+                action = msg.get("action")
+                if action == "PAUSE":
+                    bot.is_paused = True
+                elif action == "RESUME":
+                    bot.is_paused = False
+                await manager.broadcast(json.dumps(bot.get_state()))
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
