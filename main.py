@@ -593,7 +593,7 @@ async def binance_price_worker():
             price = 0.0
             for url in price_urls:
                 try:
-                    async with session.get(url, timeout=3) as resp:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             if "price" in data:
@@ -606,7 +606,7 @@ async def binance_price_worker():
                     continue
 
             try:
-                async with session.get(whale_url, timeout=3) as whale_resp:
+                async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=3)) as whale_resp:
                     if whale_resp.status == 200:
                         trades_data = await whale_resp.json()
                         if isinstance(trades_data, list):
