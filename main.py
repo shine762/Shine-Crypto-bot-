@@ -30,32 +30,88 @@ class UltraQuantSpotBot:
         self.tb_active = False
         self.tb_lowest_price = 0.0
         self.active_phase = 1
-        self.active_round = 6
+        self.active_round = 1
         self.sub_trade_count = 0
         self.max_sub_trades = 3
-        self.sub_trade_gap_pct = 0.018
+        self.sub_trade_gap_pct = 0.010
         self.round_range_size = 25.0
-        self.round_base_price = 110.0
+        self.round_base_price = 0.0
         self.realized_pnl = 0.0
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
         self.price_history = []
+        self.initial_tb_active = False
+        self.initial_tb_peak = 0.0
+        self.initial_tb_lowest = 0.0
+        self.initial_capital = 10000.0
+        self.macro_vault_sol = 0.0
+        self.macro_vault_invested = 0.0
+        self.macro_vault_entry = 0.0
+        self.macro_target_price = 0.0
+        self.macro_ts_high = 0.0
+        self.macro_ts_low = 0.0
+        self.whale_buy_vol = 0.0
+        self.whale_sell_vol = 0.0
+        self.whale_orderflow_ratio = 50.0
+        self.whale_sentiment = "NEUTRAL"
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27
         }
 
+    def process_market_trades(self, trades):
+        if not trades:
+            return
+        recent_buy_vol = 0.0
+        recent_sell_vol = 0.0
+        for t in trades:
+            price = float(t.get("p", 0.0))
+            qty = float(t.get("q", 0.0))
+            is_buyer_maker = t.get("m", False)
+            trade_val = price * qty
+            if trade_val >= 25000.0:
+                if not is_buyer_maker:
+                    recent_buy_vol += trade_val
+                else:
+                    recent_sell_vol += trade_val
+        total_whale_vol = recent_buy_vol + recent_sell_vol
+        if total_whale_vol > 0:
+            self.whale_buy_vol = recent_buy_vol
+            self.whale_sell_vol = recent_sell_vol
+            self.whale_orderflow_ratio = round((recent_buy_vol / total_whale_vol) * 100.0, 1)
+            if self.whale_orderflow_ratio >= 60.0:
+                self.whale_sentiment = "BULLISH"
+            elif self.whale_orderflow_ratio <= 40.0:
+                self.whale_sentiment = "BEARISH"
+            else:
+                self.whale_sentiment = "NEUTRAL"
+
+    def sync_phase_and_round(self):
+        if self.live_price <= 0:
+            return
+        step = 250.0
+        phase = int(self.live_price / step) + 1
+        if phase > 10:
+            phase = 10
+        if phase < 1:
+            phase = 1
+        self.active_phase = phase
+
     def get_state(self):
-        total_cap = self.usdt_balance + (self.sol_balance * self.live_price)
+        all_sol = self.sol_balance + self.macro_vault_sol
+        all_invested = self.invested_amount + self.macro_vault_invested
+        total_cap = self.usdt_balance + (all_sol * self.live_price)
         unrealized_pnl = 0.0
         pnl_pct = 0.0
 
-        if self.sol_balance > 0 and self.avg_entry_price > 0:
-            unrealized_pnl = (self.live_price - self.avg_entry_price) * self.sol_balance
-            pnl_pct = ((self.live_price - self.avg_entry_price) / self.avg_entry_price) * 100.0
+        if all_sol > 0 and all_invested > 0:
+            current_val = all_sol * self.live_price
+            unrealized_pnl = current_val - all_invested
+            pnl_pct = (unrealized_pnl / all_invested) * 100.0
 
         alloc_pct = self.round_allocations.get(self.active_round, 0.20) * 100.0
+        combined_entry = (all_invested / all_sol) if all_sol > 0 else 0.0
 
         return {
             "price": self.live_price,
@@ -63,9 +119,9 @@ class UltraQuantSpotBot:
             "pnl": round(unrealized_pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "usdtBalance": round(self.usdt_balance, 2),
-            "solBalance": round(self.sol_balance, 4),
-            "avgEntryPrice": round(self.avg_entry_price, 2),
-            "investedAmount": round(self.invested_amount, 2),
+            "solBalance": round(all_sol, 4),
+            "avgEntryPrice": round(combined_entry, 2),
+            "investedAmount": round(all_invested, 2),
             "totalCapital": round(total_cap, 2),
             "tsHigh": round(self.ts_high, 2),
             "tsLow": round(self.ts_low, 2),
@@ -75,27 +131,32 @@ class UltraQuantSpotBot:
             "allocationPct": str(alloc_pct),
             "realizedPnl": round(self.realized_pnl, 2),
             "cooldownRemaining": self.cooldown_remaining,
+            "macroVaultSol": round(self.macro_vault_sol, 4),
+            "macroVaultInvested": round(self.macro_vault_invested, 2),
+            "whaleOrderflow": self.whale_orderflow_ratio,
+            "whaleSentiment": self.whale_sentiment,
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history
         }
 
-    def execute_buy(self, is_sub_trade=False):
+    def execute_buy(self, is_sub_trade=False, escalate_round=False):
         if self.usdt_balance <= 10 or self.live_price <= 0:
             return
 
+        if not is_sub_trade and not escalate_round:
+            self.sync_phase_and_round()
+
         base_alloc = self.round_allocations.get(self.active_round, 0.20)
         sub_alloc = base_alloc / (self.max_sub_trades + 1)
-        invest_target = 10000.0 * sub_alloc
+        all_sol = self.sol_balance + self.macro_vault_sol
+        total_account_val = self.usdt_balance + (all_sol * self.live_price)
+        invest_target = max(10.0, total_account_val * sub_alloc)
 
         if invest_target > self.usdt_balance:
             invest_target = self.usdt_balance
 
         sol_bought = invest_target / self.live_price
         self.usdt_balance -= invest_target
-        self.sol_balance += sol_bought
-        self.invested_amount += invest_target
-
-        self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
 
         if is_sub_trade:
             self.sub_trade_count += 1
@@ -103,16 +164,40 @@ class UltraQuantSpotBot:
             self.sub_trade_count = 0
             self.round_base_price = self.live_price
 
-        pos_label = f"R{self.active_round} (Entry {self.sub_trade_count + 1})"
-        pos = {
-            "round": self.active_round,
-            "subTrade": self.sub_trade_count,
-            "label": pos_label,
-            "entryPrice": round(self.live_price, 2),
-            "solAmount": round(sol_bought, 4)
-        }
-        self.active_positions.append(pos)
+        if self.active_round == 8:
+            self.macro_vault_sol += sol_bought
+            self.macro_vault_invested += invest_target
+            self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else 0.0
+            self.macro_target_price = round(self.macro_vault_entry * 2.0, 2)
+            pos_label = f"R8 27% MACRO VAULT (Entry {self.sub_trade_count + 1})"
+            pos = {
+                "round": 8,
+                "subTrade": self.sub_trade_count,
+                "label": pos_label,
+                "entryPrice": round(self.live_price, 2),
+                "solAmount": round(sol_bought, 4),
+                "invested": round(invest_target, 2),
+                "isMacro": True,
+                "targetPrice": self.macro_target_price
+            }
+        else:
+            self.sol_balance += sol_bought
+            self.invested_amount += invest_target
+            self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
+            target_exit = round(self.live_price * 1.05, 2)
+            pos_label = f"R{self.active_round} (Entry {self.sub_trade_count + 1})"
+            pos = {
+                "round": self.active_round,
+                "subTrade": self.sub_trade_count,
+                "label": pos_label,
+                "entryPrice": round(self.live_price, 2),
+                "solAmount": round(sol_bought, 4),
+                "invested": round(invest_target, 2),
+                "isMacro": False,
+                "targetPrice": target_exit
+            }
 
+        self.active_positions.append(pos)
         tx_hash = "5KqW" + str(len(self.trades_history) + 1) + "xP" + str(random.randint(1000, 9999)) + "DEX"
         self.trades_history.insert(0, {
             "side": "BUY",
@@ -127,6 +212,38 @@ class UltraQuantSpotBot:
         self.ts_low = round(self.live_price * 0.99, 2)
         self.ts_stage = "1.0%"
         self.tb_active = False
+        self.initial_tb_active = False
+
+    def execute_macro_sell(self):
+        if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
+            return
+
+        sold_value = self.macro_vault_sol * self.live_price
+        profit = sold_value - self.macro_vault_invested
+
+        if profit <= 0:
+            return
+
+        self.usdt_balance += sold_value
+        self.realized_pnl += profit
+
+        tx_hash = "5KqW" + str(len(self.trades_history) + 1) + "xP" + str(random.randint(1000, 9999)) + "DEX"
+        self.trades_history.insert(0, {
+            "side": "SELL (MACRO 2X-3X)",
+            "price": round(self.live_price, 2),
+            "solAmount": round(self.macro_vault_sol, 4),
+            "profit": round(profit, 4),
+            "realizedPnl": round(profit, 4),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "txHash": tx_hash
+        })
+
+        self.active_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
+        self.macro_vault_sol = 0.0
+        self.macro_vault_invested = 0.0
+        self.macro_vault_entry = 0.0
+        self.macro_ts_high = 0.0
+        self.macro_ts_low = 0.0
 
     def execute_sell_all_in_profit(self):
         if self.sol_balance <= 0 or self.live_price <= 0:
@@ -159,19 +276,25 @@ class UltraQuantSpotBot:
         self.ts_low = 0.0
         self.ts_stage = "IDLE"
         self.sub_trade_count = 0
-        self.active_positions = []
-        self.cooldown_remaining = 30
+        self.active_round = 1
+        self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
+        self.cooldown_remaining = 40
         self.tb_active = False
+        self.initial_tb_active = False
+        self.initial_tb_peak = 0.0
+        self.initial_tb_lowest = 0.0
 
-    def check_market_exhaustion(self):
+    def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
             return False
         recent = self.price_history[-6:]
         deltas = [recent[i] - recent[i - 1] for i in range(1, len(recent))]
         up_momentum = sum(d for d in deltas if d > 0)
         down_momentum = abs(sum(d for d in deltas if d < 0))
-        if down_momentum > up_momentum * 1.5:
-            return True
+        if mode == "SELL":
+            return down_momentum > (up_momentum * 1.5)
+        elif mode == "BUY":
+            return (up_momentum > down_momentum) and (down_momentum > 0)
         return False
 
     def update_price_tick(self, new_price):
@@ -190,55 +313,122 @@ class UltraQuantSpotBot:
         if self.is_paused:
             return
 
-        if len(self.active_positions) == 0:
-            self.execute_buy(is_sub_trade=False)
+        regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
+
+        if len(regular_positions) == 0:
+            if not self.initial_tb_active:
+                self.initial_tb_active = True
+                self.initial_tb_peak = self.live_price
+                self.initial_tb_lowest = self.live_price
+                return
+
+            if self.live_price >= self.initial_tb_peak:
+                self.initial_tb_peak = self.live_price
+                self.initial_tb_lowest = self.live_price
+                return
+
+            if self.live_price < self.initial_tb_lowest:
+                self.initial_tb_lowest = self.live_price
+
+            drop_from_peak = (self.initial_tb_peak - self.initial_tb_lowest) / self.initial_tb_peak if self.initial_tb_peak > 0 else 0.0
+            is_buyer_ready = self.check_market_exhaustion(mode="BUY")
+
+            if drop_from_peak >= 0.005 and self.whale_sentiment != "BEARISH":
+                if drop_from_peak >= 0.02 or is_buyer_ready or self.whale_sentiment == "BULLISH":
+                    bounce_factor = 1.0015
+                elif drop_from_peak >= 0.01:
+                    bounce_factor = 1.0025
+                else:
+                    bounce_factor = 1.0035
+
+                required_bounce_price = self.initial_tb_lowest * bounce_factor
+
+                if self.live_price >= required_bounce_price:
+                    self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
-        last_entry = self.active_positions[-1]["entryPrice"]
-        dynamic_gap = max(1.8, last_entry * self.sub_trade_gap_pct)
+        last_entry = regular_positions[-1]["entryPrice"]
+        dynamic_gap = max(0.8, last_entry * self.sub_trade_gap_pct)
 
-        if self.live_price <= (last_entry - dynamic_gap):
-            if not self.tb_active:
+        if not self.tb_active:
+            if self.live_price <= (last_entry - dynamic_gap):
                 self.tb_active = True
                 self.tb_lowest_price = self.live_price
-
+        else:
             if self.live_price < self.tb_lowest_price:
                 self.tb_lowest_price = self.live_price
 
-            bounce_callback = self.tb_lowest_price * 1.002
-            if self.live_price >= bounce_callback:
-                if self.sub_trade_count < self.max_sub_trades:
-                    self.execute_buy(is_sub_trade=True)
-                    return
-                elif self.active_round < 8:
-                    self.active_round += 1
-                    self.execute_buy(is_sub_trade=False)
-                    return
+            if self.live_price > (last_entry + dynamic_gap):
+                self.tb_active = False
+            else:
+                drop_pct = (last_entry - self.tb_lowest_price) / last_entry if last_entry > 0 else 0.0
+                is_buyer_ready = self.check_market_exhaustion(mode="BUY")
+
+                if drop_pct >= 0.035 or is_buyer_ready or self.whale_sentiment == "BULLISH":
+                    sub_bounce_factor = 1.0018
+                elif drop_pct >= 0.02:
+                    sub_bounce_factor = 1.0032
+                else:
+                    sub_bounce_factor = 1.0048
+
+                bounce_callback = self.tb_lowest_price * sub_bounce_factor
+                if self.live_price >= bounce_callback and self.whale_sentiment != "BEARISH":
+                    self.tb_active = False
+                    if self.sub_trade_count < self.max_sub_trades:
+                        self.execute_buy(is_sub_trade=True)
+                        return
+                    elif self.active_round < 8:
+                        self.active_round += 1
+                        self.execute_buy(is_sub_trade=False, escalate_round=True)
+                        return
+
+        if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
+            if self.live_price > self.macro_ts_high:
+                self.macro_ts_high = round(self.live_price, 2)
+
+            calculated_macro_stop = round(self.macro_ts_high * 0.992, 2)
+            if calculated_macro_stop > self.macro_ts_low:
+                self.macro_ts_low = calculated_macro_stop
+
+            if self.live_price <= self.macro_ts_low:
+                self.execute_macro_sell()
 
         if self.avg_entry_price > 0:
-            gain_pct = (self.live_price - self.avg_entry_price) / self.avg_entry_price
-
             if self.live_price > self.ts_high:
                 self.ts_high = round(self.live_price, 2)
 
-            is_exhausted = self.check_market_exhaustion()
+            peak_gain_pct = (self.ts_high - self.avg_entry_price) / self.avg_entry_price
+            is_seller_exhausted = self.check_market_exhaustion(mode="SELL")
 
-            if gain_pct >= 0.03 or is_exhausted:
-                trail_factor = 0.9999
-                self.ts_stage = "0.01%"
-            elif gain_pct >= 0.018:
-                trail_factor = 0.995
-                self.ts_stage = "0.5%"
+            if self.active_round >= 5:
+                min_profit_target = 0.035
+            elif self.active_round >= 3:
+                min_profit_target = 0.018
+            elif self.active_round == 2:
+                min_profit_target = 0.010
             else:
-                trail_factor = 0.990
-                self.ts_stage = "1.0%"
+                min_profit_target = 0.006
 
-            calculated_stop = round(self.ts_high * trail_factor, 2)
-            if calculated_stop > self.ts_low:
-                self.ts_low = calculated_stop
+            if peak_gain_pct >= min_profit_target:
+                if peak_gain_pct >= 0.04 or is_seller_exhausted:
+                    trail_factor = 0.9980
+                    self.ts_stage = "0.20%"
+                elif peak_gain_pct >= 0.02:
+                    trail_factor = 0.9965
+                    self.ts_stage = "0.35%"
+                elif peak_gain_pct >= 0.01:
+                    trail_factor = 0.9975
+                    self.ts_stage = "0.25%"
+                else:
+                    trail_factor = 0.9982
+                    self.ts_stage = "0.18%"
 
-            if gain_pct >= 0.008 and self.ts_low > self.avg_entry_price and self.live_price <= self.ts_low:
-                self.execute_sell_all_in_profit()
+                calculated_stop = round(self.ts_high * trail_factor, 2)
+                if calculated_stop > self.ts_low:
+                    self.ts_low = calculated_stop
+
+                if self.ts_low > self.avg_entry_price and self.live_price <= self.ts_low and self.live_price > self.avg_entry_price:
+                    self.execute_sell_all_in_profit()
 
 bot = UltraQuantSpotBot()
 
@@ -264,15 +454,17 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_price_worker():
-    urls = [
+    price_urls = [
+        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
         "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
-        "https://api.coinbase.com/v2/prices/SOL-USD/spot",
-        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT"
+        "https://api.coinbase.com/v2/prices/SOL-USD/spot"
     ]
+    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=60"
+
     async with aiohttp.ClientSession() as session:
         while True:
             price = 0.0
-            for url in urls:
+            for url in price_urls:
                 try:
                     async with session.get(url, timeout=3) as resp:
                         if resp.status == 200:
@@ -286,48 +478,25 @@ async def binance_price_worker():
                 except Exception:
                     continue
 
+            try:
+                async with session.get(whale_url, timeout=3) as whale_resp:
+                    if whale_resp.status == 200:
+                        trades_data = await whale_resp.json()
+                        if isinstance(trades_data, list):
+                            bot.process_market_trades(trades_data)
+            except Exception:
+                pass
+
             if price > 0:
                 bot.update_price_tick(price)
                 state_payload = json.dumps(bot.get_state())
                 await manager.broadcast(state_payload)
 
             await asyncio.sleep(1.5)
-
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(binance_price_worker())
 
 @app.get("/")
 def home():
-    return {"status": "SHINE Ultra Quant DCA Engine 3-Stage Active"}
-
-@app.get("/status")
-def get_status():
-    return bot.get_state()
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        await websocket.send_text(json.dumps(bot.get_state()))
-        while True:
-            data_text = await websocket.receive_text()
-            try:
-                msg = json.loads(data_text)
-                if msg.get("action") == "PAUSE":
-                    bot.is_paused = True
-                elif msg.get("action") == "RESUME":
-                    bot.is_paused = False
-                await manager.broadcast(json.dumps(bot.get_state()))
-            except Exception:
-                pass
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-    except Exception:
-        manager.disconnect(websocket)
-
-if __name__ == "__main__":
-    import uvicorn
-    import os
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    return {"status": "SHINE Ultra
