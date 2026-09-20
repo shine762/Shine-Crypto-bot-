@@ -58,22 +58,8 @@ class UltraQuantSpotBot:
         self.taker_fee_pct = 0.001
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
-            6: 0.20, 7: 0.30, 8: 0.27, 9: 0.00, 10: 0.00
+            6: 0.20, 7: 0.30, 8: 0.27
         }
-        self.round_risk_profile = {
-            1: {"risk": 90, "gap": 0.0020, "bounce": 1.0006, "min_profit": 0.25},
-            2: {"risk": 80, "gap": 0.0030, "bounce": 1.0008, "min_profit": 0.50},
-            3: {"risk": 70, "gap": 0.0040, "bounce": 1.0010, "min_profit": 0.75},
-            4: {"risk": 60, "gap": 0.0055, "bounce": 1.0012, "min_profit": 1.00},
-            5: {"risk": 50, "gap": 0.0070, "bounce": 1.0015, "min_profit": 1.25},
-            6: {"risk": 40, "gap": 0.0090, "bounce": 1.0018, "min_profit": 1.50},
-            7: {"risk": 30, "gap": 0.0110, "bounce": 1.0022, "min_profit": 2.00},
-            8: {"risk": 20, "gap": 0.0140, "bounce": 1.0028, "min_profit": 2.50},
-            9: {"risk": 10, "gap": 0.0180, "bounce": 1.0035, "min_profit": 3.00},
-            10: {"risk": 0, "gap": 0.0250, "bounce": 1.0050, "min_profit": 5.00}
-        }
-        self.sub_ts_high = 0.0
-        self.sub_ts_low = 0.0
 
     def process_market_trades(self, trades):
         if not trades:
@@ -246,7 +232,6 @@ class UltraQuantSpotBot:
                 "solAmount": round(sol_bought, 4),
                 "invested": round(invest_target, 2),
                 "isMacro": False,
-                "isSubTrade": is_sub_trade,
                 "targetPrice": target_exit
             }
 
@@ -268,52 +253,6 @@ class UltraQuantSpotBot:
         self.ts_stage = "1.0%"
         self.tb_active = False
         self.initial_tb_active = False
-def execute_sub_trade_sell(self, pos_id):
-        target_pos = None
-        target_idx = -1
-        for idx, p in enumerate(self.active_positions):
-            if p.get("id") == pos_id:
-                target_pos = p
-                target_idx = idx
-                break
-
-        if not target_pos:
-            return
-
-        sol_to_sell = target_pos["solAmount"]
-        invested = target_pos["invested"]
-        sold_value = sol_to_sell * self.live_price
-        fee = sold_value * self.taker_fee_pct
-        net_return = sold_value - fee
-        profit = net_return - invested
-
-        if profit <= 0:
-            return
-
-        self.usdt_balance += net_return
-        self.sol_balance -= sol_to_sell
-        self.invested_amount -= invested
-        self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-        self.realized_pnl += profit
-
-        self.trades_history.insert(0, {
-            "orderId": str(uuid.uuid4())[:8],
-            "side": "SELL_SUB",
-            "price": round(self.live_price, 2),
-            "solAmount": round(sol_to_sell, 4),
-            "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "realizedPnl": round(profit, 4),
-            "round": self.active_round,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
-        self.active_positions.pop(target_idx)
-        if self.sub_trade_count > 0:
-            self.sub_trade_count -= 1
-        self.sub_ts_high = 0.0
-        self.sub_ts_low = 0.0
-        self.tb_active = False
 
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
@@ -447,68 +386,40 @@ def execute_sub_trade_sell(self, pos_id):
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
-        active_sub_trades = [p for p in regular_positions if p.get("isSubTrade", False)]
-        risk_cfg = self.round_risk_profile.get(self.active_round, {"gap": 0.005, "bounce": 1.0015, "min_profit": 0.50})
+        last_entry = regular_positions[-1]["entryPrice"]
+        dynamic_gap = max(0.8, last_entry * self.sub_trade_gap_pct)
 
-        if len(active_sub_trades) > 0:
-            latest_sub = active_sub_trades[-1]
-            sub_entry = latest_sub["entryPrice"]
-            sub_invested = latest_sub["invested"]
-            sub_sol = latest_sub["solAmount"]
+        if not self.tb_active:
+            if self.live_price <= (last_entry - dynamic_gap):
+                self.tb_active = True
+                self.tb_lowest_price = self.live_price
+        else:
+            if self.live_price < self.tb_lowest_price:
+                self.tb_lowest_price = self.live_price
 
-            est_return = (sub_sol * self.live_price) * (1.0 - self.taker_fee_pct)
-            net_profit_est = est_return - sub_invested
+            if self.live_price > (last_entry + dynamic_gap):
+                self.tb_active = False
+            else:
+                drop_pct = (last_entry - self.tb_lowest_price) / last_entry if last_entry > 0 else 0.0
+                is_buyer_ready = self.check_market_exhaustion(mode="BUY")
 
-            if net_profit_est >= risk_cfg["min_profit"]:
-                if self.live_price > self.sub_ts_high:
-                    self.sub_ts_high = self.live_price
-
-                if net_profit_est >= (risk_cfg["min_profit"] * 2.5):
-                    sub_trail_pct = 0.9988
-                elif net_profit_est >= (risk_cfg["min_profit"] * 1.5):
-                    sub_trail_pct = 0.9980
+                if drop_pct >= 0.035 or is_buyer_ready or self.whale_sentiment == "BULLISH":
+                    sub_bounce_factor = 1.0018
+                elif drop_pct >= 0.02:
+                    sub_bounce_factor = 1.0032
                 else:
-                    sub_trail_pct = 0.9972
+                    sub_bounce_factor = 1.0048
 
-                calc_sub_stop = round(self.sub_ts_high * sub_trail_pct, 2)
-                if calc_sub_stop > self.sub_ts_low:
-                    self.sub_ts_low = calc_sub_stop
-
-                if self.live_price <= self.sub_ts_low and self.sub_ts_low > sub_entry:
-                    self.execute_sub_trade_sell(latest_sub["id"])
-                    return
-            else:
-                self.sub_ts_high = self.live_price
-                self.sub_ts_low = 0.0
-
-        if self.sub_trade_count < self.max_sub_trades:
-            last_entry = regular_positions[-1]["entryPrice"]
-            dynamic_gap = max(0.20, last_entry * risk_cfg["gap"])
-
-            if not self.tb_active:
-                if self.live_price <= (last_entry - dynamic_gap):
-                    self.tb_active = True
-                    self.tb_lowest_price = self.live_price
-            else:
-                if self.live_price < self.tb_lowest_price:
-                    self.tb_lowest_price = self.live_price
-
-                if self.live_price > (last_entry + dynamic_gap):
+                bounce_callback = self.tb_lowest_price * sub_bounce_factor
+                if self.live_price >= bounce_callback and self.whale_sentiment != "BEARISH":
                     self.tb_active = False
-                else:
-                    bounce_target = self.tb_lowest_price * risk_cfg["bounce"]
-                    allow_sub_buy = True if risk_cfg["risk"] >= 70 else (self.whale_sentiment != "BEARISH")
-                    
-                    if self.live_price >= bounce_target and allow_sub_buy:
-                        self.tb_active = False
+                    if self.sub_trade_count < self.max_sub_trades:
                         self.execute_buy(is_sub_trade=True)
                         return
-        elif self.active_round < 8:
-            last_entry = regular_positions[-1]["entryPrice"]
-            if self.live_price <= (last_entry * 0.985):
-                self.active_round += 1
-                self.execute_buy(is_sub_trade=False, escalate_round=True)
-                return
+                    elif self.active_round < 8:
+                        self.active_round += 1
+                        self.execute_buy(is_sub_trade=False, escalate_round=True)
+                        return
 
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
@@ -594,7 +505,7 @@ async def binance_price_worker():
             price = 0.0
             for url in price_urls:
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                    async with session.get(url, timeout=3) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             if "price" in data:
@@ -607,7 +518,7 @@ async def binance_price_worker():
                     continue
 
             try:
-                async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=3)) as whale_resp:
+                async with session.get(whale_url, timeout=3) as whale_resp:
                     if whale_resp.status == 200:
                         trades_data = await whale_resp.json()
                         if isinstance(trades_data, list):
