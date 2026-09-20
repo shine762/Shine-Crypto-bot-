@@ -314,6 +314,7 @@ def execute_sub_trade_sell(self, pos_id):
         self.sub_ts_high = 0.0
         self.sub_ts_low = 0.0
         self.tb_active = False
+
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
             return
