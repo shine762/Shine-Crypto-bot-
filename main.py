@@ -499,4 +499,4 @@ async def startup_event():
 
 @app.get("/")
 def home():
-    return {"status": "SHINE Ultra
+    return {"status": "SHINE Ultra"}
