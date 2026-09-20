@@ -258,6 +258,9 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
+        # Terminal/Render logs me foran confirmation print hogi
+        print(f">>> [TRADE SUCCESS] BUY Order Executed! Price: ${round(self.live_price, 2)} | Bought: {round(sol_bought, 4)} SOL | Round: {self.active_round}")
+
         self.ts_high = round(self.live_price, 2)
         self.ts_low = round(self.live_price * 0.99, 2)
         self.ts_stage = "1.0%"
@@ -510,37 +513,52 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_ws_worker():
-    # Direct millisecond live stream from Binance
-    ws_url = "wss://stream.binance.com:9443/ws/solusdt@aggTrade"
+    # Worldwide unblocked feeds (Render USA cloud friendly)
+    price_urls = [
+        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
+        "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
+        "https://api.coinbase.com/v2/prices/SOL-USD/spot"
+    ]
+    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=20"
     
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url, heartbeat=20.0) as ws:
-                    last_broadcast = 0.0
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            price = float(data.get("p", 0.0))
-                            qty = float(data.get("q", 0.0))
-                            is_buyer_maker = data.get("m", False)
-
+    print(">>> [BOT ENGINE STARTED] Connecting to live market feeds...")
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            price = 0.0
+            # 1. Price fetch with instant cloud failover
+            for url in price_urls:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if "price" in data:
+                                price = float(data["price"])
+                            elif "data" in data and "amount" in data["data"]:
+                                price = float(data["data"]["amount"])
                             if price > 0:
-                                # Har millisecond trade par whale check
-                                bot.process_market_trades([{"p": price, "q": qty, "m": is_buyer_maker}])
-                                
-                                # Zero delay price update
-                                bot.update_price_tick(price)
+                                break
+                except Exception:
+                    continue
 
-                                # Frontend par broadcast (har 150ms baad taake lag na ho)
-                                now = asyncio.get_event_loop().time()
-                                if now - last_broadcast >= 0.15:
-                                    last_broadcast = now
-                                    await manager.broadcast(json.dumps(bot.get_state()))
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
-        except Exception:
-            await asyncio.sleep(2.0)
+            # 2. Whale stream scan
+            try:
+                async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=2)) as w_resp:
+                    if w_resp.status == 200:
+                        trades_data = await w_resp.json()
+                        if isinstance(trades_data, list):
+                            bot.process_market_trades(trades_data)
+            except Exception:
+                pass
+
+            # 3. Trigger trade & broadcast
+            if price > 0:
+                bot.update_price_tick(price)
+                await manager.broadcast(json.dumps(bot.get_state()))
+            else:
+                print(">>> [WARNING] Price feed returning 0. Checking network...")
+
+            await asyncio.sleep(0.3)  # Fast millisecond cycle (300ms)
 
 @app.on_event("startup")
 async def startup_event():
