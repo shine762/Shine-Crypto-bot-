@@ -418,6 +418,10 @@ class UltraQuantSpotBot:
         if len(self.price_history) > 50:
             self.price_history.pop(0)
 
+        # 1. Round 6 Fix: Live price aate hi foran Round aur Phase sync hoga
+        if len([p for p in self.active_positions if not p.get("isMacro", False)]) == 0:
+            self.sync_phase_and_round()
+
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             return
@@ -427,73 +431,26 @@ class UltraQuantSpotBot:
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
+        # 2. Intezar Khatam: Agar position nahi hai to BINA INTEZAR seedha BUY execute karo
         if len(regular_positions) == 0:
-            if not self.initial_tb_active:
-                self.initial_tb_active = True
-                self.initial_tb_peak = self.live_price
-                self.initial_tb_lowest = self.live_price
-                return
-
-            if self.live_price >= self.initial_tb_peak:
-                self.initial_tb_peak = self.live_price
-                self.initial_tb_lowest = self.live_price
-                return
-
-            if self.live_price < self.initial_tb_lowest:
-                self.initial_tb_lowest = self.live_price
-
-            drop_from_peak = (self.initial_tb_peak - self.initial_tb_lowest) / self.initial_tb_peak if self.initial_tb_peak > 0 else 0.0
-            is_buyer_ready = self.check_market_exhaustion(mode="BUY")
-
-            if drop_from_peak >= 0.002:
-                bounce_factor = 1.0008 if (is_buyer_ready or self.whale_sentiment == "BULLISH") else 1.0012
-                required_bounce_price = self.initial_tb_lowest * bounce_factor
-                if self.live_price >= required_bounce_price:
-                    self.execute_buy(is_sub_trade=False, escalate_round=False)
-            elif len(self.price_history) >= 12 and not is_buyer_ready:
-                self.execute_buy(is_sub_trade=False, escalate_round=False)
+            self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
+        # 3. Har $2.00 drop par foran agli DCA trade (Whale ka intezar band)
         last_entry = regular_positions[-1]["entryPrice"]
-        dynamic_gap = max(0.8, last_entry * self.sub_trade_gap_pct)
-
-        if not self.tb_active:
-            if self.live_price <= (last_entry - dynamic_gap):
-                self.tb_active = True
-                self.tb_lowest_price = self.live_price
-        else:
-            if self.live_price < self.tb_lowest_price:
-                self.tb_lowest_price = self.live_price
-
-            if self.live_price > (last_entry + dynamic_gap):
-                self.tb_active = False
-            else:
-                drop_pct = (last_entry - self.tb_lowest_price) / last_entry if last_entry > 0 else 0.0
-                is_buyer_ready = self.check_market_exhaustion(mode="BUY")
-
-                if drop_pct >= 0.035 or is_buyer_ready or self.whale_sentiment == "BULLISH":
-                    sub_bounce_factor = 1.0018
-                elif drop_pct >= 0.02:
-                    sub_bounce_factor = 1.0032
-                else:
-                    sub_bounce_factor = 1.0048
-
-                bounce_callback = self.tb_lowest_price * sub_bounce_factor
-                if self.live_price >= bounce_callback and self.whale_sentiment != "BEARISH":
-                    self.tb_active = False
-                    if self.sub_trade_count < self.max_sub_trades:
-                        self.execute_buy(is_sub_trade=True)
-                        return
-                    elif self.active_round < 8:
-                        self.active_round += 1
-                        self.sub_trade_count = 0
-                        self.execute_buy(is_sub_trade=False, escalate_round=True)
-                        return
-                    elif self.active_round < 10:
-                        self.active_round += 1
-                        self.sub_trade_count = 0
-                        return
-
+        if (last_entry - self.live_price) >= 2.0:
+            if self.sub_trade_count < self.max_sub_trades:
+                self.execute_buy(is_sub_trade=True)
+                return
+            elif self.active_round < 8:
+                self.active_round += 1
+                self.sub_trade_count = 0
+                self.execute_buy(is_sub_trade=False, escalate_round=True)
+                return
+            elif self.active_round < 10:
+                self.active_round += 1
+                self.sub_trade_count = 0
+                return
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
                 self.macro_ts_high = round(self.live_price, 2)
