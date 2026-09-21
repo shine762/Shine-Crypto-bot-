@@ -21,11 +21,6 @@ class UltraQuantSpotBot:
         self.is_paused = False
         self.live_price = 0.0
         self.usdt_balance = 10000.0
-        self.latest_signal = {
-            "action": "SELL",
-            "price": round(self.live_price, 2),
-            "text": f"SELL / TAKE PROFIT NOW @ ${round(self.live_price, 2)} (+${round(profit, 2)} USDT Gain Secured)"
-        }
         self.sol_balance = 0.0
         self.invested_amount = 0.0
         self.avg_entry_price = 0.0
