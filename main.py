@@ -16,6 +16,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SUPABASE_URL = "https://awlaziaxapoixbhiqcpq.supabase.co"
+SUPABASE_KEY = "sb_publishable_PgY6nJ0OeM4OIoJS3GVG8A_MZb--nVp"
+SUPABASE_HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=minimal"
+}
+
 class UltraQuantSpotBot:
     def __init__(self):
         self.is_paused = False
@@ -44,6 +53,17 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
+
+        asyncio.create_task(self.db_save_sell({
+            "order_id": str(uuid.uuid4())[:8],
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(self.sol_balance, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": self.active_round,
+            "exec_type": "TRAILING_PROFIT_EXIT"
+        }))
         self.initial_capital = 10000.0
         self.macro_vault_sol = 0.0
         self.macro_vault_invested = 0.0
@@ -59,6 +79,7 @@ class UltraQuantSpotBot:
         self.min_net_profit_usdt = 0.1
         self.raydium_price = 0.0
         self.orca_price = 0.0
+        self.meteora_price = 0.0
         self.arb_spread_pct = 0.0
         self.arb_spread_usd = 0.0
         self.arb_realized_profit = 0.0
@@ -69,6 +90,124 @@ class UltraQuantSpotBot:
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
+
+    async def load_from_database(self):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                async with session.get(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and len(data) > 0:
+                            row = data[0]
+                            self.usdt_balance = float(row.get("usdt_balance", 10000.0))
+                            self.sol_balance = float(row.get("sol_balance", 0.0))
+                            self.invested_amount = float(row.get("invested_amount", 0.0))
+                            self.avg_entry_price = float(row.get("avg_entry_price", 0.0))
+                            self.realized_pnl = float(row.get("realized_pnl", 0.0))
+                            self.active_phase = int(row.get("active_phase", 1))
+                            self.active_round = int(row.get("active_round", 1))
+                            self.arb_realized_profit = float(row.get("arb_realized_profit", 0.0))
+                async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
+                    if resp.status == 200:
+                        pos_data = await resp.json()
+                        if isinstance(pos_data, list):
+                            self.active_positions = [{
+                                "id": p.get("id"),
+                                "round": p.get("round"),
+                                "subTrade": p.get("sub_trade"),
+                                "label": p.get("label"),
+                                "entryPrice": float(p.get("entry_price", 0)),
+                                "solAmount": float(p.get("sol_amount", 0)),
+                                "invested": float(p.get("invested", 0)),
+                                "isMacro": p.get("is_macro", False),
+                                "targetPrice": float(p.get("target_price", 0))
+                            } for p in pos_data]
+                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
+                    if resp.status == 200:
+                        t_data = await resp.json()
+                        if isinstance(t_data, list):
+                            self.trades_history = [{
+                                "orderId": t.get("order_id"),
+                                "side": t.get("side"),
+                                "price": float(t.get("price", 0)),
+                                "solAmount": float(t.get("sol_amount", 0)),
+                                "fee": float(t.get("fee", 0)),
+                                "profit": float(t.get("profit", 0)),
+                                "realizedPnl": float(t.get("profit", 0)),
+                                "round": t.get("round"),
+                                "execType": t.get("exec_type"),
+                                "timestamp": t.get("created_at")
+                            } for t in t_data]
+                async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
+                    if resp.status == 200:
+                        a_data = await resp.json()
+                        if isinstance(a_data, list):
+                            self.arb_history = a_data
+        except Exception:
+            pass
+
+    async def db_sync_state(self):
+        try:
+            payload = {
+                "usdt_balance": round(self.usdt_balance, 2),
+                "sol_balance": round(self.sol_balance, 4),
+                "invested_amount": round(self.invested_amount, 2),
+                "avg_entry_price": round(self.avg_entry_price, 2),
+                "realized_pnl": round(self.realized_pnl, 2),
+                "active_phase": self.active_phase,
+                "active_round": self.active_round,
+                "sub_trade_count": self.sub_trade_count,
+                "arb_realized_profit": round(self.arb_realized_profit, 2),
+                "updated_at": datetime.now(timezone.utc).isoformat()
+            }
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
+        except Exception:
+            pass
+
+    async def db_save_buy(self, pos, trade_data):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                pos_row = {
+                    "id": pos["id"],
+                    "round": pos["round"],
+                    "sub_trade": pos["subTrade"],
+                    "label": pos["label"],
+                    "entry_price": pos["entryPrice"],
+                    "sol_amount": pos["solAmount"],
+                    "invested": pos["invested"],
+                    "is_macro": pos["isMacro"],
+                    "target_price": pos["targetPrice"]
+                }
+                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions", json=pos_row)
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
+            await self.db_sync_state()
+        except Exception:
+            pass
+
+    async def db_save_sell(self, trade_data):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?is_macro=eq.false")
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
+            await self.db_sync_state()
+        except Exception:
+            pass
+
+    async def db_save_arb(self, arb_item):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                arb_row = {
+                    "id": arb_item["id"],
+                    "buy_dex": arb_item["buyDex"],
+                    "sell_dex": arb_item["sellDex"],
+                    "spread": arb_item["spread"],
+                    "profit": arb_item["profit"]
+                }
+                await session.post(f"{SUPABASE_URL}/rest/v1/arbitrage_history", json=arb_row)
+            await self.db_sync_state()
+        except Exception:
+            pass
 
     def process_market_trades(self, trades):
         if not trades:
@@ -186,6 +325,7 @@ class UltraQuantSpotBot:
             "botThought": ai_thoughts,
             "raydiumPrice": round(self.raydium_price, 2),
             "orcaPrice": round(self.orca_price, 2),
+            "meteoraPrice": round(self.meteora_price, 2),
             "spreadPct": round(self.arb_spread_pct, 2),
             "spreadUsd": round(self.arb_spread_usd, 2),
             "arbProfit": round(self.arb_realized_profit, 2),
@@ -287,6 +427,17 @@ class UltraQuantSpotBot:
             "text": f"BUY SOL NOW @ ${round(self.live_price, 2)} (Whale Rebound Confirmed)"
         }
         print(f">>> [TRADE SUCCESS] BUY Order Executed! Price: ${round(self.live_price, 2)} | Bought: {round(sol_bought, 4)} SOL | Round: {self.active_round}")
+
+        asyncio.create_task(self.db_save_buy(pos, {
+            "order_id": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_bought, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": self.active_round,
+            "exec_type": "WHALE_MAKER_MATCHED"
+        }))
 
         self.ts_high = round(self.live_price, 2)
         self.ts_low = 0.0
@@ -454,34 +605,44 @@ class UltraQuantSpotBot:
 
         self.sync_phase_and_round()
 
-        vol_skew = (self.whale_orderflow_ratio - 50.0) * 0.003
-        self.raydium_price = round(self.live_price * (1.0 + vol_skew), 2)
-        self.orca_price = round(self.live_price * (1.0 - (vol_skew * 0.6)), 2)
-        self.arb_spread_usd = round(abs(self.raydium_price - self.orca_price), 2)
-        base_ref = max(self.raydium_price, self.orca_price, 1.0)
-        self.arb_spread_pct = round((self.arb_spread_usd / base_ref) * 100.0, 2)
+        vol_skew = (self.whale_orderflow_ratio - 50.0) * 0.002
+        self.raydium_price = round(self.live_price * (1.0 + vol_skew + 0.0018), 2)
+        self.orca_price = round(self.live_price * (1.0 - (vol_skew * 0.5) - 0.0014), 2)
+        self.meteora_price = round(self.live_price * (1.0 + (vol_skew * 0.4) - 0.0022), 2)
+
+        dex_pool = [
+            ("RAYDIUM", self.raydium_price),
+            ("ORCA", self.orca_price),
+            ("METEORA", self.meteora_price)
+        ]
+        dex_pool.sort(key=lambda x: x[1])
+        cheapest_dex = dex_pool[0]
+        costliest_dex = dex_pool[-1]
+
+        self.arb_spread_usd = round(costliest_dex[1] - cheapest_dex[1], 2)
+        self.arb_spread_pct = round((self.arb_spread_usd / cheapest_dex[1]) * 100.0, 2)
 
         if self.arb_cooldown > 0:
             self.arb_cooldown -= 1
 
-        if self.arb_spread_pct >= 0.30 and not self.is_paused and self.arb_cooldown == 0:
+        if self.arb_spread_pct >= 0.25 and not self.is_paused and self.arb_cooldown == 0:
             arb_trade_val = min(300.0, self.dex_pool_usdt * 0.10)
-            trade_profit = round(arb_trade_val * (self.arb_spread_pct / 100.0) * 0.85, 4)
+            trade_profit = round(arb_trade_val * (self.arb_spread_pct / 100.0) * 0.82, 4)
             if trade_profit > 0.05:
                 self.arb_realized_profit += trade_profit
-                self.arb_cooldown = 35
-                buy_dex = "ORCA" if self.orca_price < self.raydium_price else "RAYDIUM"
-                sell_dex = "RAYDIUM" if buy_dex == "ORCA" else "ORCA"
-                self.arb_history.insert(0, {
+                self.arb_cooldown = 30
+                arb_record = {
                     "id": str(uuid.uuid4())[:8],
-                    "buyDex": buy_dex,
-                    "sellDex": sell_dex,
+                    "buyDex": cheapest_dex[0],
+                    "sellDex": costliest_dex[0],
                     "spread": f"{self.arb_spread_pct}%",
                     "profit": f"+${trade_profit} USDT",
                     "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                })
+                }
+                self.arb_history.insert(0, arb_record)
                 if len(self.arb_history) > 15:
                     self.arb_history.pop()
+                asyncio.create_task(self.db_save_arb(arb_record))
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
@@ -690,6 +851,7 @@ async def binance_ws_worker():
 
 @app.on_event("startup")
 async def startup_event():
+    await bot.load_from_database()
     asyncio.create_task(binance_ws_worker())
 
 @app.get("/")
