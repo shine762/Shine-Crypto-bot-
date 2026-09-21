@@ -21,6 +21,11 @@ class UltraQuantSpotBot:
         self.is_paused = False
         self.live_price = 0.0
         self.usdt_balance = 10000.0
+        self.latest_signal = {
+            "action": "SELL",
+            "price": round(self.live_price, 2),
+            "text": f"SELL / TAKE PROFIT NOW @ ${round(self.live_price, 2)} (+${round(profit, 2)} USDT Gain Secured)"
+        }
         self.sol_balance = 0.0
         self.invested_amount = 0.0
         self.avg_entry_price = 0.0
@@ -38,7 +43,9 @@ class UltraQuantSpotBot:
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
+        self.manual_trades_history = []
         self.price_history = []
+        self.latest_signal = {"action": "HOLD", "price": 0.0, "text": "Scanning market for high-probability signals..."}
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
@@ -171,6 +178,8 @@ class UltraQuantSpotBot:
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history,
+            "manualTradesHistory": self.manual_trades_history,
+            "latestSignal": self.latest_signal,
             "botThought": ai_thoughts
         }
 
@@ -263,6 +272,11 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
+        self.latest_signal = {
+            "action": "BUY",
+            "price": round(self.live_price, 2),
+            "text": f"BUY SOL NOW @ ${round(self.live_price, 2)} (Whale Rebound Confirmed)"
+        }
         print(f">>> [TRADE SUCCESS] BUY Order Executed! Price: ${round(self.live_price, 2)} | Bought: {round(sol_bought, 4)} SOL | Round: {self.active_round}")
 
         self.ts_high = round(self.live_price, 2)
@@ -293,15 +307,13 @@ class UltraQuantSpotBot:
             "isMacro": False,
             "targetPrice": round(self.live_price * 2.0, 2)
         })
-        self.trades_history.insert(0, {
+        self.manual_trades_history.insert(0, {
             "orderId": pos_id,
             "side": "MANUAL_BUY",
             "price": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
             "fee": round(fee, 4),
-            "round": self.active_round,
-            "execType": "USER_MANUAL",
-            "orderflowRatio": self.whale_orderflow_ratio,
+            "execType": "WALLET_MANUAL",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
@@ -314,7 +326,7 @@ class UltraQuantSpotBot:
         profit = net_return - self.invested_amount
         self.usdt_balance += net_return
         self.realized_pnl += profit
-        self.trades_history.insert(0, {
+        self.manual_trades_history.insert(0, {
             "orderId": str(uuid.uuid4())[:8],
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
@@ -322,6 +334,7 @@ class UltraQuantSpotBot:
             "fee": round(fee, 4),
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
+            "execType": "WALLET_MANUAL",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         self.sol_balance = 0.0
@@ -444,17 +457,21 @@ class UltraQuantSpotBot:
             return
 
         last_entry = regular_positions[-1]["entryPrice"]
-        if not self.tb_active:
-            if (last_entry - self.live_price) >= 2.0:
-                self.tb_active = True
-                self.tb_lowest_price = self.live_price
+
+        if self.live_price >= last_entry:
+            self.tb_active = False
         else:
-            if self.live_price < self.tb_lowest_price:
-                self.tb_lowest_price = self.live_price
-            elif self.live_price >= (self.tb_lowest_price + 0.40):
-                self.tb_active = False
-                self.execute_buy(is_sub_trade=True)
-                return
+            if not self.tb_active:
+                if (last_entry - self.live_price) >= 2.0:
+                    self.tb_active = True
+                    self.tb_lowest_price = self.live_price
+            else:
+                if self.live_price < self.tb_lowest_price:
+                    self.tb_lowest_price = self.live_price
+                elif self.live_price >= (self.tb_lowest_price + 0.40):
+                    self.tb_active = False
+                    self.execute_buy(is_sub_trade=True)
+                    return
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
                 self.macro_ts_high = round(self.live_price, 2)
