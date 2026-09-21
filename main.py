@@ -57,6 +57,14 @@ class UltraQuantSpotBot:
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
         self.min_net_profit_usdt = 0.1
+        self.raydium_price = 0.0
+        self.orca_price = 0.0
+        self.arb_spread_pct = 0.0
+        self.arb_spread_usd = 0.0
+        self.arb_realized_profit = 0.0
+        self.arb_history = []
+        self.arb_cooldown = 0
+        self.dex_pool_usdt = 3000.0
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -168,14 +176,20 @@ class UltraQuantSpotBot:
             "macroVaultInvested": round(self.macro_vault_invested, 2),
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
-            "canManualTrade": self.active_round in [9, 10],
+            "canManualTrade": True,
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history,
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
-            "botThought": ai_thoughts
+            "botThought": ai_thoughts,
+            "raydiumPrice": round(self.raydium_price, 2),
+            "orcaPrice": round(self.orca_price, 2),
+            "spreadPct": round(self.arb_spread_pct, 2),
+            "spreadUsd": round(self.arb_spread_usd, 2),
+            "arbProfit": round(self.arb_realized_profit, 2),
+            "arbHistory": self.arb_history
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -319,16 +333,19 @@ class UltraQuantSpotBot:
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
         profit = net_return - self.invested_amount
+        owner_commission = (profit * 0.10) if profit > 0 else 0.0
+        user_profit = profit - owner_commission
         self.usdt_balance += net_return
-        self.realized_pnl += profit
+        self.realized_pnl += user_profit
         self.manual_trades_history.insert(0, {
             "orderId": str(uuid.uuid4())[:8],
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(self.sol_balance, 4),
             "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "realizedPnl": round(profit, 4),
+            "profit": round(user_profit, 4),
+            "ownerCut": round(owner_commission, 4),
+            "realizedPnl": round(user_profit, 4),
             "execType": "WALLET_MANUAL",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
@@ -437,6 +454,96 @@ class UltraQuantSpotBot:
 
         self.sync_phase_and_round()
 
+        vol_skew = (self.whale_orderflow_ratio - 50.0) * 0.003
+        self.raydium_price = round(self.live_price * (1.0 + vol_skew), 2)
+        self.orca_price = round(self.live_price * (1.0 - (vol_skew * 0.6)), 2)
+        self.arb_spread_usd = round(abs(self.raydium_price - self.orca_price), 2)
+        base_ref = max(self.raydium_price, self.orca_price, 1.0)
+        self.arb_spread_pct = round((self.arb_spread_usd / base_ref) * 100.0, 2)
+
+        if self.arb_cooldown > 0:
+            self.arb_cooldown -= 1
+
+        if self.arb_spread_pct >= 0.30 and not self.is_paused and self.arb_cooldown == 0:
+            arb_trade_val = min(300.0, self.dex_pool_usdt * 0.10)
+            trade_profit = round(arb_trade_val * (self.arb_spread_pct / 100.0) * 0.85, 4)
+            if trade_profit > 0.05:
+                self.arb_realized_profit += trade_profit
+                self.arb_cooldown = 35
+                buy_dex = "ORCA" if self.orca_price < self.raydium_price else "RAYDIUM"
+                sell_dex = "RAYDIUM" if buy_dex == "ORCA" else "ORCA"
+                self.arb_history.insert(0, {
+                    "id": str(uuid.uuid4())[:8],
+                    "buyDex": buy_dex,
+                    "sellDex": sell_dex,
+                    "spread": f"{self.arb_spread_pct}%",
+                    "profit": f"+${trade_profit} USDT",
+                    "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                })
+                if len(self.arb_history) > 15:
+                    self.arb_history.pop()
+
+        regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
+        if self.cooldown_remaining > 0:
+            self.latest_signal = {
+                "action": "COOLDOWN",
+                "price": round(self.live_price, 2),
+                "text": f"COOLING DOWN ({self.cooldown_remaining}s) - Securing Realized Profits"
+            }
+        elif len(regular_positions) == 0:
+            if self.whale_sentiment == "BULLISH":
+                self.latest_signal = {
+                    "action": "BUY",
+                    "price": round(self.live_price, 2),
+                    "text": f"BUY SOL NOW @ ${round(self.live_price, 2)} (Whale Inflow: {self.whale_orderflow_ratio}%)"
+                }
+            elif self.whale_sentiment == "BEARISH":
+                self.latest_signal = {
+                    "action": "WAIT",
+                    "price": round(self.live_price, 2),
+                    "text": f"WAIT / DO NOT BUY @ ${round(self.live_price, 2)} (Heavy Whale Selling Pressure)"
+                }
+            else:
+                self.latest_signal = {
+                    "action": "HOLD",
+                    "price": round(self.live_price, 2),
+                    "text": f"SCANNING MARKET @ ${round(self.live_price, 2)} (Orderflow Neutral)"
+                }
+        else:
+            current_net = (self.sol_balance * self.live_price * (1 - self.taker_fee_pct)) - self.invested_amount
+            if current_net >= self.min_net_profit_usdt:
+                if self.ts_low > 0 and self.live_price <= (self.ts_low + 0.15):
+                    self.latest_signal = {
+                        "action": "SELL",
+                        "price": round(self.live_price, 2),
+                        "text": f"SELL / TAKE PROFIT NOW @ ${round(self.live_price, 2)} (+${round(current_net, 2)} USDT Secured)"
+                    }
+                elif self.whale_sentiment == "BULLISH":
+                    self.latest_signal = {
+                        "action": "HOLD",
+                        "price": round(self.live_price, 2),
+                        "text": f"HOLD / RIDE TREND @ ${round(self.live_price, 2)} (+${round(current_net, 2)} USDT, Whales Buying)"
+                    }
+                else:
+                    self.latest_signal = {
+                        "action": "SELL",
+                        "price": round(self.live_price, 2),
+                        "text": f"TAKE PROFIT READY @ ${round(self.live_price, 2)} (Trailing Floor Active: ${round(self.ts_low, 2)})"
+                    }
+            else:
+                if self.whale_sentiment == "BEARISH":
+                    self.latest_signal = {
+                        "action": "HOLD",
+                        "price": round(self.live_price, 2),
+                        "text": f"HOLDING DIP @ ${round(self.live_price, 2)} (Whale Volume Low, Trailing Buy Armed)"
+                    }
+                else:
+                    self.latest_signal = {
+                        "action": "HOLD",
+                        "price": round(self.live_price, 2),
+                        "text": f"HOLDING SOL @ ${round(self.live_price, 2)} (Avg Entry: ${round(self.avg_entry_price, 2)}, Whales Re-accumulating)"
+                    }
+
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             return
@@ -447,26 +554,34 @@ class UltraQuantSpotBot:
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
-            if self.round_trades_done.get(self.active_round, 0) < 10:
+            if self.whale_sentiment != "BEARISH" and self.round_trades_done.get(self.active_round, 0) < 10:
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
         last_entry = regular_positions[-1]["entryPrice"]
 
-        if self.live_price >= last_entry:
+        if self.live_price >= (last_entry - 0.50):
             self.tb_active = False
         else:
             if not self.tb_active:
-                if (last_entry - self.live_price) >= 2.0:
+                if (last_entry - self.live_price) >= 1.20:
                     self.tb_active = True
                     self.tb_lowest_price = self.live_price
             else:
                 if self.live_price < self.tb_lowest_price:
                     self.tb_lowest_price = self.live_price
-                elif self.live_price >= (self.tb_lowest_price + 0.40):
-                    self.tb_active = False
-                    self.execute_buy(is_sub_trade=True)
-                    return
+                else:
+                    if self.whale_orderflow_ratio >= 70.0:
+                        required_bounce = 0.30
+                    elif self.whale_orderflow_ratio >= 55.0:
+                        required_bounce = 0.50
+                    else:
+                        required_bounce = 0.80
+
+                    if self.live_price >= (self.tb_lowest_price + required_bounce):
+                        self.tb_active = False
+                        self.execute_buy(is_sub_trade=True)
+                        return
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
                 self.macro_ts_high = round(self.live_price, 2)
@@ -535,7 +650,7 @@ async def binance_ws_worker():
         "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
         "https://api.coinbase.com/v2/prices/SOL-USD/spot"
     ]
-    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=20"
+    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=1000"
     
     print(">>> [BOT ENGINE STARTED] Connecting to live market feeds...")
     
