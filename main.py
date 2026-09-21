@@ -25,6 +25,10 @@ SUPABASE_HEADERS = {
     "Prefer": "return=minimal"
 }
 
+USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+SOL_MINT = "So11111111111111111111111111111111111111112"
+JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote"
+
 class UltraQuantSpotBot:
     def __init__(self):
         self.is_paused = False
@@ -75,10 +79,31 @@ class UltraQuantSpotBot:
         self.arb_history = []
         self.arb_cooldown = 0
         self.dex_pool_usdt = 3000.0
+        self.real_trading_mode = False
+        self.jupiter_last_route = "METEORA -> RAYDIUM"
+        self.solana_tx_hash = ""
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
+
+    async def query_jupiter_real_spread(self):
+        try:
+            amt_in = 10000000
+            url = f"{JUPITER_QUOTE_API}?inputMint={USDT_MINT}&outputMint={SOL_MINT}&amount={amt_in}&slippageBps=50"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        route_plan = data.get("routePlan", [])
+                        if route_plan:
+                            dex_labels = [p.get("swapInfo", {}).get("label", "DEX") for p in route_plan]
+                            if len(dex_labels) >= 2:
+                                self.jupiter_last_route = f"{dex_labels[0].upper()} -> {dex_labels[1].upper()}"
+                            elif len(dex_labels) == 1:
+                                self.jupiter_last_route = f"{dex_labels[0].upper()} BEST ROUTE"
+        except Exception:
+            pass
 
     async def load_from_database(self):
         try:
@@ -318,7 +343,10 @@ class UltraQuantSpotBot:
             "spreadPct": round(self.arb_spread_pct, 2),
             "spreadUsd": round(self.arb_spread_usd, 2),
             "arbProfit": round(self.arb_realized_profit, 2),
-            "arbHistory": self.arb_history
+            "arbHistory": self.arb_history,
+            "realTradingActive": self.real_trading_mode,
+            "jupiterRoute": self.jupiter_last_route,
+            "lastTxHash": self.solana_tx_hash
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -832,6 +860,8 @@ async def binance_ws_worker():
 
             if price > 0:
                 bot.update_price_tick(price)
+                if bot.arb_cooldown == 0:
+                    asyncio.create_task(bot.query_jupiter_real_spread())
                 await manager.broadcast(json.dumps(bot.get_state()))
             else:
                 print(">>> [WARNING] Price feed returning 0. Checking network...")
