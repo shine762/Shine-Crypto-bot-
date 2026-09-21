@@ -33,9 +33,7 @@ class UltraQuantSpotBot:
         self.active_round = 1
         self.sub_trade_count = 0
         self.max_sub_trades = 10
-        self.sub_trade_gap_pct = 0.008
-        self.round_range_size = 25.0
-        self.round_base_price = 0.0
+        self.round_trades_done = {r: 0 for r in range(1, 11)}
         self.realized_pnl = 0.0
         self.cooldown_remaining = 0
         self.active_positions = []
@@ -72,9 +70,7 @@ class UltraQuantSpotBot:
             qty = float(t.get("q", 0.0))
             is_buyer_maker = t.get("m", False)
             trade_val = price * qty
-            # Sirf $25,000 se $50,000+ ki institutional trades count hongi
             if trade_val >= 25000.0:
-                # $50,000+ wali super-whale trade ko extra weightage milega
                 multiplier = 1.5 if trade_val >= 50000.0 else 1.0
                 weighted_val = trade_val * multiplier
                 if not is_buyer_maker:
@@ -110,8 +106,8 @@ class UltraQuantSpotBot:
             calculated_round = 1
         if calculated_round > 10:
             calculated_round = 10
-        if len([p for p in self.active_positions if not p.get("isMacro", False)]) == 0:
-            self.active_round = calculated_round
+        self.active_round = calculated_round
+        self.sub_trade_count = self.round_trades_done.get(self.active_round, 0)
 
     def get_state(self):
         all_sol = self.sol_balance + self.macro_vault_sol
@@ -184,15 +180,27 @@ class UltraQuantSpotBot:
         if self.active_round in [9, 10]:
             return
 
-        if not is_sub_trade and not escalate_round:
-            self.sync_phase_and_round()
+        self.sync_phase_and_round()
 
-        base_alloc = self.round_allocations.get(self.active_round, 0.01)
-        sub_alloc = base_alloc / float(self.max_sub_trades)
         all_sol = self.sol_balance + self.macro_vault_sol
         total_account_val = self.usdt_balance + (all_sol * self.live_price)
         vol_multiplier = 1.2 if self.whale_sentiment == "BULLISH" else (0.9 if self.whale_sentiment == "BEARISH" else 1.0)
-        invest_target = max(5.0, total_account_val * sub_alloc * vol_multiplier)
+
+        if self.active_round == 8:
+            leftover_trades = sum(max(0, 10 - self.round_trades_done.get(r, 0)) for r in range(1, 8))
+            total_r8_trades = 10 + leftover_trades
+            current_r8_done = self.round_trades_done.get(8, 0)
+            if current_r8_done >= total_r8_trades:
+                return
+            trades_remaining = max(1, total_r8_trades - current_r8_done)
+            invest_target = max(5.0, (self.usdt_balance / trades_remaining) * vol_multiplier)
+        else:
+            current_done = self.round_trades_done.get(self.active_round, 0)
+            if current_done >= 10:
+                return
+            base_alloc = self.round_allocations.get(self.active_round, 0.01)
+            sub_alloc = base_alloc / 10.0
+            invest_target = max(5.0, total_account_val * sub_alloc * vol_multiplier)
 
         if invest_target > self.usdt_balance:
             invest_target = self.usdt_balance
@@ -202,11 +210,8 @@ class UltraQuantSpotBot:
         sol_bought = net_invest / self.live_price
         self.usdt_balance -= invest_target
 
-        if is_sub_trade:
-            self.sub_trade_count += 1
-        else:
-            self.sub_trade_count = 1
-            self.round_base_price = self.live_price
+        self.round_trades_done[self.active_round] = self.round_trades_done.get(self.active_round, 0) + 1
+        self.sub_trade_count = self.round_trades_done[self.active_round]
 
         pos_id = str(uuid.uuid4())[:8]
 
@@ -215,7 +220,7 @@ class UltraQuantSpotBot:
             self.macro_vault_invested += invest_target
             self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else 0.0
             self.macro_target_price = round(max(200.0, self.macro_vault_entry * 2.0), 2)
-            pos_label = f"R8 27% HOLD (Trade {self.sub_trade_count}/10)"
+            pos_label = f"R8 Aggressive Vault (Trade {self.sub_trade_count})"
             pos = {
                 "id": pos_id,
                 "round": 8,
@@ -231,7 +236,7 @@ class UltraQuantSpotBot:
             self.sol_balance += sol_bought
             self.invested_amount += invest_target
             self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-            target_exit = round(self.avg_entry_price * 1.5, 2)
+            target_exit = round(self.live_price + 0.80, 2)
             pos_label = f"R{self.active_round} (Trade {self.sub_trade_count}/10)"
             pos = {
                 "id": pos_id,
@@ -258,11 +263,10 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
 
-        # Terminal/Render logs me foran confirmation print hogi
         print(f">>> [TRADE SUCCESS] BUY Order Executed! Price: ${round(self.live_price, 2)} | Bought: {round(sol_bought, 4)} SOL | Round: {self.active_round}")
 
         self.ts_high = round(self.live_price, 2)
-        self.ts_low = round(self.live_price * 0.99, 2)
+        self.ts_low = 0.0
         self.ts_stage = "1.0%"
         self.tb_active = False
         self.initial_tb_active = False
@@ -391,10 +395,12 @@ class UltraQuantSpotBot:
         self.ts_low = 0.0
         self.ts_stage = "IDLE"
         self.sub_trade_count = 0
-        self.active_round = 1
+        self.round_trades_done = {r: 0 for r in range(1, 11)}
+        self.sync_phase_and_round()
         self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
         self.cooldown_remaining = 40
         self.tb_active = False
+        self.tb_lowest_price = 0.0
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
@@ -421,9 +427,7 @@ class UltraQuantSpotBot:
         if len(self.price_history) > 50:
             self.price_history.pop(0)
 
-        # 1. Round 6 Fix: Live price aate hi foran Round aur Phase sync hoga
-        if len([p for p in self.active_positions if not p.get("isMacro", False)]) == 0:
-            self.sync_phase_and_round()
+        self.sync_phase_and_round()
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
@@ -434,25 +438,22 @@ class UltraQuantSpotBot:
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
-        # 2. Intezar Khatam: Agar position nahi hai to BINA INTEZAR seedha BUY execute karo
         if len(regular_positions) == 0:
-            self.execute_buy(is_sub_trade=False, escalate_round=False)
+            if self.round_trades_done.get(self.active_round, 0) < 10:
+                self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
-        # 3. Har $2.00 drop par foran agli DCA trade (Whale ka intezar band)
         last_entry = regular_positions[-1]["entryPrice"]
-        if (last_entry - self.live_price) >= 2.0:
-            if self.sub_trade_count < self.max_sub_trades:
+        if not self.tb_active:
+            if (last_entry - self.live_price) >= 2.0:
+                self.tb_active = True
+                self.tb_lowest_price = self.live_price
+        else:
+            if self.live_price < self.tb_lowest_price:
+                self.tb_lowest_price = self.live_price
+            elif self.live_price >= (self.tb_lowest_price + 0.40):
+                self.tb_active = False
                 self.execute_buy(is_sub_trade=True)
-                return
-            elif self.active_round < 8:
-                self.active_round += 1
-                self.sub_trade_count = 0
-                self.execute_buy(is_sub_trade=False, escalate_round=True)
-                return
-            elif self.active_round < 10:
-                self.active_round += 1
-                self.sub_trade_count = 0
                 return
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
@@ -467,27 +468,31 @@ class UltraQuantSpotBot:
 
         if self.avg_entry_price > 0 and self.sol_balance > 0:
             projected_profit = (self.sol_balance * self.live_price * (1 - self.taker_fee_pct)) - self.invested_amount
+
             if self.live_price > self.ts_high:
                 self.ts_high = round(self.live_price, 2)
 
-            peak_gain_pct = (self.ts_high - self.avg_entry_price) / self.avg_entry_price
+            peak_gain = self.ts_high - self.avg_entry_price
 
             if projected_profit >= self.min_net_profit_usdt:
-                if peak_gain_pct >= 0.02:
-                    trail_factor = 0.9975
-                    self.ts_stage = "0.25%"
-                elif peak_gain_pct >= 0.01:
-                    trail_factor = 0.9950
-                    self.ts_stage = "0.50%"
+                if peak_gain >= 2.0:
+                    trail_gap = 0.35
+                    self.ts_stage = "0.35$"
+                elif peak_gain >= 1.0:
+                    trail_gap = 0.25
+                    self.ts_stage = "0.25$"
+                elif peak_gain >= 0.40:
+                    trail_gap = 0.15
+                    self.ts_stage = "0.15$"
                 else:
-                    trail_factor = 0.9900
-                    self.ts_stage = "1.0%"
+                    trail_gap = 0.10
+                    self.ts_stage = "0.10$"
 
-                calculated_stop = round(self.ts_high * trail_factor, 2)
+                calculated_stop = round(self.ts_high - trail_gap, 2)
                 if calculated_stop > self.ts_low:
                     self.ts_low = calculated_stop
 
-                if self.live_price <= self.ts_low:
+                if self.ts_low > 0 and self.live_price <= self.ts_low:
                     self.execute_sell_all_in_profit()
 bot = UltraQuantSpotBot()
 
@@ -513,7 +518,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_ws_worker():
-    # Worldwide unblocked feeds (Render USA cloud friendly)
     price_urls = [
         "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
         "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
@@ -526,7 +530,6 @@ async def binance_ws_worker():
     async with aiohttp.ClientSession() as session:
         while True:
             price = 0.0
-            # 1. Price fetch with instant cloud failover
             for url in price_urls:
                 try:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
@@ -541,7 +544,6 @@ async def binance_ws_worker():
                 except Exception:
                     continue
 
-            # 2. Whale stream scan
             try:
                 async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=2)) as w_resp:
                     if w_resp.status == 200:
@@ -551,14 +553,13 @@ async def binance_ws_worker():
             except Exception:
                 pass
 
-            # 3. Trigger trade & broadcast
             if price > 0:
                 bot.update_price_tick(price)
                 await manager.broadcast(json.dumps(bot.get_state()))
             else:
                 print(">>> [WARNING] Price feed returning 0. Checking network...")
 
-            await asyncio.sleep(0.3)  # Fast millisecond cycle (300ms)
+            await asyncio.sleep(0.3)
 
 @app.on_event("startup")
 async def startup_event():
