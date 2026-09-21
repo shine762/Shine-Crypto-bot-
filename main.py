@@ -53,17 +53,6 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
-
-        asyncio.create_task(self.db_save_sell({
-            "order_id": str(uuid.uuid4())[:8],
-            "side": "SELL",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(self.sol_balance, 4),
-            "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "round": self.active_round,
-            "exec_type": "TRAILING_PROFIT_EXIT"
-        }))
         self.initial_capital = 10000.0
         self.macro_vault_sol = 0.0
         self.macro_vault_invested = 0.0
