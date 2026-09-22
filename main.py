@@ -121,6 +121,10 @@ class UltraQuantSpotBot:
                             self.active_phase = int(row.get("active_phase", 1))
                             self.active_round = int(row.get("active_round", 1))
                             self.arb_realized_profit = float(row.get("arb_realized_profit", 0.0))
+                            print(f">>> [DB LOAD SUCCESS] PnL: ${self.realized_pnl} | Arb: ${self.arb_realized_profit} | SOL: {self.sol_balance}")
+                    else:
+                        print(f">>> [DB LOAD ERROR] Status: {resp.status}, Text: {await resp.text()}")
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
@@ -136,6 +140,7 @@ class UltraQuantSpotBot:
                                 "isMacro": p.get("is_macro", False),
                                 "targetPrice": float(p.get("target_price", 0))
                             } for p in pos_data]
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
@@ -152,17 +157,19 @@ class UltraQuantSpotBot:
                                 "execType": t.get("exec_type"),
                                 "timestamp": t.get("created_at")
                             } for t in t_data]
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         a_data = await resp.json()
                         if isinstance(a_data, list):
                             self.arb_history = a_data
-        except Exception:
-            pass
+        except Exception as e:
+            print(f">>> [DB LOAD EXCEPTION] {e}")
 
     async def db_sync_state(self):
         try:
             payload = {
+                "id": 1,
                 "usdt_balance": round(self.usdt_balance, 2),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
@@ -174,10 +181,15 @@ class UltraQuantSpotBot:
                 "arb_realized_profit": round(self.arb_realized_profit, 2),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
-        except Exception:
-            pass
+            headers = dict(SUPABASE_HEADERS)
+            headers["Prefer"] = "resolution=merge-duplicates"
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(f"{SUPABASE_URL}/rest/v1/bot_state", json=payload) as resp:
+                    if resp.status not in [200, 201, 204]:
+                        err_text = await resp.text()
+                        print(f">>> [DB SYNC ERROR] Status: {resp.status}, Response: {err_text}")
+        except Exception as e:
+            print(f">>> [DB SYNC EXCEPTION] {e}")
 
     async def db_save_buy(self, pos, trade_data):
         try:
@@ -570,8 +582,19 @@ class UltraQuantSpotBot:
         self.usdt_balance += net_return
         self.realized_pnl += profit
 
+        sell_order_id = str(uuid.uuid4())[:8]
+        sell_trade_data = {
+            "order_id": sell_order_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(self.sol_balance, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": self.active_round,
+            "exec_type": "TRAILING_STOP_EXIT"
+        }
         self.trades_history.insert(0, {
-            "orderId": str(uuid.uuid4())[:8],
+            "orderId": sell_order_id,
             "side": "SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(self.sol_balance, 4),
@@ -580,6 +603,7 @@ class UltraQuantSpotBot:
             "realizedPnl": round(profit, 4),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
+        asyncio.create_task(self.db_save_sell(sell_trade_data))
 
         self.sol_balance = 0.0
         self.invested_amount = 0.0
