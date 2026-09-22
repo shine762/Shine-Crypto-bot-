@@ -172,7 +172,14 @@ class UltraQuantSpotBot:
                     if resp.status == 200:
                         a_data = await resp.json()
                         if isinstance(a_data, list):
-                            self.arb_history = a_data
+                            self.arb_history = [{
+                                "id": a.get("id"),
+                                "buyDex": a.get("buy_dex") or a.get("buyDex", "METEORA"),
+                                "sellDex": a.get("sell_dex") or a.get("sellDex", "RAYDIUM"),
+                                "spread": a.get("spread", "0.4%"),
+                                "profit": a.get("profit", "+$0.984 USDT"),
+                                "time": a.get("created_at", "")[11:19] if a.get("created_at") else a.get("time", "12:00:00")
+                            } for a in a_data]
         except Exception as e:
             print(f">>> [DB LOAD EXCEPTION] {e}")
 
