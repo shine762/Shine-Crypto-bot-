@@ -52,17 +52,7 @@ class UltraQuantSpotBot:
         self.active_positions = []
         self.trades_history = []
         self.manual_trades_history = []
-        self.wallet_usdt_balance = 500.0
-        self.wallet_sol_balance = 0.0
-        self.wallet_invested = 0.0
-        self.wallet_avg_entry = 0.0
-        self.wallet_active_positions = []
         self.price_history = []
-        self.btc_live_price = 0.0
-        self.btc_trend = "STABLE"
-        self.btc_price_history = []
-        self.prediction_forecast = "SCANNING"
-        self.prediction_timeframe = "3m"
         self.latest_signal = {"action": "HOLD", "price": 0.0, "text": "Scanning market for high-probability signals..."}
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
@@ -131,10 +121,6 @@ class UltraQuantSpotBot:
                             self.active_phase = int(row.get("active_phase", 1))
                             self.active_round = int(row.get("active_round", 1))
                             self.arb_realized_profit = float(row.get("arb_realized_profit", 0.0))
-                            print(f">>> [DB LOAD SUCCESS] PnL: ${self.realized_pnl} | Arb: ${self.arb_realized_profit} | SOL: {self.sol_balance}")
-                    else:
-                        print(f">>> [DB LOAD ERROR] Status: {resp.status}, Text: {await resp.text()}")
-
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
@@ -150,7 +136,6 @@ class UltraQuantSpotBot:
                                 "isMacro": p.get("is_macro", False),
                                 "targetPrice": float(p.get("target_price", 0))
                             } for p in pos_data]
-
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
@@ -167,26 +152,17 @@ class UltraQuantSpotBot:
                                 "execType": t.get("exec_type"),
                                 "timestamp": t.get("created_at")
                             } for t in t_data]
-
                 async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         a_data = await resp.json()
                         if isinstance(a_data, list):
-                            self.arb_history = [{
-                                "id": a.get("id"),
-                                "buyDex": a.get("buy_dex") or a.get("buyDex", "METEORA"),
-                                "sellDex": a.get("sell_dex") or a.get("sellDex", "RAYDIUM"),
-                                "spread": a.get("spread", "0.4%"),
-                                "profit": a.get("profit", "+$0.984 USDT"),
-                                "time": a.get("created_at", "")[11:19] if a.get("created_at") else a.get("time", "12:00:00")
-                            } for a in a_data]
-        except Exception as e:
-            print(f">>> [DB LOAD EXCEPTION] {e}")
+                            self.arb_history = a_data
+        except Exception:
+            pass
 
     async def db_sync_state(self):
         try:
             payload = {
-                "id": 1,
                 "usdt_balance": round(self.usdt_balance, 2),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
@@ -198,15 +174,10 @@ class UltraQuantSpotBot:
                 "arb_realized_profit": round(self.arb_realized_profit, 2),
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            headers = dict(SUPABASE_HEADERS)
-            headers["Prefer"] = "resolution=merge-duplicates"
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(f"{SUPABASE_URL}/rest/v1/bot_state", json=payload) as resp:
-                    if resp.status not in [200, 201, 204]:
-                        err_text = await resp.text()
-                        print(f">>> [DB SYNC ERROR] Status: {resp.status}, Response: {err_text}")
-        except Exception as e:
-            print(f">>> [DB SYNC EXCEPTION] {e}")
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
+        except Exception:
+            pass
 
     async def db_save_buy(self, pos, trade_data):
         try:
@@ -252,31 +223,34 @@ class UltraQuantSpotBot:
         except Exception:
             pass
 
-    def process_single_market_trade(self, price, qty, is_buyer_maker):
-        trade_val = price * qty
-        if trade_val >= 25000.0:
-            now_ts = datetime.now(timezone.utc).timestamp()
-            multiplier = 1.5 if trade_val >= 50000.0 else 1.0
-            weighted_val = trade_val * multiplier
-            side = "SELL" if is_buyer_maker else "BUY"
-            if not hasattr(self, 'whale_trade_window'):
-                self.whale_trade_window = []
-            self.whale_trade_window.append((now_ts, weighted_val, side))
-            cutoff = now_ts - 60.0
-            self.whale_trade_window = [w for w in self.whale_trade_window if w[0] >= cutoff]
-            buy_vol = sum(w[1] for w in self.whale_trade_window if w[2] == "BUY")
-            sell_vol = sum(w[1] for w in self.whale_trade_window if w[2] == "SELL")
-            tot = buy_vol + sell_vol
-            if tot > 0:
-                self.whale_buy_vol = buy_vol
-                self.whale_sell_vol = sell_vol
-                self.whale_orderflow_ratio = round((buy_vol / tot) * 100.0, 1)
-                if self.whale_orderflow_ratio >= 60.0:
-                    self.whale_sentiment = "BULLISH"
-                elif self.whale_orderflow_ratio <= 40.0:
-                    self.whale_sentiment = "BEARISH"
+    def process_market_trades(self, trades):
+        if not trades:
+            return
+        recent_buy_vol = 0.0
+        recent_sell_vol = 0.0
+        for t in trades:
+            price = float(t.get("p", 0.0))
+            qty = float(t.get("q", 0.0))
+            is_buyer_maker = t.get("m", False)
+            trade_val = price * qty
+            if trade_val >= 25000.0:
+                multiplier = 1.5 if trade_val >= 50000.0 else 1.0
+                weighted_val = trade_val * multiplier
+                if not is_buyer_maker:
+                    recent_buy_vol += weighted_val
                 else:
-                    self.whale_sentiment = "NEUTRAL"
+                    recent_sell_vol += weighted_val
+        total_whale_vol = recent_buy_vol + recent_sell_vol
+        if total_whale_vol > 0:
+            self.whale_buy_vol = recent_buy_vol
+            self.whale_sell_vol = recent_sell_vol
+            self.whale_orderflow_ratio = round((recent_buy_vol / total_whale_vol) * 100.0, 1)
+            if self.whale_orderflow_ratio >= 60.0:
+                self.whale_sentiment = "BULLISH"
+            elif self.whale_orderflow_ratio <= 40.0:
+                self.whale_sentiment = "BEARISH"
+            else:
+                self.whale_sentiment = "NEUTRAL"
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -356,28 +330,13 @@ class UltraQuantSpotBot:
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
             "canManualTrade": True,
-            "walletUsdt": round(self.wallet_usdt_balance, 2),
-            "walletSol": round(self.wallet_sol_balance, 4),
-            "walletInvested": round(self.wallet_invested, 2),
-            "walletAvgEntry": round(self.wallet_avg_entry, 2),
-            "walletActivePositions": self.wallet_active_positions,
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history,
             "manualTradesHistory": self.manual_trades_history,
-            "btcPrice": round(self.btc_live_price, 2),
-            "btcTrend": self.btc_trend,
-            "prediction": {
-                "forecast": self.prediction_forecast,
-                "timeframe": self.prediction_timeframe
-            },
-            "latestSignal": self.latest_signal if self.latest_signal.get("action") not in ["HOLD", "SCANNING"] else {
-                "action": self.prediction_forecast,
-                "price": round(self.live_price, 2),
-                "text": self.compute_short_term_forecast()
-            },
-            "botThought": f"{self.compute_short_term_forecast()} | {ai_thoughts}",
+            "latestSignal": self.latest_signal,
+            "botThought": ai_thoughts,
             "raydiumPrice": round(self.raydium_price, 2),
             "orcaPrice": round(self.orca_price, 2),
             "meteoraPrice": round(self.meteora_price, 2),
@@ -504,23 +463,26 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
 
     def execute_manual_buy(self, amount_usdt=50.0):
-        if self.wallet_usdt_balance < amount_usdt or self.live_price <= 0:
+        if self.usdt_balance < amount_usdt or self.live_price <= 0:
             return
         fee = amount_usdt * self.taker_fee_pct
         net_invest = amount_usdt - fee
         sol_bought = net_invest / self.live_price
-        self.wallet_usdt_balance -= amount_usdt
-        self.wallet_sol_balance += sol_bought
-        self.wallet_invested += amount_usdt
-        self.wallet_avg_entry = self.wallet_invested / self.wallet_sol_balance if self.wallet_sol_balance > 0 else 0.0
+        self.usdt_balance -= amount_usdt
+        self.sol_balance += sol_bought
+        self.invested_amount += amount_usdt
+        self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
         pos_id = str(uuid.uuid4())[:8]
-        self.wallet_active_positions.append({
+        self.active_positions.append({
             "id": pos_id,
-            "label": f"WALLET BUY #{len(self.wallet_active_positions) + 1}",
+            "round": self.active_round,
+            "subTrade": 99,
+            "label": f"MANUAL BUY (R{self.active_round})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
-            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+            "isMacro": False,
+            "targetPrice": round(self.live_price * 2.0, 2)
         })
         self.manual_trades_history.insert(0, {
             "orderId": pos_id,
@@ -533,28 +495,32 @@ class UltraQuantSpotBot:
         })
 
     def execute_manual_sell(self):
-        if self.wallet_sol_balance <= 0 or self.live_price <= 0:
+        if self.sol_balance <= 0 or self.live_price <= 0:
             return
-        sold_value = self.wallet_sol_balance * self.live_price
+        sold_value = self.sol_balance * self.live_price
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
-        profit = net_return - self.wallet_invested
-        self.wallet_usdt_balance += net_return
+        profit = net_return - self.invested_amount
+        owner_commission = (profit * 0.10) if profit > 0 else 0.0
+        user_profit = profit - owner_commission
+        self.usdt_balance += net_return
+        self.realized_pnl += user_profit
         self.manual_trades_history.insert(0, {
             "orderId": str(uuid.uuid4())[:8],
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
-            "solAmount": round(self.wallet_sol_balance, 4),
+            "solAmount": round(self.sol_balance, 4),
             "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "realizedPnl": round(profit, 4),
+            "profit": round(user_profit, 4),
+            "ownerCut": round(owner_commission, 4),
+            "realizedPnl": round(user_profit, 4),
             "execType": "WALLET_MANUAL",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        self.wallet_sol_balance = 0.0
-        self.wallet_invested = 0.0
-        self.wallet_avg_entry = 0.0
-        self.wallet_active_positions = []
+        self.sol_balance = 0.0
+        self.invested_amount = 0.0
+        self.avg_entry_price = 0.0
+        self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
 
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
@@ -604,19 +570,8 @@ class UltraQuantSpotBot:
         self.usdt_balance += net_return
         self.realized_pnl += profit
 
-        sell_order_id = str(uuid.uuid4())[:8]
-        sell_trade_data = {
-            "order_id": sell_order_id,
-            "side": "SELL",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(self.sol_balance, 4),
-            "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "round": self.active_round,
-            "exec_type": "TRAILING_STOP_EXIT"
-        }
         self.trades_history.insert(0, {
-            "orderId": sell_order_id,
+            "orderId": str(uuid.uuid4())[:8],
             "side": "SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(self.sol_balance, 4),
@@ -625,7 +580,6 @@ class UltraQuantSpotBot:
             "realizedPnl": round(profit, 4),
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        asyncio.create_task(self.db_save_sell(sell_trade_data))
 
         self.sol_balance = 0.0
         self.invested_amount = 0.0
@@ -643,40 +597,6 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
-
-    def update_btc_tick(self, btc_price):
-        if btc_price <= 0:
-            return
-        self.btc_live_price = btc_price
-        self.btc_price_history.append(btc_price)
-        if len(self.btc_price_history) > 20:
-            self.btc_price_history.pop(0)
-        if len(self.btc_price_history) >= 6:
-            start_p = self.btc_price_history[0]
-            cur_p = self.btc_price_history[-1]
-            diff_pct = ((cur_p - start_p) / start_p) * 100.0
-            if diff_pct <= -0.12:
-                self.btc_trend = "DUMPING"
-            elif diff_pct >= 0.12:
-                self.btc_trend = "PUMPING"
-            else:
-                self.btc_trend = "STABLE"
-
-    def compute_short_term_forecast(self):
-        flow = self.whale_orderflow_ratio
-        btc = self.btc_trend
-        if flow >= 62.0 and btc != "DUMPING":
-            self.prediction_forecast = "PUMP IMMINENT"
-            self.prediction_timeframe = "3m"
-            return f"PREDICTION (Next 3m): PUMP IMMINENT | Whales Inflow {flow}% | BTC {btc} | Decision: Preparing Profit Ride"
-        elif flow <= 38.0 or btc == "DUMPING":
-            self.prediction_forecast = "DOWNWARD PRESSURE"
-            self.prediction_timeframe = "5m"
-            return f"PREDICTION (Next 5m): DOWNWARD PRESSURE | Sell Vol {round(100.0 - flow, 1)}% | BTC {btc} | Decision: Delaying Entry to Catch Bottom"
-        else:
-            self.prediction_forecast = "RANGE STUCK"
-            self.prediction_timeframe = "5m"
-            return f"PREDICTION (Next 5m): RANGE STUCK ($0.30 Band) | Orderflow Neutral ({flow}%) | Decision: Capital Protected"
 
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
@@ -809,19 +729,10 @@ class UltraQuantSpotBot:
         if self.is_paused:
             return
 
-        forecast_msg = self.compute_short_term_forecast()
-
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
             if self.whale_sentiment != "BEARISH" and self.round_trades_done.get(self.active_round, 0) < 10:
-                if self.btc_trend == "DUMPING":
-                    self.latest_signal = {
-                        "action": "WAIT",
-                        "price": round(self.live_price, 2),
-                        "text": f"PREDICTION: BTC Dumping! Holding SOL Entry for 2 mins to catch cheaper bottom."
-                    }
-                    return
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
@@ -912,49 +823,50 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_ws_worker():
-    stream_url = "wss://stream.binance.com:9443/stream?streams=solusdt@ticker/btcusdt@ticker/solusdt@aggTrade"
-    print(">>> [BOT ENGINE STARTED] Connecting to Binance High-Frequency WebSocket...")
+    price_urls = [
+        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
+        "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
+        "https://api.coinbase.com/v2/prices/SOL-USD/spot"
+    ]
+    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=1000"
     
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(stream_url, heartbeat=20) as ws:
-                    print(">>> [BINANCE WS CONNECTED] Ultra-low latency stream active.")
-                    last_broadcast = 0.0
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            raw = json.loads(msg.data)
-                            stream = raw.get("stream", "")
-                            payload = raw.get("data", {})
-                            
-                            if stream == "solusdt@ticker":
-                                cur_p = float(payload.get("c", 0.0))
-                                if cur_p > 0:
-                                    bot.update_price_tick(cur_p)
-                                    if bot.arb_cooldown == 0:
-                                        asyncio.create_task(bot.query_jupiter_real_spread())
-                                    
-                                    now_loop = asyncio.get_event_loop().time()
-                                    if now_loop - last_broadcast >= 0.25:
-                                        await manager.broadcast(json.dumps(bot.get_state()))
-                                        last_broadcast = now_loop
-                                        
-                            elif stream == "btcusdt@ticker":
-                                btc_p = float(payload.get("c", 0.0))
-                                if btc_p > 0:
-                                    bot.update_btc_tick(btc_p)
-                                    
-                            elif stream == "solusdt@aggTrade":
-                                t_price = float(payload.get("p", 0.0))
-                                t_qty = float(payload.get("q", 0.0))
-                                is_maker = payload.get("m", False)
-                                bot.process_single_market_trade(t_price, t_qty, is_maker)
-                                
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
-        except Exception as e:
-            print(f">>> [BINANCE WS RECONNECTING] {e}")
-        await asyncio.sleep(2)
+    print(">>> [BOT ENGINE STARTED] Connecting to live market feeds...")
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            price = 0.0
+            for url in price_urls:
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if "price" in data:
+                                price = float(data["price"])
+                            elif "data" in data and "amount" in data["data"]:
+                                price = float(data["data"]["amount"])
+                            if price > 0:
+                                break
+                except Exception:
+                    continue
+
+            try:
+                async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=2)) as w_resp:
+                    if w_resp.status == 200:
+                        trades_data = await w_resp.json()
+                        if isinstance(trades_data, list):
+                            bot.process_market_trades(trades_data)
+            except Exception:
+                pass
+
+            if price > 0:
+                bot.update_price_tick(price)
+                if bot.arb_cooldown == 0:
+                    asyncio.create_task(bot.query_jupiter_real_spread())
+                await manager.broadcast(json.dumps(bot.get_state()))
+            else:
+                print(">>> [WARNING] Price feed returning 0. Checking network...")
+
+            await asyncio.sleep(0.3)
 
 @app.on_event("startup")
 async def startup_event():
