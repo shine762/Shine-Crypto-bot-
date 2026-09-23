@@ -42,6 +42,7 @@ class UltraQuantSpotBot:
         self.ts_stage = "1.0%"
         self.tb_active = False
         self.tb_lowest_price = 0.0
+        self.tb_stage = "IDLE"
         self.active_phase = 1
         self.active_round = 1
         self.sub_trade_count = 0
@@ -600,14 +601,25 @@ class UltraQuantSpotBot:
         self.ts_stage = "IDLE"
         self.sub_trade_count = 0
         self.round_trades_done = {r: 0 for r in range(1, 11)}
-        self.sync_phase_and_round()
         self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
-        self.cooldown_remaining = 40
+        self.cooldown_remaining = 25
         self.tb_active = False
         self.tb_lowest_price = 0.0
+        self.tb_stage = "IDLE"
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
+        self.sync_phase_and_round()
+        asyncio.create_task(self.db_save_sell({
+            "order_id": str(uuid.uuid4())[:8],
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(self.sol_balance, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": self.active_round,
+            "exec_type": "PROFIT_TAKE_ALL"
+        }))
 
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
@@ -748,27 +760,40 @@ class UltraQuantSpotBot:
             return
 
         last_entry = regular_positions[-1]["entryPrice"]
+        current_dip = last_entry - self.live_price
 
-        if self.live_price >= (last_entry - 0.50):
+        if current_dip < 0.45:
             self.tb_active = False
+            self.tb_stage = "IDLE"
         else:
-            if not self.tb_active:
-                if (last_entry - self.live_price) >= 0.90:
-                    self.tb_active = True
-                    self.tb_lowest_price = self.live_price
-            else:
+            if not self.tb_active and current_dip >= 0.60:
+                self.tb_active = True
+                self.tb_lowest_price = self.live_price
+
+            if self.tb_active:
                 if self.live_price < self.tb_lowest_price:
                     self.tb_lowest_price = self.live_price
-                else:
-                    if self.whale_orderflow_ratio >= 70.0:
-                        required_bounce = 0.30
-                    elif self.whale_orderflow_ratio >= 55.0:
-                        required_bounce = 0.40
-                    else:
-                        required_bounce = 0.50
 
-                    if self.live_price >= (self.tb_lowest_price + required_bounce):
-                        self.tb_active = False
+                total_drop = last_entry - self.tb_lowest_price
+
+                if total_drop >= 1.20:
+                    self.tb_stage = "1.20$"
+                    required_bounce = 0.35
+                elif total_drop >= 0.90:
+                    self.tb_stage = "0.90$"
+                    required_bounce = 0.25
+                else:
+                    self.tb_stage = "0.60$"
+                    required_bounce = 0.15
+
+                if self.whale_orderflow_ratio >= 65.0:
+                    required_bounce = max(0.10, round(required_bounce - 0.05, 2))
+
+                if self.live_price >= (self.tb_lowest_price + required_bounce):
+                    self.tb_active = False
+                    self.tb_stage = "IDLE"
+                    active_count = len([p for p in regular_positions if p.get("round") == self.active_round])
+                    if active_count < 10:
                         self.execute_buy(is_sub_trade=True)
                         return
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
