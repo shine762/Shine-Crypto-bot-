@@ -138,11 +138,15 @@ class UltraQuantSpotBot:
                             } for p in pos_data]
                             regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
                             if regular_pos:
+                                user_total_funds = self.usdt_balance + self.invested_amount
                                 self.sol_balance = sum(p["solAmount"] for p in regular_pos)
                                 self.invested_amount = sum(p["invested"] for p in regular_pos)
                                 self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
                                 self.sub_trade_count = len(regular_pos)
                                 self.round_trades_done[self.active_round] = len(regular_pos)
+                                if user_total_funds > 0:
+                                    self.usdt_balance = max(0.0, round(user_total_funds - self.invested_amount, 2))
+                                asyncio.create_task(self.db_sync_state())
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
