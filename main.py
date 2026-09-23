@@ -753,7 +753,7 @@ class UltraQuantSpotBot:
             self.tb_active = False
         else:
             if not self.tb_active:
-                if (last_entry - self.live_price) >= 1.20:
+                if (last_entry - self.live_price) >= 0.90:
                     self.tb_active = True
                     self.tb_lowest_price = self.live_price
             else:
