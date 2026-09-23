@@ -738,11 +738,11 @@ class UltraQuantSpotBot:
 
         last_entry = regular_positions[-1]["entryPrice"]
 
-        if self.live_price >= (last_entry - 0.50):
+        if self.live_price >= (last_entry - 0.25):
             self.tb_active = False
         else:
             if not self.tb_active:
-                if (last_entry - self.live_price) >= 1.20:
+                if (last_entry - self.live_price) >= 0.60:
                     self.tb_active = True
                     self.tb_lowest_price = self.live_price
             else:
@@ -752,9 +752,9 @@ class UltraQuantSpotBot:
                     if self.whale_orderflow_ratio >= 70.0:
                         required_bounce = 0.30
                     elif self.whale_orderflow_ratio >= 55.0:
-                        required_bounce = 0.50
+                        required_bounce = 0.40
                     else:
-                        required_bounce = 0.80
+                        required_bounce = 0.50
 
                     if self.live_price >= (self.tb_lowest_price + required_bounce):
                         self.tb_active = False
