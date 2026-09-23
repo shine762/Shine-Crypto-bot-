@@ -136,6 +136,13 @@ class UltraQuantSpotBot:
                                 "isMacro": p.get("is_macro", False),
                                 "targetPrice": float(p.get("target_price", 0))
                             } for p in pos_data]
+                            regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
+                            if regular_pos:
+                                self.sol_balance = sum(p["solAmount"] for p in regular_pos)
+                                self.invested_amount = sum(p["invested"] for p in regular_pos)
+                                self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
+                                self.sub_trade_count = len(regular_pos)
+                                self.round_trades_done[self.active_round] = len(regular_pos)
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
