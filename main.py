@@ -114,14 +114,9 @@ class UltraQuantSpotBot:
                         data = await resp.json()
                         if data and len(data) > 0:
                             row = data[0]
-                            self.usdt_balance = float(row.get("usdt_balance", 10000.0))
-                            self.sol_balance = float(row.get("sol_balance", 0.0))
-                            self.invested_amount = float(row.get("invested_amount", 0.0))
-                            self.avg_entry_price = float(row.get("avg_entry_price", 0.0))
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
-                            self.active_phase = int(row.get("active_phase", 1))
-                            self.active_round = int(row.get("active_round", 1))
                             self.arb_realized_profit = float(row.get("arb_realized_profit", 0.0))
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
@@ -137,19 +132,35 @@ class UltraQuantSpotBot:
                                 "isMacro": p.get("is_macro", False),
                                 "targetPrice": float(p.get("target_price", 0))
                             } for p in pos_data]
+
                             regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
                             macro_pos = [p for p in self.active_positions if p.get("isMacro", False)]
-                            if regular_pos or macro_pos:
+
+                            if len(regular_pos) > 0 or len(macro_pos) > 0:
                                 self.sol_balance = sum(p["solAmount"] for p in regular_pos)
                                 self.invested_amount = sum(p["invested"] for p in regular_pos)
                                 self.macro_vault_sol = sum(p["solAmount"] for p in macro_pos)
                                 self.macro_vault_invested = sum(p["invested"] for p in macro_pos)
                                 total_spent = self.invested_amount + self.macro_vault_invested
                                 self.usdt_balance = max(0.0, round(self.initial_capital + self.realized_pnl - total_spent, 2))
-                                self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
+                                self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
                                 self.sub_trade_count = len(regular_pos)
-                                self.round_trades_done[self.active_round] = len(regular_pos)
-                                asyncio.create_task(self.db_sync_state())
+                                self.round_trades_done = {r: 0 for r in range(1, 11)}
+                                for p in regular_pos:
+                                    r_idx = p.get("round", 1)
+                                    self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
+                            else:
+                                self.sol_balance = 0.0
+                                self.invested_amount = 0.0
+                                self.avg_entry_price = 0.0
+                                self.macro_vault_sol = 0.0
+                                self.macro_vault_invested = 0.0
+                                self.sub_trade_count = 0
+                                self.round_trades_done = {r: 0 for r in range(1, 11)}
+                                self.usdt_balance = round(self.initial_capital + self.realized_pnl, 2)
+
+                            asyncio.create_task(self.db_sync_state())
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
@@ -166,6 +177,7 @@ class UltraQuantSpotBot:
                                 "execType": t.get("exec_type"),
                                 "timestamp": t.get("created_at")
                             } for t in t_data]
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
                         a_data = await resp.json()
