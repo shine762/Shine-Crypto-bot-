@@ -779,14 +779,16 @@ class UltraQuantSpotBot:
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
+
+        if len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 5.0:
+            self.execute_micro_buy()
+            return
+
         if self.micro_last_ref_price <= 0:
             self.micro_last_ref_price = self.live_price
-            return
-        if not self.micro_tb_active and len(self.micro_positions) == 0:
-            if self.live_price > self.micro_last_ref_price:
-                self.micro_last_ref_price = self.live_price
+
         current_dip = self.micro_last_ref_price - self.live_price
-        if current_dip >= 0.50:
+        if current_dip >= 0.50 and len(self.micro_positions) < 10:
             if not self.micro_tb_active:
                 self.micro_tb_active = True
                 self.micro_tb_lowest = self.live_price
@@ -802,6 +804,7 @@ class UltraQuantSpotBot:
                     callback = 0.01
                 if self.live_price >= (self.micro_tb_lowest + callback):
                     self.execute_micro_buy()
+
         for pos in list(self.micro_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
@@ -866,14 +869,17 @@ class UltraQuantSpotBot:
         if self.arb_cooldown > 0:
             self.arb_cooldown -= 1
 
-        if self.arb_spread_pct >= 0.22 and not self.is_paused and self.arb_cooldown <= 0:
-            arb_trade_val = min(500.0, max(150.0, self.dex_pool_usdt * 0.15))
-            net_spread = max(0.0025, (self.arb_spread_pct / 100.0) - 0.001)
+        if self.arb_spread_pct >= 0.20 and not self.is_paused and self.arb_cooldown <= 0:
+            spot_idle_loan = self.get_scavenged_idle_fund() * 0.40
+            total_sweep_capacity = self.dex_pool_usdt + spot_idle_loan
+            arb_trade_val = min(2000.0, max(500.0, total_sweep_capacity * 0.35))
+            net_spread = max(0.0022, (self.arb_spread_pct / 100.0) - 0.0008)
             trade_profit = round(arb_trade_val * net_spread, 4)
-            if trade_profit > 0.05:
+            if trade_profit > 0.08:
                 self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
                 self.realized_pnl = round(self.realized_pnl + trade_profit, 4)
-                self.arb_cooldown = 40
+                self.usdt_balance = round(self.usdt_balance + trade_profit, 4)
+                self.arb_cooldown = 2 if self.arb_spread_pct >= 0.35 else 6
                 arb_record = {
                     "buyDex": cheapest_dex[0],
                     "sellDex": costliest_dex[0],
@@ -884,7 +890,7 @@ class UltraQuantSpotBot:
                 self.arb_history.insert(0, arb_record)
                 if len(self.arb_history) > 25:
                     self.arb_history.pop()
-                print(f">>> [DEX ARBITRAGE FLASH SWAP] {cheapest_dex[0]} -> {costliest_dex[0]} | Spread: {self.arb_spread_pct}% | Realized: +${trade_profit} USDT")
+                print(f">>> [RAPID FLASH ARBITRAGE] {cheapest_dex[0]} -> {costliest_dex[0]} | Size: ${round(arb_trade_val, 2)} | Spread: {self.arb_spread_pct}% | Net Profit: +${trade_profit} USDT")
                 asyncio.create_task(self.db_save_arb(arb_record))
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
