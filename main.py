@@ -252,7 +252,6 @@ class UltraQuantSpotBot:
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 arb_row = {
-                    "id": arb_item["id"],
                     "buy_dex": arb_item["buyDex"],
                     "sell_dex": arb_item["sellDex"],
                     "spread": arb_item["spread"],
@@ -773,6 +772,10 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_save_micro_trade(db_payload))
         print(f">>> [MICRO SCALP PROFIT] Pos: {pos_id} Sold @ ${round(self.live_price, 2)} | Profit: +${round(profit, 4)} USDT")
 
+        if not self.is_paused and len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 5.0:
+            print(f">>> [PERPETUAL LOOP] Profit booked! Instantly re-entering runner trade @ ${round(self.live_price, 2)}")
+            self.execute_micro_buy()
+
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
@@ -838,10 +841,15 @@ class UltraQuantSpotBot:
 
         self.sync_phase_and_round()
 
-        vol_skew = (self.whale_orderflow_ratio - 50.0) * 0.002
-        self.raydium_price = round(self.live_price * (1.0 + vol_skew + 0.0018), 2)
-        self.orca_price = round(self.live_price * (1.0 - (vol_skew * 0.5) - 0.0014), 2)
-        self.meteora_price = round(self.live_price * (1.0 + (vol_skew * 0.4) - 0.0022), 2)
+        now_ts = datetime.now(timezone.utc).timestamp()
+        r_wave = ((int(now_ts) % 43) / 43.0) * 0.0035 - 0.0015
+        o_wave = ((int(now_ts + 17) % 59) / 59.0) * 0.0040 - 0.0020
+        m_wave = ((int(now_ts + 31) % 67) / 67.0) * 0.0045 - 0.0022
+        flow_bias = (self.whale_orderflow_ratio - 50.0) * 0.00015
+
+        self.raydium_price = round(self.live_price * (1.0 + r_wave + flow_bias), 2)
+        self.orca_price = round(self.live_price * (1.0 + o_wave - (flow_bias * 0.5)), 2)
+        self.meteora_price = round(self.live_price * (1.0 + m_wave + (flow_bias * 0.8)), 2)
 
         dex_pool = [
             ("RAYDIUM", self.raydium_price),
@@ -858,15 +866,15 @@ class UltraQuantSpotBot:
         if self.arb_cooldown > 0:
             self.arb_cooldown -= 1
 
-        if self.arb_spread_pct >= 0.20 and not self.is_paused and self.arb_cooldown <= 0:
-            arb_trade_val = min(300.0, self.dex_pool_usdt * 0.10)
-            net_spread = max(0.002, (self.arb_spread_pct / 100.0) - 0.001)
+        if self.arb_spread_pct >= 0.22 and not self.is_paused and self.arb_cooldown <= 0:
+            arb_trade_val = min(500.0, max(150.0, self.dex_pool_usdt * 0.15))
+            net_spread = max(0.0025, (self.arb_spread_pct / 100.0) - 0.001)
             trade_profit = round(arb_trade_val * net_spread, 4)
-            if trade_profit > 0.01:
+            if trade_profit > 0.05:
                 self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
-                self.arb_cooldown = 20
+                self.realized_pnl = round(self.realized_pnl + trade_profit, 4)
+                self.arb_cooldown = 40
                 arb_record = {
-                    "id": str(uuid.uuid4())[:8],
                     "buyDex": cheapest_dex[0],
                     "sellDex": costliest_dex[0],
                     "spread": f"{self.arb_spread_pct}%",
@@ -874,9 +882,9 @@ class UltraQuantSpotBot:
                     "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
                 }
                 self.arb_history.insert(0, arb_record)
-                if len(self.arb_history) > 15:
+                if len(self.arb_history) > 25:
                     self.arb_history.pop()
-                print(f">>> [ARBITRAGE EXECUTION] {cheapest_dex[0]} -> {costliest_dex[0]} | Spread: {self.arb_spread_pct}% | Profit: +${trade_profit} USDT")
+                print(f">>> [DEX ARBITRAGE FLASH SWAP] {cheapest_dex[0]} -> {costliest_dex[0]} | Spread: {self.arb_spread_pct}% | Realized: +${trade_profit} USDT")
                 asyncio.create_task(self.db_save_arb(arb_record))
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
