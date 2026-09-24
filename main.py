@@ -168,7 +168,7 @@ class UltraQuantSpotBot:
 
                             asyncio.create_task(self.db_sync_state())
 
-                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=15") as resp:
+                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=30") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
                         if isinstance(t_data, list):
@@ -184,6 +184,13 @@ class UltraQuantSpotBot:
                                 "execType": t.get("exec_type"),
                                 "timestamp": t.get("created_at")
                             } for t in t_data]
+
+                            self.micro_realized_pnl = 0.0
+                            self.micro_total_trades = 0
+                            for t in t_data:
+                                if t.get("exec_type") == "MICRO_SCALP_EXIT":
+                                    self.micro_total_trades += 1
+                                    self.micro_realized_pnl += float(t.get("profit", 0.0))
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
                     if resp.status == 200:
@@ -252,6 +259,14 @@ class UltraQuantSpotBot:
                     "profit": arb_item["profit"]
                 }
                 await session.post(f"{SUPABASE_URL}/rest/v1/arbitrage_history", json=arb_row)
+            await self.db_sync_state()
+        except Exception:
+            pass
+
+    async def db_save_micro_trade(self, trade_data):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
             await self.db_sync_state()
         except Exception:
             pass
@@ -745,7 +760,17 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
-        asyncio.create_task(self.db_sync_state())
+        db_payload = {
+            "order_id": pos_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": m_round,
+            "exec_type": "MICRO_SCALP_EXIT"
+        }
+        asyncio.create_task(self.db_save_micro_trade(db_payload))
         print(f">>> [MICRO SCALP PROFIT] Pos: {pos_id} Sold @ ${round(self.live_price, 2)} | Profit: +${round(profit, 4)} USDT")
 
     def run_micro_scalper_tick(self):
