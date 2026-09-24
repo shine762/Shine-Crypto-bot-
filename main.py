@@ -213,10 +213,10 @@ class UltraQuantSpotBot:
         except Exception:
             pass
 
-    async def db_save_sell(self, trade_data):
+    async def db_save_sell_individual(self, pos_id, trade_data):
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?is_macro=eq.false")
+                await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.{pos_id}")
                 await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
             await self.db_sync_state()
         except Exception:
@@ -334,6 +334,9 @@ class UltraQuantSpotBot:
             "tsHigh": round(self.ts_high, 2),
             "tsLow": round(self.ts_low, 2),
             "trailingStage": self.ts_stage,
+            "tbActive": self.tb_active,
+            "tbStage": self.tb_stage,
+            "tbLowest": round(self.tb_lowest_price, 2),
             "activePhase": self.active_phase,
             "activeRound": self.active_round,
             "allocationPct": str(alloc_pct),
@@ -425,7 +428,7 @@ class UltraQuantSpotBot:
             self.sol_balance += sol_bought
             self.invested_amount += invest_target
             self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-            target_exit = round(self.live_price + 0.80, 2)
+            target_exit = round(self.live_price + 0.40, 2)
             pos_label = f"R{self.active_round} (Trade {self.sub_trade_count}/10)"
             pos = {
                 "id": pos_id,
@@ -436,7 +439,9 @@ class UltraQuantSpotBot:
                 "solAmount": round(sol_bought, 4),
                 "invested": round(invest_target, 2),
                 "isMacro": False,
-                "targetPrice": target_exit
+                "targetPrice": target_exit,
+                "ts_high": round(self.live_price, 2),
+                "ts_low": 0.0
             }
 
         self.active_positions.append(pos)
@@ -569,59 +574,47 @@ class UltraQuantSpotBot:
         self.macro_ts_high = 0.0
         self.macro_ts_low = 0.0
 
-    def execute_sell_all_in_profit(self):
-        if self.sol_balance <= 0 or self.live_price <= 0:
-            return
-
-        sold_value = self.sol_balance * self.live_price
+    def execute_sell_individual(self, pos):
+        pos_id = pos["id"]
+        sol_amt = pos["solAmount"]
+        invested = pos["invested"]
+        sold_value = sol_amt * self.live_price
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
-        profit = net_return - self.invested_amount
+        profit = net_return - invested
 
         if profit < self.min_net_profit_usdt:
             return
 
         self.usdt_balance += net_return
         self.realized_pnl += profit
+        self.sol_balance = max(0.0, self.sol_balance - sol_amt)
+        self.invested_amount = max(0.0, self.invested_amount - invested)
+        self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
 
-        self.trades_history.insert(0, {
-            "orderId": str(uuid.uuid4())[:8],
+        r_num = pos.get("round", self.active_round)
+        if self.round_trades_done.get(r_num, 0) > 0:
+            self.round_trades_done[r_num] -= 1
+        self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False) and p["id"] != pos_id])
+
+        self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
+
+        trade_record = {
+            "orderId": pos_id,
             "side": "SELL",
             "price": round(self.live_price, 2),
-            "solAmount": round(self.sol_balance, 4),
+            "solAmount": round(sol_amt, 4),
             "fee": round(fee, 4),
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
+            "round": r_num,
+            "execType": "INDIVIDUAL_PROFIT_EXIT",
             "timestamp": datetime.now(timezone.utc).isoformat()
-        })
+        }
+        self.trades_history.insert(0, trade_record)
+        print(f">>> [INDIVIDUAL SELL SUCCESS] Order {pos_id} exited! Profit: +${round(profit, 4)} USDT | Entry: ${pos['entryPrice']} | Exit: ${round(self.live_price, 2)}")
 
-        self.sol_balance = 0.0
-        self.invested_amount = 0.0
-        self.avg_entry_price = 0.0
-        self.ts_high = 0.0
-        self.ts_low = 0.0
-        self.ts_stage = "IDLE"
-        self.sub_trade_count = 0
-        self.round_trades_done = {r: 0 for r in range(1, 11)}
-        self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
-        self.cooldown_remaining = 25
-        self.tb_active = False
-        self.tb_lowest_price = 0.0
-        self.tb_stage = "IDLE"
-        self.initial_tb_active = False
-        self.initial_tb_peak = 0.0
-        self.initial_tb_lowest = 0.0
-        self.sync_phase_and_round()
-        asyncio.create_task(self.db_save_sell({
-            "order_id": str(uuid.uuid4())[:8],
-            "side": "SELL",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(self.sol_balance, 4),
-            "fee": round(fee, 4),
-            "profit": round(profit, 4),
-            "round": self.active_round,
-            "exec_type": "PROFIT_TAKE_ALL"
-        }))
+        asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
 
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
@@ -809,34 +802,25 @@ class UltraQuantSpotBot:
             if self.live_price <= self.macro_ts_low:
                 self.execute_macro_sell()
 
-        if self.avg_entry_price > 0 and self.sol_balance > 0:
-            projected_profit = (self.sol_balance * self.live_price * (1 - self.taker_fee_pct)) - self.invested_amount
+        regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
+        for pos in list(regular_positions):
+            entry_p = pos["entryPrice"]
+            if self.live_price > entry_p:
+                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
+                    pos["ts_high"] = round(self.live_price, 2)
 
-            if self.live_price > self.ts_high:
-                self.ts_high = round(self.live_price, 2)
+                peak_gain = pos["ts_high"] - entry_p
+                projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
 
-            peak_gain = self.ts_high - self.avg_entry_price
+                if projected_p >= self.min_net_profit_usdt:
+                    trail_gap = 0.15 if peak_gain >= 0.60 else 0.10
+                    calc_stop = round(pos["ts_high"] - trail_gap, 2)
+                    if "ts_low" not in pos or calc_stop > pos["ts_low"]:
+                        pos["ts_low"] = calc_stop
 
-            if projected_profit >= self.min_net_profit_usdt:
-                if peak_gain >= 2.0:
-                    trail_gap = 0.35
-                    self.ts_stage = "0.35$"
-                elif peak_gain >= 1.0:
-                    trail_gap = 0.25
-                    self.ts_stage = "0.25$"
-                elif peak_gain >= 0.40:
-                    trail_gap = 0.15
-                    self.ts_stage = "0.15$"
-                else:
-                    trail_gap = 0.10
-                    self.ts_stage = "0.10$"
-
-                calculated_stop = round(self.ts_high - trail_gap, 2)
-                if calculated_stop > self.ts_low:
-                    self.ts_low = calculated_stop
-
-                if self.ts_low > 0 and self.live_price <= self.ts_low:
-                    self.execute_sell_all_in_profit()
+                    if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"]:
+                        self.execute_sell_individual(pos)
+                        break
 bot = UltraQuantSpotBot()
 
 class ConnectionManager:
