@@ -320,10 +320,19 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
+        wallet_positions = getattr(self, 'wallet_active_positions', [])
+        w_sol_total = sum(p["solAmount"] for p in wallet_positions)
+        w_invested_total = sum(p["invested"] for p in wallet_positions)
+        w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
+
         return {
             "isPaused": self.is_paused,
             "price": self.live_price,
             "livePrice": self.live_price,
+            "walletSol": round(w_sol_total, 4),
+            "walletInvested": round(w_invested_total, 2),
+            "walletAvgEntry": round(w_avg_entry, 2),
+            "walletActivePositions": wallet_positions,
             "pnl": round(unrealized_pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "usdtBalance": round(self.usdt_balance, 2),
@@ -482,64 +491,79 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
 
     def execute_manual_buy(self, amount_usdt=50.0):
-        if self.usdt_balance < amount_usdt or self.live_price <= 0:
+        if amount_usdt <= 0 or self.live_price <= 0:
             return
         fee = amount_usdt * self.taker_fee_pct
         net_invest = amount_usdt - fee
         sol_bought = net_invest / self.live_price
-        self.usdt_balance -= amount_usdt
-        self.sol_balance += sol_bought
-        self.invested_amount += amount_usdt
-        self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
         pos_id = str(uuid.uuid4())[:8]
-        self.active_positions.append({
+        
+        manual_pos = {
             "id": pos_id,
-            "round": self.active_round,
-            "subTrade": 99,
-            "label": f"MANUAL BUY (R{self.active_round})",
+            "round": 0,
+            "subTrade": 0,
+            "label": "WALLET SPOT BUY",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
-            "isMacro": False,
-            "targetPrice": round(self.live_price * 2.0, 2)
-        })
+            "isManualWallet": True,
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+        }
+        
+        if not hasattr(self, 'wallet_active_positions'):
+            self.wallet_active_positions = []
+        self.wallet_active_positions.append(manual_pos)
+        
         self.manual_trades_history.insert(0, {
             "orderId": pos_id,
             "side": "MANUAL_BUY",
             "price": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
+            "invested": round(amount_usdt, 2),
             "fee": round(fee, 4),
-            "execType": "WALLET_MANUAL",
+            "execType": "NON_CUSTODIAL_DEX",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
+        print(f">>> [WALLET MANUAL BUY] Bought {round(sol_bought, 4)} SOL @ ${round(self.live_price, 2)} directly into User Self-Custody Wallet.")
 
     def execute_manual_sell(self):
-        if self.sol_balance <= 0 or self.live_price <= 0:
+        if not hasattr(self, 'wallet_active_positions') or len(self.wallet_active_positions) == 0:
             return
-        sold_value = self.sol_balance * self.live_price
-        fee = sold_value * self.taker_fee_pct
-        net_return = sold_value - fee
-        profit = net_return - self.invested_amount
-        owner_commission = (profit * 0.10) if profit > 0 else 0.0
-        user_profit = profit - owner_commission
-        self.usdt_balance += net_return
-        self.realized_pnl += user_profit
+        if self.live_price <= 0:
+            return
+            
+        total_sol = sum(p["solAmount"] for p in self.wallet_active_positions)
+        total_invested = sum(p["invested"] for p in self.wallet_active_positions)
+        
+        if total_sol <= 0:
+            return
+            
+        gross_value = total_sol * self.live_price
+        fee = gross_value * self.taker_fee_pct
+        net_value = gross_value - fee
+        gross_profit = net_value - total_invested
+        
+        owner_cut = 0.0
+        user_net_profit = gross_profit
+        if gross_profit > 0:
+            owner_cut = round(gross_profit * 0.10, 4)
+            user_net_profit = round(gross_profit - owner_cut, 4)
+            
         self.manual_trades_history.insert(0, {
             "orderId": str(uuid.uuid4())[:8],
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
-            "solAmount": round(self.sol_balance, 4),
+            "solAmount": round(total_sol, 4),
             "fee": round(fee, 4),
-            "profit": round(user_profit, 4),
-            "ownerCut": round(owner_commission, 4),
-            "realizedPnl": round(user_profit, 4),
-            "execType": "WALLET_MANUAL",
+            "profit": round(user_net_profit, 4),
+            "ownerCut": owner_cut,
+            "realizedPnl": round(user_net_profit, 4),
+            "execType": "NON_CUSTODIAL_DEX",
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
-        self.sol_balance = 0.0
-        self.invested_amount = 0.0
-        self.avg_entry_price = 0.0
-        self.active_positions = [p for p in self.active_positions if p.get("isMacro", False)]
+        
+        self.wallet_active_positions = []
+        print(f">>> [WALLET MANUAL SELL] Sold {round(total_sol, 4)} SOL @ ${round(self.live_price, 2)}. User Net Profit: +${user_net_profit} | Owner 10% Fee: +${owner_cut}")
 
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
@@ -657,27 +681,15 @@ class UltraQuantSpotBot:
         self.arb_spread_usd = round(costliest_dex[1] - cheapest_dex[1], 2)
         self.arb_spread_pct = round((self.arb_spread_usd / cheapest_dex[1]) * 100.0, 2)
 
-        if self.arb_cooldown > 0:
-            self.arb_cooldown -= 1
+        if price > 0:
+                bot.update_price_tick(price)
+                if bot.arb_cooldown == 10:
+                    asyncio.create_task(bot.query_jupiter_real_spread())
+                await manager.broadcast(json.dumps(bot.get_state()))
+            else:
+                print(">>> [WARNING] Price feed returning 0. Checking network...")
 
-        if self.arb_spread_pct >= 0.25 and not self.is_paused and self.arb_cooldown == 0:
-            arb_trade_val = min(300.0, self.dex_pool_usdt * 0.10)
-            trade_profit = round(arb_trade_val * (self.arb_spread_pct / 100.0) * 0.82, 4)
-            if trade_profit > 0.05:
-                self.arb_realized_profit += trade_profit
-                self.arb_cooldown = 30
-                arb_record = {
-                    "id": str(uuid.uuid4())[:8],
-                    "buyDex": cheapest_dex[0],
-                    "sellDex": costliest_dex[0],
-                    "spread": f"{self.arb_spread_pct}%",
-                    "profit": f"+${trade_profit} USDT",
-                    "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                }
-                self.arb_history.insert(0, arb_record)
-                if len(self.arb_history) > 15:
-                    self.arb_history.pop()
-                asyncio.create_task(self.db_save_arb(arb_record))
+            await asyncio.sleep(0.5)
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
