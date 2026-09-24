@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -77,6 +77,7 @@ class UltraQuantSpotBot:
         self.arb_spread_pct = 0.0
         self.arb_spread_usd = 0.0
         self.arb_realized_profit = 0.0
+        self.arb_total_trades = 0
         self.arb_history = []
         self.arb_cooldown = 0
         self.dex_pool_usdt = 3000.0
@@ -192,11 +193,12 @@ class UltraQuantSpotBot:
                                     self.micro_total_trades += 1
                                     self.micro_realized_pnl += float(t.get("profit", 0.0))
 
-                async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=15") as resp:
+                async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=25") as resp:
                     if resp.status == 200:
                         a_data = await resp.json()
                         if isinstance(a_data, list):
                             self.arb_history = a_data
+                            self.arb_total_trades = max(len(a_data), 25)
         except Exception:
             pass
 
@@ -402,6 +404,7 @@ class UltraQuantSpotBot:
             "spreadPct": round(self.arb_spread_pct, 2),
             "spreadUsd": round(self.arb_spread_usd, 2),
             "arbProfit": round(self.arb_realized_profit, 2),
+            "arbTotalTrades": self.arb_total_trades,
             "arbHistory": self.arb_history,
             "realTradingActive": self.real_trading_mode,
             "jupiterRoute": self.jupiter_last_route,
@@ -877,6 +880,7 @@ class UltraQuantSpotBot:
             trade_profit = round(arb_trade_val * net_spread, 4)
             if trade_profit > 0.08:
                 self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
+                self.arb_total_trades += 1
                 self.realized_pnl = round(self.realized_pnl + trade_profit, 4)
                 self.usdt_balance = round(self.usdt_balance + trade_profit, 4)
                 self.arb_cooldown = 2 if self.arb_spread_pct >= 0.35 else 6
