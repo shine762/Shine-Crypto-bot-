@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -928,52 +928,6 @@ def home():
 @app.get("/status")
 def get_bot_status():
     return bot.get_state()
-
-@app.get("/reset-all")
-async def reset_entire_bot():
-    bot.usdt_balance = 10000.0
-    bot.sol_balance = 0.0
-    bot.invested_amount = 0.0
-    bot.avg_entry_price = 0.0
-    bot.realized_pnl = 0.0
-    bot.active_phase = 1
-    bot.active_round = 1
-    bot.sub_trade_count = 0
-    bot.round_trades_done = {r: 0 for r in range(1, 11)}
-    bot.active_positions = []
-    bot.trades_history = []
-    bot.manual_trades_history = []
-    bot.arb_realized_profit = 0.0
-    bot.arb_history = []
-    bot.ts_high = 0.0
-    bot.ts_low = 0.0
-    bot.tb_active = False
-    bot.tb_lowest_price = 0.0
-    if hasattr(bot, 'wallet_active_positions'):
-        bot.wallet_active_positions = []
-    
-    try:
-        async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-            await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=neq.placeholder")
-            await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?id=neq.placeholder")
-            await session.delete(f"{SUPABASE_URL}/rest/v1/arbitrage_history?id=neq.placeholder")
-            await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json={
-                "usdt_balance": 10000.0,
-                "sol_balance": 0.0,
-                "invested_amount": 0.0,
-                "avg_entry_price": 0.0,
-                "realized_pnl": 0.0,
-                "active_phase": 1,
-                "active_round": 1,
-                "sub_trade_count": 0,
-                "arb_realized_profit": 0.0,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            })
-    except Exception:
-        pass
-        
-    await manager.broadcast(json.dumps(bot.get_state()))
-    return {"status": "SUCCESS", "message": "Bot RAM and Database completely reset to Fresh 10,000 USDT"}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
