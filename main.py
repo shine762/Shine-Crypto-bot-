@@ -87,6 +87,13 @@ class UltraQuantSpotBot:
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
+        self.micro_positions = []
+        self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.micro_tb_active = False
+        self.micro_tb_lowest = 0.0
+        self.micro_last_ref_price = 0.0
+        self.micro_realized_pnl = 0.0
+        self.micro_total_trades = 0
 
     async def query_jupiter_real_spread(self):
         try:
@@ -384,7 +391,11 @@ class UltraQuantSpotBot:
             "arbHistory": self.arb_history,
             "realTradingActive": self.real_trading_mode,
             "jupiterRoute": self.jupiter_last_route,
-            "lastTxHash": self.solana_tx_hash
+            "lastTxHash": self.solana_tx_hash,
+            "microPositions": self.micro_positions,
+            "microRealizedPnl": round(self.micro_realized_pnl, 4),
+            "microTotalTrades": self.micro_total_trades,
+            "microIdleFundAvail": round(self.get_scavenged_idle_fund(), 2)
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -652,6 +663,138 @@ class UltraQuantSpotBot:
 
         asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
 
+    def get_scavenged_idle_fund(self):
+        if self.usdt_balance <= 5.0:
+            return 0.0
+        total_account = self.usdt_balance + (self.sol_balance * self.live_price)
+        scavenged_pool = 0.0
+        for r in range(1, 9):
+            if r != self.active_round:
+                allocated = total_account * self.round_allocations.get(r, 0.0)
+                used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
+                unspent = allocated * (1.0 - used_ratio)
+                scavenged_pool += unspent
+        return max(0.0, min(self.usdt_balance, scavenged_pool))
+
+    def get_current_micro_round(self):
+        for r in range(1, 9):
+            if self.micro_round_trades_done.get(r, 0) < 10:
+                return r
+        return 8
+
+    def execute_micro_buy(self):
+        idle_fund = self.get_scavenged_idle_fund()
+        if idle_fund < 5.0 or self.live_price <= 0:
+            return
+        m_round = self.get_current_micro_round()
+        if self.micro_round_trades_done.get(m_round, 0) >= 10:
+            return
+        base_alloc = self.round_allocations.get(m_round, 0.01)
+        target_size = max(5.0, min(self.usdt_balance, (idle_fund * base_alloc) / 10.0))
+        if target_size > self.usdt_balance:
+            target_size = self.usdt_balance
+        if target_size < 5.0:
+            return
+        fee = target_size * self.taker_fee_pct
+        net_invest = target_size - fee
+        sol_amt = net_invest / self.live_price
+        self.usdt_balance -= target_size
+        self.micro_round_trades_done[m_round] = self.micro_round_trades_done.get(m_round, 0) + 1
+        pos_id = "M_" + str(uuid.uuid4())[:6]
+        pos = {
+            "id": pos_id,
+            "round": m_round,
+            "subTrade": self.micro_round_trades_done[m_round],
+            "label": f"MICRO R{m_round} (#{self.micro_round_trades_done[m_round]})",
+            "entryPrice": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "invested": round(target_size, 2),
+            "ts_high": round(self.live_price, 2),
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+        }
+        self.micro_positions.append(pos)
+        self.micro_last_ref_price = self.live_price
+        self.micro_tb_active = False
+        self.micro_tb_lowest = 0.0
+        asyncio.create_task(self.db_sync_state())
+        print(f">>> [MICRO SCALP BUY] Price: ${round(self.live_price, 2)} | Sol: {round(sol_amt, 4)} | Fund: ${round(target_size, 2)} from Idle Pool")
+
+    def execute_micro_sell(self, pos):
+        pos_id = pos["id"]
+        sol_amt = pos["solAmount"]
+        invested = pos["invested"]
+        gross_val = sol_amt * self.live_price
+        fee = gross_val * self.taker_fee_pct
+        net_return = gross_val - fee
+        profit = net_return - invested
+        if profit <= 0:
+            return
+        self.usdt_balance += net_return
+        self.realized_pnl += profit
+        self.micro_realized_pnl += profit
+        self.micro_total_trades += 1
+        m_round = pos.get("round", 1)
+        if self.micro_round_trades_done.get(m_round, 0) > 0:
+            self.micro_round_trades_done[m_round] -= 1
+        self.micro_positions = [p for p in self.micro_positions if p["id"] != pos_id]
+        self.micro_last_ref_price = self.live_price
+        trade_record = {
+            "orderId": pos_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "realizedPnl": round(profit, 4),
+            "round": m_round,
+            "execType": "MICRO_SCALP_EXIT",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, trade_record)
+        asyncio.create_task(self.db_sync_state())
+        print(f">>> [MICRO SCALP PROFIT] Pos: {pos_id} Sold @ ${round(self.live_price, 2)} | Profit: +${round(profit, 4)} USDT")
+
+    def run_micro_scalper_tick(self):
+        if self.is_paused or self.live_price <= 0:
+            return
+        if self.micro_last_ref_price <= 0:
+            self.micro_last_ref_price = self.live_price
+            return
+        if not self.micro_tb_active and len(self.micro_positions) == 0:
+            if self.live_price > self.micro_last_ref_price:
+                self.micro_last_ref_price = self.live_price
+        current_dip = self.micro_last_ref_price - self.live_price
+        if current_dip >= 0.50:
+            if not self.micro_tb_active:
+                self.micro_tb_active = True
+                self.micro_tb_lowest = self.live_price
+            else:
+                if self.live_price < self.micro_tb_lowest:
+                    self.micro_tb_lowest = self.live_price
+                drop_distance = self.micro_last_ref_price - self.micro_tb_lowest
+                if drop_distance >= 1.20:
+                    callback = 0.03
+                elif drop_distance >= 0.80:
+                    callback = 0.02
+                else:
+                    callback = 0.01
+                if self.live_price >= (self.micro_tb_lowest + callback):
+                    self.execute_micro_buy()
+        for pos in list(self.micro_positions):
+            entry_p = pos["entryPrice"]
+            if self.live_price > entry_p:
+                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
+                    pos["ts_high"] = round(self.live_price, 2)
+                gain = pos["ts_high"] - entry_p
+                if gain >= 0.45:
+                    if gain >= 1.20:
+                        pullback = 0.03
+                    elif gain >= 0.80:
+                        pullback = 0.02
+                    else:
+                        pullback = 0.01
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.20:
+                        self.execute_micro_sell(pos)
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
             return False
@@ -777,6 +920,8 @@ class UltraQuantSpotBot:
                         "price": round(self.live_price, 2),
                         "text": f"HOLDING SOL @ ${round(self.live_price, 2)} (Avg Entry: ${round(self.avg_entry_price, 2)}, Whales Re-accumulating)"
                     }
+
+        self.run_micro_scalper_tick()
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
