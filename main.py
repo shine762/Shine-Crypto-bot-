@@ -681,15 +681,29 @@ class UltraQuantSpotBot:
         self.arb_spread_usd = round(costliest_dex[1] - cheapest_dex[1], 2)
         self.arb_spread_pct = round((self.arb_spread_usd / cheapest_dex[1]) * 100.0, 2)
 
-        if price > 0:
-                bot.update_price_tick(price)
-                if bot.arb_cooldown == 10:
-                    asyncio.create_task(bot.query_jupiter_real_spread())
-                await manager.broadcast(json.dumps(bot.get_state()))
-            else:
-                print(">>> [WARNING] Price feed returning 0. Checking network...")
+        if self.arb_cooldown > 0:
+            self.arb_cooldown -= 1
 
-            await asyncio.sleep(0.5)
+        if self.arb_spread_pct >= 0.20 and not self.is_paused and self.arb_cooldown <= 0:
+            arb_trade_val = min(300.0, self.dex_pool_usdt * 0.10)
+            net_spread = max(0.002, (self.arb_spread_pct / 100.0) - 0.001)
+            trade_profit = round(arb_trade_val * net_spread, 4)
+            if trade_profit > 0.01:
+                self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
+                self.arb_cooldown = 20
+                arb_record = {
+                    "id": str(uuid.uuid4())[:8],
+                    "buyDex": cheapest_dex[0],
+                    "sellDex": costliest_dex[0],
+                    "spread": f"{self.arb_spread_pct}%",
+                    "profit": f"+${trade_profit} USDT",
+                    "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                }
+                self.arb_history.insert(0, arb_record)
+                if len(self.arb_history) > 15:
+                    self.arb_history.pop()
+                print(f">>> [ARBITRAGE EXECUTION] {cheapest_dex[0]} -> {costliest_dex[0]} | Spread: {self.arb_spread_pct}% | Profit: +${trade_profit} USDT")
+                asyncio.create_task(self.db_save_arb(arb_record))
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
