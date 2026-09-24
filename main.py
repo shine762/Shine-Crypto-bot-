@@ -676,17 +676,11 @@ class UltraQuantSpotBot:
                 scavenged_pool += unspent
         return max(0.0, min(self.usdt_balance, scavenged_pool))
 
-    def get_current_micro_round(self):
-        for r in range(1, 9):
-            if self.micro_round_trades_done.get(r, 0) < 10:
-                return r
-        return 8
-
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
         if idle_fund < 5.0 or self.live_price <= 0:
             return
-        m_round = self.get_current_micro_round()
+        m_round = self.active_round
         if self.micro_round_trades_done.get(m_round, 0) >= 10:
             return
         base_alloc = self.round_allocations.get(m_round, 0.01)
@@ -717,7 +711,7 @@ class UltraQuantSpotBot:
         self.micro_tb_active = False
         self.micro_tb_lowest = 0.0
         asyncio.create_task(self.db_sync_state())
-        print(f">>> [MICRO SCALP BUY] Price: ${round(self.live_price, 2)} | Sol: {round(sol_amt, 4)} | Fund: ${round(target_size, 2)} from Idle Pool")
+        print(f">>> [MICRO SCALP BUY] Active Market Round R{m_round} | Price: ${round(self.live_price, 2)} | Sol: {round(sol_amt, 4)} | Fund: ${round(target_size, 2)} from Idle Pool")
 
     def execute_micro_sell(self, pos):
         pos_id = pos["id"]
