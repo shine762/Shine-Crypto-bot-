@@ -8,12 +8,7 @@ import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-try:
-    from solders.keypair import Keypair
-    from solders.transaction import VersionedTransaction
-except Exception:
-    Keypair = None
-    VersionedTransaction = None
+
 
 app = FastAPI()
 
@@ -93,20 +88,6 @@ class UltraQuantSpotBot:
         self.real_trading_mode = False
         self.jupiter_last_route = "METEORA -> RAYDIUM"
         self.solana_tx_hash = ""
-        self.solana_rpc_url = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
-        self.solana_private_key = os.getenv("SOLANA_PRIVATE_KEY", "")
-        self.solana_keypair = None
-        if self.solana_private_key and Keypair:
-            try:
-                if "[" in self.solana_private_key:
-                    secret_bytes = bytes(json.loads(self.solana_private_key))
-                    self.solana_keypair = Keypair.from_bytes(secret_bytes)
-                else:
-                    self.solana_keypair = Keypair.from_base58_string(self.solana_private_key)
-                self.real_trading_mode = True
-                print(">>> [MAINNET LIVE] Solana Wallet Keypair Loaded! Real Arbitrage Mode Active.")
-            except Exception:
-                self.real_trading_mode = False
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -119,96 +100,7 @@ class UltraQuantSpotBot:
         self.micro_realized_pnl = 0.0
         self.micro_total_trades = 0
 
-    async def fetch_jupiter_quote(self, session, in_mint, out_mint, amount):
-        try:
-            url = f"{JUPITER_QUOTE_API}?inputMint={in_mint}&outputMint={out_mint}&amount={amount}&slippageBps=30"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status == 200:
-                    return await resp.json()
-        except Exception:
-            return None
-        return None
-
-    async def execute_tx_on_solana(self, session, quote_data):
-        if not self.real_trading_mode or not self.solana_keypair:
-            return None
-        try:
-            user_pubkey = str(self.solana_keypair.pubkey())
-            swap_payload = {
-                "quoteResponse": quote_data,
-                "userPublicKey": user_pubkey,
-                "wrapAndUnwrapSol": True,
-                "dynamicComputeUnitLimit": True,
-                "prioritizationFeeLamports": "auto"
-            }
-            async with session.post("https://quote-api.jup.ag/v6/swap", json=swap_payload, timeout=aiohttp.ClientTimeout(total=4)) as s_resp:
-                if s_resp.status != 200:
-                    return None
-                swap_res = await s_resp.json()
-                swap_tx_b64 = swap_res.get("swapTransaction")
-                if not swap_tx_b64:
-                    return None
-
-            raw_tx = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
-            signed_tx = VersionedTransaction(raw_tx.message, [self.solana_keypair])
-            serialized = base64.b64encode(bytes(signed_tx)).decode("utf-8")
-
-            rpc_payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "sendTransaction",
-                "params": [
-                    serialized,
-                    {
-                        "skipPreflight": True,
-                        "preflightCommitment": "processed",
-                        "encoding": "base64",
-                        "maxRetries": 2
-                    }
-                ]
-            }
-            async with session.post(self.solana_rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=4)) as rpc_resp:
-                if rpc_resp.status == 200:
-                    res = await rpc_resp.json()
-                    return res.get("result")
-        except Exception:
-            return None
-        return None
-
-    async def execute_real_arbitrage_cycle(self):
-        trade_amount_micro_usdt = 10000000
-        async with aiohttp.ClientSession() as session:
-            quote_leg1 = await self.fetch_jupiter_quote(session, USDT_MINT, SOL_MINT, trade_amount_micro_usdt)
-            if not quote_leg1:
-                return
-
-            sol_out = int(quote_leg1.get("outAmount", 0))
-            if sol_out <= 0:
-                return
-
-            quote_leg2 = await self.fetch_jupiter_quote(session, SOL_MINT, USDT_MINT, sol_out)
-            if not quote_leg2:
-                return
-
-            final_usdt = int(quote_leg2.get("outAmount", 0))
-            gross_profit_micro = final_usdt - trade_amount_micro_usdt
-            self.arb_spread_pct = round((gross_profit_micro / trade_amount_micro_usdt) * 100.0, 2)
-            self.arb_spread_usd = round(gross_profit_micro / 1000000.0, 4)
-
-            plan1 = quote_leg1.get("routePlan", [])
-            plan2 = quote_leg2.get("routePlan", [])
-            if plan1 and plan2:
-                dex1 = plan1[0].get("swapInfo", {}).get("label", "DEX")
-                dex2 = plan2[0].get("swapInfo", {}).get("label", "DEX")
-                self.jupiter_last_route = f"{dex1.upper()} -> {dex2.upper()}"
-
-            if gross_profit_micro > 50000:
-                self.arb_cooldown = 5
-                tx1 = await self.execute_tx_on_solana(session, quote_leg1)
-                if tx1:
-                    self.solana_tx_hash = tx1
-                    await self.execute_tx_on_solana(session, quote_leg2)
-
+    
     async def load_from_database(self):
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
@@ -292,12 +184,7 @@ class UltraQuantSpotBot:
                                     spot_closed_profit += float(t.get("profit", 0.0))
                             self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl, 2)
 
-                async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=25") as resp:
-                    if resp.status == 200:
-                        a_data = await resp.json()
-                        if isinstance(a_data, list):
-                            self.arb_history = a_data
-                            self.arb_total_trades = max(len(a_data), 25)
+                
         except Exception:
             pass
 
@@ -349,19 +236,7 @@ class UltraQuantSpotBot:
         except Exception:
             pass
 
-    async def db_save_arb(self, arb_item):
-        try:
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                arb_row = {
-                    "buy_dex": arb_item["buyDex"],
-                    "sell_dex": arb_item["sellDex"],
-                    "spread": arb_item["spread"],
-                    "profit": arb_item["profit"]
-                }
-                await session.post(f"{SUPABASE_URL}/rest/v1/arbitrage_history", json=arb_row)
-            await self.db_sync_state()
-        except Exception:
-            pass
+    
 
     async def db_save_micro_trade(self, trade_data):
         try:
@@ -947,11 +822,7 @@ class UltraQuantSpotBot:
 
         self.sync_phase_and_round()
 
-        if self.arb_cooldown > 0:
-            self.arb_cooldown -= 1
-
-        if not self.is_paused and self.arb_cooldown <= 0 and self.real_trading_mode:
-            asyncio.create_task(self.execute_real_arbitrage_cycle())
+        
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
