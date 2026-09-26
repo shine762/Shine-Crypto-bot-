@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import uuid
@@ -6,8 +7,6 @@ from datetime import datetime, timezone
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-
-
 
 app = FastAPI()
 
@@ -70,7 +69,6 @@ class UltraQuantSpotBot:
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
         self.min_net_profit_usdt = 0.1
-        
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -105,8 +103,10 @@ class UltraQuantSpotBot:
         self.harvester_realized_pnl = 0.0
         self.harvester_cycle_count = 0
         self.harvester_status = "IDLE (WAITING R6-R8)"
+        self.manual_test_balance = 1000.0
+        self.wallet_active_positions = []
+        self.manual_trades_history = []
 
-    
     async def load_from_database(self):
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
@@ -116,24 +116,60 @@ class UltraQuantSpotBot:
                         if data and len(data) > 0:
                             row = data[0]
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
-                            
+                            if "usdt_balance" in row and float(row.get("usdt_balance")) > 0:
+                                self.usdt_balance = float(row.get("usdt_balance"))
+                            if "sol_balance" in row:
+                                self.sol_balance = float(row.get("sol_balance"))
+                            if "invested_amount" in row:
+                                self.invested_amount = float(row.get("invested_amount"))
+                            if "avg_entry_price" in row:
+                                self.avg_entry_price = float(row.get("avg_entry_price"))
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
                         if isinstance(pos_data, list):
-                            self.active_positions = [{
-                                "id": p.get("id"),
-                                "round": p.get("round"),
-                                "subTrade": p.get("sub_trade"),
-                                "label": p.get("label"),
-                                "entryPrice": float(p.get("entry_price", 0)),
-                                "solAmount": float(p.get("sol_amount", 0)),
-                                "invested": float(p.get("invested", 0)),
-                                "isMacro": p.get("is_macro", False),
-                                "targetPrice": float(p.get("target_price", 0))
-                            } for p in pos_data]
+                            loaded_positions = []
+                            self.micro_positions = []
+                            self.killer2_positions = []
+                            self.killer3_positions = []
 
+                            for p in pos_data:
+                                p_id = str(p.get("id", ""))
+                                pos_obj = {
+                                    "id": p_id,
+                                    "round": p.get("round", 1),
+                                    "subTrade": p.get("sub_trade", 1),
+                                    "label": p.get("label", ""),
+                                    "entryPrice": float(p.get("entry_price", 0)),
+                                    "solAmount": float(p.get("sol_amount", 0)),
+                                    "invested": float(p.get("invested", 0)),
+                                    "isMacro": p.get("is_macro", False),
+                                    "targetPrice": float(p.get("target_price", 0)),
+                                    "ts_high": float(p.get("entry_price", 0))
+                                }
+
+                                if p_id.startswith("M_"):
+                                    self.micro_positions.append(pos_obj)
+                                    r_idx = pos_obj["round"]
+                                    self.micro_round_trades_done[r_idx] = self.micro_round_trades_done.get(r_idx, 0) + 1
+                                elif p_id.startswith("K2_"):
+                                    self.killer2_positions.append(pos_obj)
+                                    r_idx = pos_obj["round"]
+                                    self.killer2_round_trades_done[r_idx] = self.killer2_round_trades_done.get(r_idx, 0) + 1
+                                elif p_id.startswith("K3_"):
+                                    self.killer3_positions.append(pos_obj)
+                                    r_idx = pos_obj["round"]
+                                    self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
+                                elif p_id.startswith("HRV_"):
+                                    self.harvester_active = True
+                                    self.harvester_vault_sol += pos_obj["solAmount"]
+                                    self.harvester_vault_invested += pos_obj["invested"]
+                                    self.harvester_status = "50/50 RESTORED"
+                                else:
+                                    loaded_positions.append(pos_obj)
+
+                            self.active_positions = loaded_positions
                             regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
                             macro_pos = [p for p in self.active_positions if p.get("isMacro", False)]
 
@@ -142,25 +178,12 @@ class UltraQuantSpotBot:
                                 self.invested_amount = sum(p["invested"] for p in regular_pos)
                                 self.macro_vault_sol = sum(p["solAmount"] for p in macro_pos)
                                 self.macro_vault_invested = sum(p["invested"] for p in macro_pos)
-                                total_spent = self.invested_amount + self.macro_vault_invested
-                                self.usdt_balance = max(0.0, round(self.initial_capital + self.realized_pnl - total_spent, 2))
                                 self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
                                 self.sub_trade_count = len(regular_pos)
                                 self.round_trades_done = {r: 0 for r in range(1, 11)}
                                 for p in regular_pos:
                                     r_idx = p.get("round", 1)
                                     self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
-                            else:
-                                self.sol_balance = 0.0
-                                self.invested_amount = 0.0
-                                self.avg_entry_price = 0.0
-                                self.macro_vault_sol = 0.0
-                                self.macro_vault_invested = 0.0
-                                self.sub_trade_count = 0
-                                self.round_trades_done = {r: 0 for r in range(1, 11)}
-                                self.usdt_balance = round(self.initial_capital + self.realized_pnl, 2)
-
-                            asyncio.create_task(self.db_sync_state())
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=100") as resp:
                     if resp.status == 200:
@@ -183,29 +206,30 @@ class UltraQuantSpotBot:
                             self.micro_total_trades = 0
                             self.killer2_realized_pnl = 0.0
                             self.killer2_total_trades = 0
-                            spot_closed_profit = 0.0
-                            for t in t_data:
-                                if t.get("exec_type") == "MICRO_SCALP_EXIT":
-                                    self.micro_total_trades += 1
-                                    self.micro_realized_pnl += float(t.get("profit", 0.0))
-                                elif t.get("exec_type") == "KILLER2_SCALP_EXIT":
-                                    self.killer2_total_trades += 1
-                                    self.killer2_realized_pnl += float(t.get("profit", 0.0))
-                                elif t.get("side") == "SELL":
-                                    spot_closed_profit += float(t.get("profit", 0.0))
                             self.killer3_realized_pnl = 0.0
                             self.killer3_total_trades = 0
-                            for t in t_data:
-                                if t.get("exec_type") == "KILLER3_SCALP_EXIT":
-                                    self.killer3_total_trades += 1
-                                    self.killer3_realized_pnl += float(t.get("profit", 0.0))
                             self.harvester_realized_pnl = 0.0
-                            for t in t_data:
-                                if t.get("exec_type") in ["HARVESTER_SWING_EXIT", "HARVESTER_GRAND_ATH_EXIT"]:
-                                    self.harvester_realized_pnl += float(t.get("profit", 0.0))
-                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.harvester_realized_pnl, 2)
+                            spot_closed_profit = 0.0
 
-                
+                            for t in t_data:
+                                e_type = t.get("exec_type")
+                                p_val = float(t.get("profit", 0.0))
+                                if e_type == "MICRO_SCALP_EXIT":
+                                    self.micro_total_trades += 1
+                                    self.micro_realized_pnl += p_val
+                                elif e_type == "KILLER2_SCALP_EXIT":
+                                    self.killer2_total_trades += 1
+                                    self.killer2_realized_pnl += p_val
+                                elif e_type == "KILLER3_SCALP_EXIT":
+                                    self.killer3_total_trades += 1
+                                    self.killer3_realized_pnl += p_val
+                                elif e_type in ["HARVESTER_SWING_EXIT", "HARVESTER_GRAND_ATH_EXIT"]:
+                                    self.harvester_realized_pnl += p_val
+                                elif t.get("side") == "SELL":
+                                    spot_closed_profit += p_val
+
+                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.harvester_realized_pnl, 2)
+                await self.db_sync_state()
         except Exception:
             pass
 
@@ -220,7 +244,6 @@ class UltraQuantSpotBot:
                 "active_phase": self.active_phase,
                 "active_round": self.active_round,
                 "sub_trade_count": self.sub_trade_count,
-                
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
@@ -239,8 +262,8 @@ class UltraQuantSpotBot:
                     "entry_price": pos["entryPrice"],
                     "sol_amount": pos["solAmount"],
                     "invested": pos["invested"],
-                    "is_macro": pos["isMacro"],
-                    "target_price": pos["targetPrice"]
+                    "is_macro": pos.get("isMacro", False),
+                    "target_price": pos.get("targetPrice", 0.0)
                 }
                 await session.post(f"{SUPABASE_URL}/rest/v1/active_positions", json=pos_row)
                 await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
@@ -257,9 +280,7 @@ class UltraQuantSpotBot:
         except Exception:
             pass
 
-    
-
-    async def db_save_micro_trade(self, trade_data):
+    async def db_save_engine_trade(self, trade_data):
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
@@ -318,8 +339,8 @@ class UltraQuantSpotBot:
         self.sub_trade_count = self.round_trades_done.get(self.active_round, 0)
 
     def get_state(self):
-        all_sol = self.sol_balance + self.macro_vault_sol
-        all_invested = self.invested_amount + self.macro_vault_invested
+        all_sol = self.sol_balance + self.macro_vault_sol + self.harvester_vault_sol
+        all_invested = self.invested_amount + self.macro_vault_invested + self.harvester_vault_invested
         total_cap = self.usdt_balance + (all_sol * self.live_price)
         unrealized_pnl = 0.0
         pnl_pct = 0.0
@@ -387,6 +408,7 @@ class UltraQuantSpotBot:
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
             "canManualTrade": True,
+            "manualTestBalance": round(self.manual_test_balance, 2),
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
@@ -394,7 +416,6 @@ class UltraQuantSpotBot:
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
             "botThought": ai_thoughts,
-            
             "microPositions": self.micro_positions,
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
             "microTotalTrades": self.micro_total_trades,
@@ -424,7 +445,6 @@ class UltraQuantSpotBot:
             return
 
         self.sync_phase_and_round()
-
         all_sol = self.sol_balance + self.macro_vault_sol
         total_account_val = self.usdt_balance + (all_sol * self.live_price)
         vol_multiplier = 1.2 if self.whale_sentiment == "BULLISH" else (0.9 if self.whale_sentiment == "BEARISH" else 1.0)
@@ -452,10 +472,8 @@ class UltraQuantSpotBot:
         net_invest = invest_target - fee
         sol_bought = net_invest / self.live_price
         self.usdt_balance -= invest_target
-
         self.round_trades_done[self.active_round] = self.round_trades_done.get(self.active_round, 0) + 1
         self.sub_trade_count = self.round_trades_done[self.active_round]
-
         pos_id = str(uuid.uuid4())[:8]
 
         if self.active_round == 8:
@@ -496,25 +514,24 @@ class UltraQuantSpotBot:
             }
 
         self.active_positions.append(pos)
-        self.trades_history.insert(0, {
+        t_record = {
             "orderId": pos_id,
             "side": "BUY",
             "price": round(self.live_price, 2),
             "solAmount": round(sol_bought, 4),
             "fee": round(fee, 4),
+            "profit": 0.0,
             "round": self.active_round,
             "execType": "WHALE_MAKER_MATCHED",
             "orderflowRatio": self.whale_orderflow_ratio,
             "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
+        }
+        self.trades_history.insert(0, t_record)
         self.latest_signal = {
             "action": "BUY",
             "price": round(self.live_price, 2),
             "text": f"BUY SOL NOW @ ${round(self.live_price, 2)} (Whale Rebound Confirmed)"
         }
-        print(f">>> [TRADE SUCCESS] BUY Order Executed! Price: ${round(self.live_price, 2)} | Bought: {round(sol_bought, 4)} SOL | Round: {self.active_round}")
-
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id,
             "side": "BUY",
@@ -525,74 +542,67 @@ class UltraQuantSpotBot:
             "round": self.active_round,
             "exec_type": "WHALE_MAKER_MATCHED"
         }))
-
         self.ts_high = round(self.live_price, 2)
         self.ts_low = 0.0
         self.ts_stage = "1.0%"
         self.tb_active = False
         self.initial_tb_active = False
-
-    def execute_manual_buy(self, amount_usdt=50.0):
-        if amount_usdt <= 0 or self.live_price <= 0:
+def execute_manual_buy(self, amount_usdt=50.0, order_type="MARKET", limit_price=0.0):
+        target_price = self.live_price if order_type == "MARKET" or limit_price <= 0 else limit_price
+        if amount_usdt <= 0 or target_price <= 0:
+            return
+        if self.manual_test_balance < amount_usdt:
             return
         fee = amount_usdt * self.taker_fee_pct
         net_invest = amount_usdt - fee
-        sol_bought = net_invest / self.live_price
-        pos_id = str(uuid.uuid4())[:8]
-        
+        sol_bought = net_invest / target_price
+        self.manual_test_balance -= amount_usdt
+        pos_id = "MAN_" + str(uuid.uuid4())[:6]
         manual_pos = {
             "id": pos_id,
             "round": 0,
             "subTrade": 0,
-            "label": "WALLET SPOT BUY",
-            "entryPrice": round(self.live_price, 2),
+            "label": f"WALLET {order_type} BUY",
+            "entryPrice": round(target_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
+            "orderType": order_type,
             "isManualWallet": True,
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
-        
-        if not hasattr(self, 'wallet_active_positions'):
-            self.wallet_active_positions = []
         self.wallet_active_positions.append(manual_pos)
-        
-        self.manual_trades_history.insert(0, {
+        t_record = {
             "orderId": pos_id,
-            "side": "MANUAL_BUY",
-            "price": round(self.live_price, 2),
+            "side": f"MANUAL_{order_type}_BUY",
+            "price": round(target_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
             "fee": round(fee, 4),
-            "execType": "NON_CUSTODIAL_DEX",
+            "execType": "NON_CUSTODIAL_TEST_WALLET",
             "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        print(f">>> [WALLET MANUAL BUY] Bought {round(sol_bought, 4)} SOL @ ${round(self.live_price, 2)} directly into User Self-Custody Wallet.")
+        }
+        self.manual_trades_history.insert(0, t_record)
+        asyncio.create_task(self.db_save_engine_trade(t_record))
 
     def execute_manual_sell(self):
-        if not hasattr(self, 'wallet_active_positions') or len(self.wallet_active_positions) == 0:
+        if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
             return
-        if self.live_price <= 0:
-            return
-            
         total_sol = sum(p["solAmount"] for p in self.wallet_active_positions)
         total_invested = sum(p["invested"] for p in self.wallet_active_positions)
-        
         if total_sol <= 0:
             return
-            
         gross_value = total_sol * self.live_price
         fee = gross_value * self.taker_fee_pct
         net_value = gross_value - fee
         gross_profit = net_value - total_invested
-        
         owner_cut = 0.0
         user_net_profit = gross_profit
         if gross_profit > 0:
             owner_cut = round(gross_profit * 0.10, 4)
             user_net_profit = round(gross_profit - owner_cut, 4)
-            
-        self.manual_trades_history.insert(0, {
-            "orderId": str(uuid.uuid4())[:8],
+        self.manual_test_balance += net_value
+        t_record = {
+            "orderId": "MAN_S_" + str(uuid.uuid4())[:6],
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(total_sol, 4),
@@ -600,29 +610,24 @@ class UltraQuantSpotBot:
             "profit": round(user_net_profit, 4),
             "ownerCut": owner_cut,
             "realizedPnl": round(user_net_profit, 4),
-            "execType": "NON_CUSTODIAL_DEX",
+            "execType": "NON_CUSTODIAL_TEST_WALLET",
             "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-        
+        }
+        self.manual_trades_history.insert(0, t_record)
         self.wallet_active_positions = []
-        print(f">>> [WALLET MANUAL SELL] Sold {round(total_sol, 4)} SOL @ ${round(self.live_price, 2)}. User Net Profit: +${user_net_profit} | Owner 10% Fee: +${owner_cut}")
-
+        asyncio.create_task(self.db_save_engine_trade(t_record))
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
             return
-
         sold_value = self.macro_vault_sol * self.live_price
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
         profit = net_return - self.macro_vault_invested
-
         if profit <= 0:
             return
-
         self.usdt_balance += net_return
         self.realized_pnl += profit
-
-        self.trades_history.insert(0, {
+        t_record = {
             "orderId": str(uuid.uuid4())[:8],
             "side": "SELL",
             "price": round(self.live_price, 2),
@@ -631,14 +636,15 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
             "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
+        }
+        self.trades_history.insert(0, t_record)
         self.active_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         self.macro_vault_sol = 0.0
         self.macro_vault_invested = 0.0
         self.macro_vault_entry = 0.0
         self.macro_ts_high = 0.0
         self.macro_ts_low = 0.0
+        asyncio.create_task(self.db_sync_state())
 
     def execute_sell_individual(self, pos):
         pos_id = pos["id"]
@@ -648,23 +654,18 @@ class UltraQuantSpotBot:
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
         profit = net_return - invested
-
         if profit < self.min_net_profit_usdt:
             return
-
         self.usdt_balance += net_return
         self.realized_pnl += profit
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-
         r_num = pos.get("round", self.active_round)
         if self.round_trades_done.get(r_num, 0) > 0:
             self.round_trades_done[r_num] -= 1
         self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False) and p["id"] != pos_id])
-
         self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
-
         trade_record = {
             "orderId": pos_id,
             "side": "SELL",
@@ -678,9 +679,16 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
-        print(f">>> [INDIVIDUAL SELL SUCCESS] Order {pos_id} exited! Profit: +${round(profit, 4)} USDT | Entry: ${pos['entryPrice']} | Exit: ${round(self.live_price, 2)}")
-
-        asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
+        asyncio.create_task(self.db_save_sell_individual(pos_id, {
+            "order_id": pos_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": r_num,
+            "exec_type": "INDIVIDUAL_PROFIT_EXIT"
+        }))
 
     def get_scavenged_idle_fund(self):
         if self.usdt_balance <= 5.0:
@@ -695,18 +703,21 @@ class UltraQuantSpotBot:
                 scavenged_pool += unspent
         return max(0.0, min(self.usdt_balance, scavenged_pool))
 
+    def get_micro_trade_size(self):
+        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
+        base_size = max(100.0, (total_account / 50.0))
+        idle_fund = self.get_scavenged_idle_fund()
+        return min(self.usdt_balance, min(idle_fund, base_size))
+
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
-        if idle_fund < 5.0 or self.live_price <= 0:
+        if idle_fund < 10.0 or self.live_price <= 0:
             return
         m_round = self.active_round
         if self.micro_round_trades_done.get(m_round, 0) >= 10:
             return
-        base_alloc = self.round_allocations.get(m_round, 0.01)
-        target_size = max(5.0, min(self.usdt_balance, (idle_fund * base_alloc) / 10.0))
-        if target_size > self.usdt_balance:
-            target_size = self.usdt_balance
-        if target_size < 5.0:
+        target_size = self.get_micro_trade_size()
+        if target_size < 10.0 or target_size > self.usdt_balance:
             return
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -729,8 +740,16 @@ class UltraQuantSpotBot:
         self.micro_last_ref_price = self.live_price
         self.micro_tb_active = False
         self.micro_tb_lowest = 0.0
-        asyncio.create_task(self.db_sync_state())
-        print(f">>> [MICRO SCALP BUY] Active Market Round R{m_round} | Price: ${round(self.live_price, 2)} | Sol: {round(sol_amt, 4)} | Fund: ${round(target_size, 2)} from Idle Pool")
+        asyncio.create_task(self.db_save_buy(pos, {
+            "order_id": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": m_round,
+            "exec_type": "MICRO_SCALP_ENTRY"
+        }))
 
     def execute_micro_sell(self, pos):
         pos_id = pos["id"]
@@ -740,7 +759,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit <= 0:
+        if profit < self.min_net_profit_usdt:
             return
         self.usdt_balance += net_return
         self.realized_pnl += profit
@@ -764,7 +783,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
-        db_payload = {
+        asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id,
             "side": "SELL",
             "price": round(self.live_price, 2),
@@ -773,25 +792,18 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "round": m_round,
             "exec_type": "MICRO_SCALP_EXIT"
-        }
-        asyncio.create_task(self.db_save_micro_trade(db_payload))
-        print(f">>> [MICRO SCALP PROFIT] Pos: {pos_id} Sold @ ${round(self.live_price, 2)} | Profit: +${round(profit, 4)} USDT")
-
-        if not self.is_paused and len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 5.0:
-            print(f">>> [PERPETUAL LOOP] Profit booked! Instantly re-entering runner trade @ ${round(self.live_price, 2)}")
+        }))
+        if not self.is_paused and len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 10.0:
             self.execute_micro_buy()
 
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
-
-        if len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 5.0:
+        if len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 10.0:
             self.execute_micro_buy()
             return
-
         if self.micro_last_ref_price <= 0:
             self.micro_last_ref_price = self.live_price
-
         current_dip = self.micro_last_ref_price - self.live_price
         if current_dip >= 0.30 and len(self.micro_positions) < 10:
             if not self.micro_tb_active:
@@ -809,7 +821,6 @@ class UltraQuantSpotBot:
                     callback = 0.01
                 if self.live_price >= (self.micro_tb_lowest + callback):
                     self.execute_micro_buy()
-
         for pos in list(self.micro_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
@@ -825,6 +836,7 @@ class UltraQuantSpotBot:
                         pullback = 0.01
                     if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.20:
                         self.execute_micro_sell(pos)
+
     def get_killer2_idle_fund(self):
         if self.usdt_balance <= 5.0:
             return 0.0
@@ -892,7 +904,16 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = self.live_price
         self.killer2_tb_active = False
         self.killer2_tb_lowest = 0.0
-        asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(self.db_save_buy(pos, {
+            "order_id": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": k_round,
+            "exec_type": "KILLER2_SCALP_ENTRY"
+        }))
 
     def execute_killer2_sell(self, pos):
         pos_id = pos["id"]
@@ -902,7 +923,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit <= 0:
+        if profit < self.min_net_profit_usdt:
             return
         self.usdt_balance += net_return
         self.realized_pnl += profit
@@ -926,7 +947,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
-        db_payload = {
+        asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id,
             "side": "SELL",
             "price": round(self.live_price, 2),
@@ -935,8 +956,7 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "round": k_round,
             "exec_type": "KILLER2_SCALP_EXIT"
-        }
-        asyncio.create_task(self.db_save_micro_trade(db_payload))
+        }))
         if not self.is_paused and len(self.killer2_positions) == 0 and self.get_killer2_idle_fund() >= 10.0:
             self.execute_killer2_buy()
 
@@ -1039,7 +1059,16 @@ class UltraQuantSpotBot:
         self.killer3_last_ref_price = self.live_price
         self.killer3_tb_active = False
         self.killer3_tb_lowest = 0.0
-        asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(self.db_save_buy(pos, {
+            "order_id": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": k_round,
+            "exec_type": "KILLER3_SCALP_ENTRY"
+        }))
 
     def execute_killer3_sell(self, pos):
         pos_id = pos["id"]
@@ -1049,7 +1078,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit <= 0:
+        if profit < self.min_net_profit_usdt:
             return
         self.usdt_balance += net_return
         self.realized_pnl += profit
@@ -1073,7 +1102,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
-        db_payload = {
+        asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id,
             "side": "SELL",
             "price": round(self.live_price, 2),
@@ -1082,8 +1111,7 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "round": k_round,
             "exec_type": "KILLER3_SCALP_EXIT"
-        }
-        asyncio.create_task(self.db_save_micro_trade(db_payload))
+        }))
         if not self.is_paused and len(self.killer3_positions) == 0 and self.get_killer3_idle_fund() >= 10.0:
             self.execute_killer3_buy()
 
@@ -1139,6 +1167,17 @@ class UltraQuantSpotBot:
                     self.harvester_active = True
                     self.harvester_status = "50/50 RUNNING"
                     pos_id = "HRV_INIT_" + str(uuid.uuid4())[:4]
+                    pos = {
+                        "id": pos_id,
+                        "round": self.active_round,
+                        "subTrade": 1,
+                        "label": "HARVESTER 50/50 VAULT",
+                        "entryPrice": round(self.live_price, 2),
+                        "solAmount": round(sol_bought, 4),
+                        "invested": round(half_budget, 2),
+                        "isMacro": True,
+                        "targetPrice": 250.0
+                    }
                     t_record = {
                         "orderId": pos_id,
                         "side": "BUY",
@@ -1151,18 +1190,29 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(self.db_save_buy(pos, {
+                        "order_id": pos_id,
+                        "side": "BUY",
+                        "price": round(self.live_price, 2),
+                        "sol_amount": round(sol_bought, 4),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "round": self.active_round,
+                        "exec_type": "HARVESTER_VAULT_INIT"
+                    }))
             return
 
         if self.live_price >= 250.0 and self.harvester_vault_sol > 0:
-            gross_val = self.harvester_vault_sol * self.live_price
+            sold_sol = self.harvester_vault_sol
+            gross_val = sold_sol * self.live_price
             fee = gross_val * self.taker_fee_pct
             net_return = gross_val - fee
             profit = (net_return + self.harvester_vault_cash) - self.harvester_borrowed_r8
+            if profit < self.min_net_profit_usdt:
+                return
             self.usdt_balance += net_return
-            if profit > 0:
-                self.realized_pnl += profit
-                self.harvester_realized_pnl += profit
+            self.realized_pnl += profit
+            self.harvester_realized_pnl += profit
             self.harvester_cycle_count += 1
             self.harvester_active = False
             self.harvester_vault_sol = 0.0
@@ -1174,7 +1224,7 @@ class UltraQuantSpotBot:
                 "orderId": "HRV_ATH_" + str(uuid.uuid4())[:4],
                 "side": "SELL",
                 "price": round(self.live_price, 2),
-                "solAmount": round(self.harvester_vault_sol, 4),
+                "solAmount": round(sold_sol, 4),
                 "fee": round(fee, 4),
                 "profit": round(profit, 4),
                 "realizedPnl": round(profit, 4),
@@ -1183,7 +1233,7 @@ class UltraQuantSpotBot:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             self.trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_micro_trade({
+            asyncio.create_task(self.db_save_engine_trade({
                 "order_id": t_record["orderId"],
                 "side": "SELL",
                 "price": t_record["price"],
@@ -1206,12 +1256,13 @@ class UltraQuantSpotBot:
             net_val = gross_val - fee
             cost = portion_sol * (self.harvester_vault_invested / self.harvester_vault_sol)
             profit = net_val - cost
+            if profit < self.min_net_profit_usdt:
+                return
             self.harvester_vault_sol -= portion_sol
             self.harvester_vault_invested = max(0.0, self.harvester_vault_invested - cost)
             self.harvester_vault_cash += net_val
-            if profit > 0:
-                self.realized_pnl += profit
-                self.harvester_realized_pnl += profit
+            self.realized_pnl += profit
+            self.harvester_realized_pnl += profit
             self.harvester_last_action_price = self.live_price
             self.harvester_status = f"SWING SELL (+${round(profit,2)})"
             t_record = {
@@ -1227,7 +1278,7 @@ class UltraQuantSpotBot:
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
             self.trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_micro_trade({
+            asyncio.create_task(self.db_save_engine_trade({
                 "order_id": t_record["orderId"],
                 "side": "SELL",
                 "price": t_record["price"],
@@ -1260,20 +1311,16 @@ class UltraQuantSpotBot:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 self.trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_sync_state())
-
-    def check_market_exhaustion(self, mode="SELL"):
-        if len(self.price_history) < 6:
-            return False
-        recent = self.price_history[-6:]
-        deltas = [recent[i] - recent[i - 1] for i in range(1, len(recent))]
-        up_momentum = sum(d for d in deltas if d > 0)
-        down_momentum = abs(sum(d for d in deltas if d < 0))
-        if mode == "SELL":
-            return down_momentum > (up_momentum * 1.5)
-        elif mode == "BUY":
-            return (up_momentum > down_momentum) and (down_momentum > 0)
-        return False
+                asyncio.create_task(self.db_save_engine_trade({
+                    "order_id": t_record["orderId"],
+                    "side": "BUY",
+                    "price": t_record["price"],
+                    "sol_amount": t_record["solAmount"],
+                    "fee": t_record["fee"],
+                    "profit": 0.0,
+                    "round": self.active_round,
+                    "exec_type": "HARVESTER_SWING_BUY"
+                }))
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
@@ -1285,8 +1332,6 @@ class UltraQuantSpotBot:
             self.price_history.pop(0)
 
         self.sync_phase_and_round()
-
-        
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
@@ -1405,6 +1450,7 @@ class UltraQuantSpotBot:
                     if active_count < 10:
                         self.execute_buy(is_sub_trade=True)
                         return
+
         if self.macro_vault_sol > 0 and self.live_price >= self.macro_target_price:
             if self.live_price > self.macro_ts_high:
                 self.macro_ts_high = round(self.live_price, 2)
@@ -1435,6 +1481,7 @@ class UltraQuantSpotBot:
                     if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"]:
                         self.execute_sell_individual(pos)
                         break
+
 bot = UltraQuantSpotBot()
 
 class ConnectionManager:
@@ -1476,6 +1523,7 @@ async def binance_ws_worker():
                             break
         except Exception:
             await asyncio.sleep(2)
+
 async def price_feed_fallback_worker():
     while True:
         try:
@@ -1505,6 +1553,7 @@ async def price_feed_fallback_worker():
         except Exception:
             pass
         await asyncio.sleep(2)
+
 @app.on_event("startup")
 async def startup_event():
     await bot.load_from_database()
@@ -1535,7 +1584,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = False
                 elif action == "MANUAL_BUY":
                     buy_amt = float(msg.get("amount", 50.0))
-                    bot.execute_manual_buy(buy_amt)
+                    ord_type = str(msg.get("orderType", "MARKET")).upper()
+                    l_price = float(msg.get("limitPrice", 0.0))
+                    bot.execute_manual_buy(buy_amt, ord_type, l_price)
                 elif action == "MANUAL_SELL":
                     bot.execute_manual_sell()
                 await manager.broadcast(json.dumps(bot.get_state()))
