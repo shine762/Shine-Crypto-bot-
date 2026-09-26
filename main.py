@@ -2,7 +2,6 @@ import asyncio
 import json
 import uuid
 import os
-import base64
 from datetime import datetime, timezone
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -70,7 +69,8 @@ class UltraQuantSpotBot:
         self.whale_orderflow_ratio = 50.0
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
-        self.min_net_profit_usdt = 0.1    
+        self.min_net_profit_usdt = 0.1
+        
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -93,7 +93,8 @@ class UltraQuantSpotBot:
                         if data and len(data) > 0:
                             row = data[0]
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
-                           
+                            
+
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
@@ -372,11 +373,7 @@ class UltraQuantSpotBot:
 
         all_sol = self.sol_balance + self.macro_vault_sol
         total_account_val = self.usdt_balance + (all_sol * self.live_price)
-        vol_multiplier = 1.0
-        if self.whale_sentiment == "BULLISH":
-            vol_multiplier = 1.2
-        elif self.whale_sentiment == "BEARISH":
-            vol_multiplier = 0.8
+        vol_multiplier = 1.2 if self.whale_sentiment == "BULLISH" else (0.9 if self.whale_sentiment == "BEARISH" else 1.0)
 
         if self.active_round == 8:
             leftover_trades = sum(max(0, 10 - self.round_trades_done.get(r, 0)) for r in range(1, 8))
@@ -873,7 +870,7 @@ class UltraQuantSpotBot:
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
-            if self.round_trades_done.get(self.active_round, 0) < 10:
+            if self.whale_sentiment != "BEARISH" and self.round_trades_done.get(self.active_round, 0) < 10:
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
@@ -985,10 +982,40 @@ async def binance_ws_worker():
                             break
         except Exception:
             await asyncio.sleep(2)
+async def price_feed_fallback_worker():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", timeout=3) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            p = float(data.get("price", 0.0))
+                            if p > 0:
+                                bot.update_price_tick(p)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                                await asyncio.sleep(2)
+                                continue
+                except Exception:
+                    pass
+                try:
+                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot", timeout=3) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            p = float(data.get("data", {}).get("amount", 0.0))
+                            if p > 0:
+                                bot.update_price_tick(p)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(2)
 @app.on_event("startup")
 async def startup_event():
     await bot.load_from_database()
     asyncio.create_task(binance_ws_worker())
+    asyncio.create_task(price_feed_fallback_worker())
 
 @app.get("/")
 def home():
