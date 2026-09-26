@@ -119,80 +119,86 @@ class UltraQuantSpotBot:
         self.micro_realized_pnl = 0.0
         self.micro_total_trades = 0
 
-    async def query_jupiter_real_spread(self):
+    async def fetch_jupiter_quote(self, session, in_mint, out_mint, amount):
         try:
-            amt_in = 10000000
-            url = f"{JUPITER_QUOTE_API}?inputMint={USDT_MINT}&outputMint={SOL_MINT}&amount={amt_in}&slippageBps=50"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        route_plan = data.get("routePlan", [])
-                        if route_plan:
-                            dex_labels = [p.get("swapInfo", {}).get("label", "DEX") for p in route_plan]
-                            if len(dex_labels) >= 2:
-                                self.jupiter_last_route = f"{dex_labels[0].upper()} -> {dex_labels[1].upper()}"
-                            elif len(dex_labels) == 1:
-                                self.jupiter_last_route = f"{dex_labels[0].upper()} BEST ROUTE"
+            url = f"{JUPITER_QUOTE_API}?inputMint={in_mint}&outputMint={out_mint}&amount={amount}&slippageBps=30"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+                if resp.status == 200:
+                    return await resp.json()
         except Exception:
-            pass
+            return None
+        return None
 
-    async def execute_real_jupiter_swap(self, input_mint, output_mint, amount_raw):
+    async def execute_tx_on_solana(self, session, quote_data):
         if not self.real_trading_mode or not self.solana_keypair:
             return None
         try:
             user_pubkey = str(self.solana_keypair.pubkey())
-            quote_url = f"{JUPITER_QUOTE_API}?inputMint={input_mint}&outputMint={output_mint}&amount={amount_raw}&slippageBps=50"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(quote_url, timeout=aiohttp.ClientTimeout(total=4)) as q_resp:
-                    if q_resp.status != 200:
-                        return None
-                    quote_data = await q_resp.json()
+            swap_payload = {
+                "quoteResponse": quote_data,
+                "userPublicKey": user_pubkey,
+                "wrapAndUnwrapSol": True,
+                "dynamicComputeUnitLimit": True,
+                "prioritizationFeeLamports": "auto"
+            }
+            async with session.post("https://quote-api.jup.ag/v6/swap", json=swap_payload, timeout=aiohttp.ClientTimeout(total=4)) as s_resp:
+                if s_resp.status != 200:
+                    return None
+                swap_res = await s_resp.json()
+                swap_tx_b64 = swap_res.get("swapTransaction")
+                if not swap_tx_b64:
+                    return None
 
-                swap_payload = {
-                    "quoteResponse": quote_data,
-                    "userPublicKey": user_pubkey,
-                    "wrapAndUnwrapSol": True,
-                    "dynamicComputeUnitLimit": True,
-                    "prioritizationFeeLamports": "auto"
-                }
-                async with session.post("https://quote-api.jup.ag/v6/swap", json=swap_payload, timeout=aiohttp.ClientTimeout(total=5)) as s_resp:
-                    if s_resp.status != 200:
-                        return None
-                    swap_res = await s_resp.json()
-                    swap_tx_b64 = swap_res.get("swapTransaction")
-                    if not swap_tx_b64:
-                        return None
+            raw_tx = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
+            signed_tx = VersionedTransaction(raw_tx.message, [self.solana_keypair])
+            serialized = base64.b64encode(bytes(signed_tx)).decode("utf-8")
 
-                raw_tx = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
-                signed_tx = VersionedTransaction(raw_tx.message, [self.solana_keypair])
-                serialized_signed = base64.b64encode(bytes(signed_tx)).decode("utf-8")
-
-                rpc_payload = {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "sendTransaction",
-                    "params": [
-                        serialized_signed,
-                        {
-                            "skipPreflight": True,
-                            "preflightCommitment": "processed",
-                            "encoding": "base64",
-                            "maxRetries": 3
-                        }
-                    ]
-                }
-                async with session.post(self.solana_rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=5)) as rpc_resp:
-                    if rpc_resp.status == 200:
-                        rpc_res = await rpc_resp.json()
-                        tx_hash = rpc_res.get("result")
-                        if tx_hash:
-                            self.solana_tx_hash = tx_hash
-                            print(f">>> [ON-CHAIN TX SUCCESS] Solana Tx: https://solscan.io/tx/{tx_hash}")
-                            return tx_hash
+            rpc_payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "sendTransaction",
+                "params": [
+                    serialized,
+                    {
+                        "skipPreflight": True,
+                        "preflightCommitment": "processed",
+                        "encoding": "base64",
+                        "maxRetries": 2
+                    }
+                ]
+            }
+            async with session.post(self.solana_rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=4)) as rpc_resp:
+                if rpc_resp.status == 200:
+                    res = await rpc_resp.json()
+                    return res.get("result")
         except Exception:
-            pass
+            return None
         return None
+
+    async def execute_real_arbitrage_cycle(self):
+        trade_amount_micro_usdt = 10000000
+        async with aiohttp.ClientSession() as session:
+            quote_leg1 = await self.fetch_jupiter_quote(session, USDT_MINT, SOL_MINT, trade_amount_micro_usdt)
+            if not quote_leg1:
+                return
+
+            sol_out = int(quote_leg1.get("outAmount", 0))
+            if sol_out <= 0:
+                return
+
+            quote_leg2 = await self.fetch_jupiter_quote(session, SOL_MINT, USDT_MINT, sol_out)
+            if not quote_leg2:
+                return
+
+            final_usdt = int(quote_leg2.get("outAmount", 0))
+            gross_profit_micro = final_usdt - trade_amount_micro_usdt
+
+            if gross_profit_micro > 50000:
+                self.arb_cooldown = 5
+                tx1 = await self.execute_tx_on_solana(session, quote_leg1)
+                if tx1:
+                    self.solana_tx_hash = tx1
+                    await self.execute_tx_on_solana(session, quote_leg2)
 
     async def load_from_database(self):
         try:
@@ -932,58 +938,11 @@ class UltraQuantSpotBot:
 
         self.sync_phase_and_round()
 
-        now_ts = datetime.now(timezone.utc).timestamp()
-        r_wave = ((int(now_ts) % 43) / 43.0) * 0.0035 - 0.0015
-        o_wave = ((int(now_ts + 17) % 59) / 59.0) * 0.0040 - 0.0020
-        m_wave = ((int(now_ts + 31) % 67) / 67.0) * 0.0045 - 0.0022
-        flow_bias = (self.whale_orderflow_ratio - 50.0) * 0.00015
-
-        self.raydium_price = round(self.live_price * (1.0 + r_wave + flow_bias), 2)
-        self.orca_price = round(self.live_price * (1.0 + o_wave - (flow_bias * 0.5)), 2)
-        self.meteora_price = round(self.live_price * (1.0 + m_wave + (flow_bias * 0.8)), 2)
-
-        dex_pool = [
-            ("RAYDIUM", self.raydium_price),
-            ("ORCA", self.orca_price),
-            ("METEORA", self.meteora_price)
-        ]
-        dex_pool.sort(key=lambda x: x[1])
-        cheapest_dex = dex_pool[0]
-        costliest_dex = dex_pool[-1]
-
-        self.arb_spread_usd = round(costliest_dex[1] - cheapest_dex[1], 2)
-        self.arb_spread_pct = round((self.arb_spread_usd / cheapest_dex[1]) * 100.0, 2)
-
         if self.arb_cooldown > 0:
-            self.arb_cooldown -= 1
+    self.arb_cooldown -= 1
 
-        if self.arb_spread_pct >= 0.20 and not self.is_paused and self.arb_cooldown <= 0:
-            spot_idle_loan = self.get_scavenged_idle_fund() * 0.40
-            total_sweep_capacity = self.dex_pool_usdt + spot_idle_loan
-            arb_trade_val = min(2000.0, max(500.0, total_sweep_capacity * 0.35))
-            net_spread = max(0.0022, (self.arb_spread_pct / 100.0) - 0.0008)
-            trade_profit = round(arb_trade_val * net_spread, 4)
-            if trade_profit > 0.08:
-                self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
-                self.arb_total_trades += 1
-                self.usdt_balance = round(self.usdt_balance + trade_profit, 4)
-                self.arb_cooldown = 2 if self.arb_spread_pct >= 0.35 else 6
-                arb_record = {
-                    "buyDex": cheapest_dex[0],
-                    "sellDex": costliest_dex[0],
-                    "spread": f"{self.arb_spread_pct}%",
-                    "profit": f"+${trade_profit} USDT",
-                    "time": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                }
-                self.arb_history.insert(0, arb_record)
-                if len(self.arb_history) > 25:
-                    self.arb_history.pop()
-                print(f">>> [RAPID FLASH ARBITRAGE] {cheapest_dex[0]} -> {costliest_dex[0]} | Size: ${round(arb_trade_val, 2)} | Spread: {self.arb_spread_pct}% | Net Profit: +${trade_profit} USDT")
-                asyncio.create_task(self.db_save_arb(arb_record))
-
-                if self.real_trading_mode and self.solana_keypair:
-                    amt_micro_usdt = int(arb_trade_val * 1000000)
-                    asyncio.create_task(self.execute_real_jupiter_swap(USDT_MINT, SOL_MINT, amt_micro_usdt))
+if not self.is_paused and self.arb_cooldown <= 0 and self.real_trading_mode:
+    asyncio.create_task(self.execute_real_arbitrage_cycle())
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
@@ -1153,51 +1112,22 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_ws_worker():
-    price_urls = [
-        "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT",
-        "https://api.binance.us/api/v3/ticker/price?symbol=SOLUSDT",
-        "https://api.coinbase.com/v2/prices/SOL-USD/spot"
-    ]
-    whale_url = "https://api.binance.com/api/v3/aggTrades?symbol=SOLUSDT&limit=1000"
-    
-    print(">>> [BOT ENGINE STARTED] Connecting to live market feeds...")
-    
-    async with aiohttp.ClientSession() as session:
-        while True:
-            price = 0.0
-            for url in price_urls:
-                try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=2)) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            if "price" in data:
-                                price = float(data["price"])
-                            elif "data" in data and "amount" in data["data"]:
-                                price = float(data["data"]["amount"])
+    ws_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url) as ws:
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            price = float(data.get("p", 0.0))
                             if price > 0:
-                                break
-                except Exception:
-                    continue
-
-            try:
-                async with session.get(whale_url, timeout=aiohttp.ClientTimeout(total=2)) as w_resp:
-                    if w_resp.status == 200:
-                        trades_data = await w_resp.json()
-                        if isinstance(trades_data, list):
-                            bot.process_market_trades(trades_data)
-            except Exception:
-                pass
-
-            if price > 0:
-                bot.update_price_tick(price)
-                if bot.arb_cooldown == 0:
-                    asyncio.create_task(bot.query_jupiter_real_spread())
-                await manager.broadcast(json.dumps(bot.get_state()))
-            else:
-                print(">>> [WARNING] Price feed returning 0. Checking network...")
-
-            await asyncio.sleep(0.3)
-
+                                bot.update_price_tick(price)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+        except Exception:
+            await asyncio.sleep(2)
 @app.on_event("startup")
 async def startup_event():
     await bot.load_from_database()
@@ -1237,3 +1167,7 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
