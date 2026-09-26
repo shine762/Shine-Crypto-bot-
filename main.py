@@ -546,7 +546,8 @@ class UltraQuantSpotBot:
         self.ts_stage = "1.0%"
         self.tb_active = False
         self.initial_tb_active = False
-def execute_manual_buy(self, amount_usdt=50.0, order_type="MARKET", limit_price=0.0):
+
+    def execute_manual_buy(self, amount_usdt=50.0, order_type="MARKET", limit_price=0.0):
         target_price = self.live_price if order_type == "MARKET" or limit_price <= 0 else limit_price
         if amount_usdt <= 0 or target_price <= 0:
             return
