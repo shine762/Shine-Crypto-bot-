@@ -897,7 +897,7 @@ class UltraQuantSpotBot:
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
-            if self.whale_sentiment != "BEARISH" and self.round_trades_done.get(self.active_round, 0) < 10:
+            if self.round_trades_done.get(self.active_round, 0) < 10:
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
