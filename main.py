@@ -1,10 +1,19 @@
-import asyncio
+ import asyncio
 import json
 import uuid
+import os
+import base64
 from datetime import datetime, timezone
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
+try:
+    from solders.keypair import Keypair
+    from solders.transaction import VersionedTransaction
+except Exception:
+    Keypair = None
+    VersionedTransaction = None
 
 app = FastAPI()
 
@@ -84,6 +93,20 @@ class UltraQuantSpotBot:
         self.real_trading_mode = False
         self.jupiter_last_route = "METEORA -> RAYDIUM"
         self.solana_tx_hash = ""
+        self.solana_rpc_url = os.getenv("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com")
+        self.solana_private_key = os.getenv("SOLANA_PRIVATE_KEY", "")
+        self.solana_keypair = None
+        if self.solana_private_key and Keypair:
+            try:
+                if "[" in self.solana_private_key:
+                    secret_bytes = bytes(json.loads(self.solana_private_key))
+                    self.solana_keypair = Keypair.from_bytes(secret_bytes)
+                else:
+                    self.solana_keypair = Keypair.from_base58_string(self.solana_private_key)
+                self.real_trading_mode = True
+                print(">>> [MAINNET LIVE] Solana Wallet Keypair Loaded! Real Arbitrage Mode Active.")
+            except Exception:
+                self.real_trading_mode = False
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -113,6 +136,63 @@ class UltraQuantSpotBot:
                                 self.jupiter_last_route = f"{dex_labels[0].upper()} BEST ROUTE"
         except Exception:
             pass
+
+    async def execute_real_jupiter_swap(self, input_mint, output_mint, amount_raw):
+        if not self.real_trading_mode or not self.solana_keypair:
+            return None
+        try:
+            user_pubkey = str(self.solana_keypair.pubkey())
+            quote_url = f"{JUPITER_QUOTE_API}?inputMint={input_mint}&outputMint={output_mint}&amount={amount_raw}&slippageBps=50"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(quote_url, timeout=aiohttp.ClientTimeout(total=4)) as q_resp:
+                    if q_resp.status != 200:
+                        return None
+                    quote_data = await q_resp.json()
+
+                swap_payload = {
+                    "quoteResponse": quote_data,
+                    "userPublicKey": user_pubkey,
+                    "wrapAndUnwrapSol": True,
+                    "dynamicComputeUnitLimit": True,
+                    "prioritizationFeeLamports": "auto"
+                }
+                async with session.post("https://quote-api.jup.ag/v6/swap", json=swap_payload, timeout=aiohttp.ClientTimeout(total=5)) as s_resp:
+                    if s_resp.status != 200:
+                        return None
+                    swap_res = await s_resp.json()
+                    swap_tx_b64 = swap_res.get("swapTransaction")
+                    if not swap_tx_b64:
+                        return None
+
+                raw_tx = VersionedTransaction.from_bytes(base64.b64decode(swap_tx_b64))
+                signed_tx = VersionedTransaction(raw_tx.message, [self.solana_keypair])
+                serialized_signed = base64.b64encode(bytes(signed_tx)).decode("utf-8")
+
+                rpc_payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "sendTransaction",
+                    "params": [
+                        serialized_signed,
+                        {
+                            "skipPreflight": True,
+                            "preflightCommitment": "processed",
+                            "encoding": "base64",
+                            "maxRetries": 3
+                        }
+                    ]
+                }
+                async with session.post(self.solana_rpc_url, json=rpc_payload, timeout=aiohttp.ClientTimeout(total=5)) as rpc_resp:
+                    if rpc_resp.status == 200:
+                        rpc_res = await rpc_resp.json()
+                        tx_hash = rpc_res.get("result")
+                        if tx_hash:
+                            self.solana_tx_hash = tx_hash
+                            print(f">>> [ON-CHAIN TX SUCCESS] Solana Tx: https://solscan.io/tx/{tx_hash}")
+                            return tx_hash
+        except Exception:
+            pass
+        return None
 
     async def load_from_database(self):
         try:
@@ -169,7 +249,7 @@ class UltraQuantSpotBot:
 
                             asyncio.create_task(self.db_sync_state())
 
-                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=30") as resp:
+                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=100") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
                         if isinstance(t_data, list):
@@ -188,10 +268,14 @@ class UltraQuantSpotBot:
 
                             self.micro_realized_pnl = 0.0
                             self.micro_total_trades = 0
+                            spot_closed_profit = 0.0
                             for t in t_data:
                                 if t.get("exec_type") == "MICRO_SCALP_EXIT":
                                     self.micro_total_trades += 1
                                     self.micro_realized_pnl += float(t.get("profit", 0.0))
+                                elif t.get("side") == "SELL":
+                                    spot_closed_profit += float(t.get("profit", 0.0))
+                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl, 2)
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/arbitrage_history?order=created_at.desc&limit=25") as resp:
                     if resp.status == 200:
@@ -282,8 +366,8 @@ class UltraQuantSpotBot:
             qty = float(t.get("q", 0.0))
             is_buyer_maker = t.get("m", False)
             trade_val = price * qty
-            if trade_val >= 25000.0:
-                multiplier = 1.5 if trade_val >= 50000.0 else 1.0
+            if trade_val >= 1500.0:
+                multiplier = 2.0 if trade_val >= 10000.0 else 1.0
                 weighted_val = trade_val * multiplier
                 if not is_buyer_maker:
                     recent_buy_vol += weighted_val
@@ -293,10 +377,11 @@ class UltraQuantSpotBot:
         if total_whale_vol > 0:
             self.whale_buy_vol = recent_buy_vol
             self.whale_sell_vol = recent_sell_vol
-            self.whale_orderflow_ratio = round((recent_buy_vol / total_whale_vol) * 100.0, 1)
-            if self.whale_orderflow_ratio >= 60.0:
+            ratio = round((recent_buy_vol / total_whale_vol) * 100.0, 1)
+            self.whale_orderflow_ratio = max(38.0, min(72.0, ratio))
+            if self.whale_orderflow_ratio >= 55.0:
                 self.whale_sentiment = "BULLISH"
-            elif self.whale_orderflow_ratio <= 40.0:
+            elif self.whale_orderflow_ratio <= 45.0:
                 self.whale_sentiment = "BEARISH"
             else:
                 self.whale_sentiment = "NEUTRAL"
@@ -881,7 +966,6 @@ class UltraQuantSpotBot:
             if trade_profit > 0.08:
                 self.arb_realized_profit = round(self.arb_realized_profit + trade_profit, 4)
                 self.arb_total_trades += 1
-                self.realized_pnl = round(self.realized_pnl + trade_profit, 4)
                 self.usdt_balance = round(self.usdt_balance + trade_profit, 4)
                 self.arb_cooldown = 2 if self.arb_spread_pct >= 0.35 else 6
                 arb_record = {
@@ -896,6 +980,10 @@ class UltraQuantSpotBot:
                     self.arb_history.pop()
                 print(f">>> [RAPID FLASH ARBITRAGE] {cheapest_dex[0]} -> {costliest_dex[0]} | Size: ${round(arb_trade_val, 2)} | Spread: {self.arb_spread_pct}% | Net Profit: +${trade_profit} USDT")
                 asyncio.create_task(self.db_save_arb(arb_record))
+
+                if self.real_trading_mode and self.solana_keypair:
+                    amt_micro_usdt = int(arb_trade_val * 1000000)
+                    asyncio.create_task(self.execute_real_jupiter_swap(USDT_MINT, SOL_MINT, amt_micro_usdt))
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
