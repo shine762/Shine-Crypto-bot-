@@ -192,6 +192,15 @@ class UltraQuantSpotBot:
 
             final_usdt = int(quote_leg2.get("outAmount", 0))
             gross_profit_micro = final_usdt - trade_amount_micro_usdt
+            self.arb_spread_pct = round((gross_profit_micro / trade_amount_micro_usdt) * 100.0, 2)
+            self.arb_spread_usd = round(gross_profit_micro / 1000000.0, 4)
+
+            plan1 = quote_leg1.get("routePlan", [])
+            plan2 = quote_leg2.get("routePlan", [])
+            if plan1 and plan2:
+                dex1 = plan1[0].get("swapInfo", {}).get("label", "DEX")
+                dex2 = plan2[0].get("swapInfo", {}).get("label", "DEX")
+                self.jupiter_last_route = f"{dex1.upper()} -> {dex2.upper()}"
 
             if gross_profit_micro > 50000:
                 self.arb_cooldown = 5
@@ -939,10 +948,10 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
 
         if self.arb_cooldown > 0:
-    self.arb_cooldown -= 1
+            self.arb_cooldown -= 1
 
-if not self.is_paused and self.arb_cooldown <= 0 and self.real_trading_mode:
-    asyncio.create_task(self.execute_real_arbitrage_cycle())
+        if not self.is_paused and self.arb_cooldown <= 0 and self.real_trading_mode:
+            asyncio.create_task(self.execute_real_arbitrage_cycle())
 
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.cooldown_remaining > 0:
@@ -1122,6 +1131,7 @@ async def binance_ws_worker():
                             data = json.loads(msg.data)
                             price = float(data.get("p", 0.0))
                             if price > 0:
+                                bot.process_market_trades([data])
                                 bot.update_price_tick(price)
                                 await manager.broadcast(json.dumps(bot.get_state()))
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
