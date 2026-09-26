@@ -96,6 +96,15 @@ class UltraQuantSpotBot:
         self.killer3_last_ref_price = 0.0
         self.killer3_realized_pnl = 0.0
         self.killer3_total_trades = 0
+        self.harvester_active = False
+        self.harvester_vault_sol = 0.0
+        self.harvester_vault_invested = 0.0
+        self.harvester_vault_cash = 0.0
+        self.harvester_borrowed_r8 = 0.0
+        self.harvester_last_action_price = 0.0
+        self.harvester_realized_pnl = 0.0
+        self.harvester_cycle_count = 0
+        self.harvester_status = "IDLE (WAITING R6-R8)"
 
     
     async def load_from_database(self):
@@ -190,7 +199,11 @@ class UltraQuantSpotBot:
                                 if t.get("exec_type") == "KILLER3_SCALP_EXIT":
                                     self.killer3_total_trades += 1
                                     self.killer3_realized_pnl += float(t.get("profit", 0.0))
-                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl, 2)
+                            self.harvester_realized_pnl = 0.0
+                            for t in t_data:
+                                if t.get("exec_type") in ["HARVESTER_SWING_EXIT", "HARVESTER_GRAND_ATH_EXIT"]:
+                                    self.harvester_realized_pnl += float(t.get("profit", 0.0))
+                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.harvester_realized_pnl, 2)
 
                 
         except Exception:
@@ -393,7 +406,15 @@ class UltraQuantSpotBot:
             "killer3Positions": self.killer3_positions,
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
-            "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2)
+            "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
+            "harvesterActive": self.harvester_active,
+            "harvesterSol": round(self.harvester_vault_sol, 4),
+            "harvesterInvested": round(self.harvester_vault_invested, 2),
+            "harvesterCash": round(self.harvester_vault_cash, 2),
+            "harvesterBorrowed": round(self.harvester_borrowed_r8, 2),
+            "harvesterRealizedPnl": round(self.harvester_realized_pnl, 4),
+            "harvesterStatus": self.harvester_status,
+            "harvesterCycle": self.harvester_cycle_count
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -809,14 +830,12 @@ class UltraQuantSpotBot:
             return 0.0
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
         scavenged_pool = 0.0
-        eligible_rounds = [r for r in range(1, 9) if r < max(1, self.active_round - 2)]
-        if not eligible_rounds:
-            eligible_rounds = [r for r in range(1, 9) if r != self.active_round]
-        for r in eligible_rounds:
-            allocated = total_account * self.round_allocations.get(r, 0.0)
-            used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
-            unspent = allocated * (1.0 - used_ratio)
-            scavenged_pool += unspent
+        for r in range(1, 9):
+            if r != self.active_round:
+                allocated = total_account * self.round_allocations.get(r, 0.0)
+                used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
+                unspent = allocated * (1.0 - used_ratio)
+                scavenged_pool += unspent
         return max(0.0, min(self.usdt_balance, scavenged_pool))
 
     def get_killer2_trade_size(self):
@@ -1098,6 +1117,151 @@ class UltraQuantSpotBot:
                     if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.70:
                         self.execute_killer3_sell(pos)
 
+    def run_harvester_infinity_tick(self):
+        if self.is_paused or self.live_price <= 0:
+            return
+        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
+
+        if not self.harvester_active:
+            if self.active_round in [6, 7, 8] and self.live_price < 240.0:
+                r8_total_alloc = total_account * self.round_allocations.get(8, 0.27)
+                borrow_budget = max(50.0, min(self.usdt_balance, r8_total_alloc))
+                if borrow_budget >= 50.0:
+                    half_budget = borrow_budget / 2.0
+                    fee = half_budget * self.taker_fee_pct
+                    sol_bought = (half_budget - fee) / self.live_price
+                    self.usdt_balance -= half_budget
+                    self.harvester_borrowed_r8 = borrow_budget
+                    self.harvester_vault_invested = half_budget
+                    self.harvester_vault_cash = half_budget
+                    self.harvester_vault_sol = sol_bought
+                    self.harvester_last_action_price = self.live_price
+                    self.harvester_active = True
+                    self.harvester_status = "50/50 RUNNING"
+                    pos_id = "HRV_INIT_" + str(uuid.uuid4())[:4]
+                    t_record = {
+                        "orderId": pos_id,
+                        "side": "BUY",
+                        "price": round(self.live_price, 2),
+                        "solAmount": round(sol_bought, 4),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "round": self.active_round,
+                        "execType": "HARVESTER_VAULT_INIT",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_sync_state())
+            return
+
+        if self.live_price >= 250.0 and self.harvester_vault_sol > 0:
+            gross_val = self.harvester_vault_sol * self.live_price
+            fee = gross_val * self.taker_fee_pct
+            net_return = gross_val - fee
+            profit = (net_return + self.harvester_vault_cash) - self.harvester_borrowed_r8
+            self.usdt_balance += net_return
+            if profit > 0:
+                self.realized_pnl += profit
+                self.harvester_realized_pnl += profit
+            self.harvester_cycle_count += 1
+            self.harvester_active = False
+            self.harvester_vault_sol = 0.0
+            self.harvester_vault_invested = 0.0
+            self.harvester_vault_cash = 0.0
+            self.harvester_borrowed_r8 = 0.0
+            self.harvester_status = "ATH HARVESTED ($250) - WAITING R6-R8"
+            t_record = {
+                "orderId": "HRV_ATH_" + str(uuid.uuid4())[:4],
+                "side": "SELL",
+                "price": round(self.live_price, 2),
+                "solAmount": round(self.harvester_vault_sol, 4),
+                "fee": round(fee, 4),
+                "profit": round(profit, 4),
+                "realizedPnl": round(profit, 4),
+                "round": 1,
+                "execType": "HARVESTER_GRAND_ATH_EXIT",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            self.trades_history.insert(0, t_record)
+            asyncio.create_task(self.db_save_micro_trade({
+                "order_id": t_record["orderId"],
+                "side": "SELL",
+                "price": t_record["price"],
+                "sol_amount": t_record["solAmount"],
+                "fee": t_record["fee"],
+                "profit": t_record["profit"],
+                "round": 1,
+                "exec_type": "HARVESTER_GRAND_ATH_EXIT"
+            }))
+            return
+
+        if self.harvester_last_action_price <= 0:
+            self.harvester_last_action_price = self.live_price
+        price_diff = self.live_price - self.harvester_last_action_price
+
+        if price_diff >= 0.80 and self.harvester_vault_sol > 0.05:
+            portion_sol = self.harvester_vault_sol * 0.10
+            gross_val = portion_sol * self.live_price
+            fee = gross_val * self.taker_fee_pct
+            net_val = gross_val - fee
+            cost = portion_sol * (self.harvester_vault_invested / self.harvester_vault_sol)
+            profit = net_val - cost
+            self.harvester_vault_sol -= portion_sol
+            self.harvester_vault_invested = max(0.0, self.harvester_vault_invested - cost)
+            self.harvester_vault_cash += net_val
+            if profit > 0:
+                self.realized_pnl += profit
+                self.harvester_realized_pnl += profit
+            self.harvester_last_action_price = self.live_price
+            self.harvester_status = f"SWING SELL (+${round(profit,2)})"
+            t_record = {
+                "orderId": "HRV_S_" + str(uuid.uuid4())[:4],
+                "side": "SELL",
+                "price": round(self.live_price, 2),
+                "solAmount": round(portion_sol, 4),
+                "fee": round(fee, 4),
+                "profit": round(profit, 4),
+                "realizedPnl": round(profit, 4),
+                "round": self.active_round,
+                "execType": "HARVESTER_SWING_EXIT",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            self.trades_history.insert(0, t_record)
+            asyncio.create_task(self.db_save_micro_trade({
+                "order_id": t_record["orderId"],
+                "side": "SELL",
+                "price": t_record["price"],
+                "sol_amount": t_record["solAmount"],
+                "fee": t_record["fee"],
+                "profit": t_record["profit"],
+                "round": self.active_round,
+                "exec_type": "HARVESTER_SWING_EXIT"
+            }))
+
+        elif price_diff <= -0.80 and self.harvester_vault_cash >= 15.0:
+            reinvest_size = min(self.harvester_vault_cash, self.harvester_borrowed_r8 * 0.10)
+            if reinvest_size >= 10.0:
+                fee = reinvest_size * self.taker_fee_pct
+                sol_bought = (reinvest_size - fee) / self.live_price
+                self.harvester_vault_cash -= reinvest_size
+                self.harvester_vault_invested += reinvest_size
+                self.harvester_vault_sol += sol_bought
+                self.harvester_last_action_price = self.live_price
+                self.harvester_status = "REBUY RE-BALANCE"
+                t_record = {
+                    "orderId": "HRV_B_" + str(uuid.uuid4())[:4],
+                    "side": "BUY",
+                    "price": round(self.live_price, 2),
+                    "solAmount": round(sol_bought, 4),
+                    "fee": round(fee, 4),
+                    "profit": 0.0,
+                    "round": self.active_round,
+                    "execType": "HARVESTER_SWING_BUY",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self.trades_history.insert(0, t_record)
+                asyncio.create_task(self.db_sync_state())
+
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
             return False
@@ -1188,6 +1352,7 @@ class UltraQuantSpotBot:
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
         self.run_killer3_scalper_tick()
+        self.run_harvester_infinity_tick()
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
