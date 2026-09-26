@@ -89,6 +89,13 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = 0.0
         self.killer2_realized_pnl = 0.0
         self.killer2_total_trades = 0
+        self.killer3_positions = []
+        self.killer3_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.killer3_tb_active = False
+        self.killer3_tb_lowest = 0.0
+        self.killer3_last_ref_price = 0.0
+        self.killer3_realized_pnl = 0.0
+        self.killer3_total_trades = 0
 
     
     async def load_from_database(self):
@@ -177,7 +184,13 @@ class UltraQuantSpotBot:
                                     self.killer2_realized_pnl += float(t.get("profit", 0.0))
                                 elif t.get("side") == "SELL":
                                     spot_closed_profit += float(t.get("profit", 0.0))
-                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl, 2)
+                            self.killer3_realized_pnl = 0.0
+                            self.killer3_total_trades = 0
+                            for t in t_data:
+                                if t.get("exec_type") == "KILLER3_SCALP_EXIT":
+                                    self.killer3_total_trades += 1
+                                    self.killer3_realized_pnl += float(t.get("profit", 0.0))
+                            self.realized_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl, 2)
 
                 
         except Exception:
@@ -376,7 +389,11 @@ class UltraQuantSpotBot:
             "killer2Positions": self.killer2_positions,
             "killer2RealizedPnl": round(self.killer2_realized_pnl, 4),
             "killer2TotalTrades": self.killer2_total_trades,
-            "killer2IdleFundAvail": round(self.get_killer2_idle_fund(), 2)
+            "killer2IdleFundAvail": round(self.get_killer2_idle_fund(), 2),
+            "killer3Positions": self.killer3_positions,
+            "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
+            "killer3TotalTrades": self.killer3_total_trades,
+            "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2)
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -934,6 +951,153 @@ class UltraQuantSpotBot:
                     if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.45:
                         self.execute_killer2_sell(pos)
 
+    def get_killer3_idle_fund(self):
+        if self.usdt_balance <= 5.0:
+            return 0.0
+        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
+        scavenged_pool = 0.0
+        eligible_rounds = [r for r in range(1, 9) if abs(r - self.active_round) >= 2]
+        if not eligible_rounds:
+            eligible_rounds = [r for r in range(1, 9) if r != self.active_round]
+        for r in eligible_rounds:
+            allocated = total_account * self.round_allocations.get(r, 0.0)
+            used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
+            unspent = allocated * (1.0 - used_ratio)
+            scavenged_pool += unspent
+        return max(0.0, min(self.usdt_balance, scavenged_pool))
+
+    def get_killer3_trade_size(self):
+        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
+        base_size = max(100.0, (total_account / 50.0))
+        idle_fund = self.get_killer3_idle_fund()
+        return min(self.usdt_balance, min(idle_fund, base_size))
+
+    def get_killer3_step_trail(self, mode="BUY"):
+        flow = self.whale_orderflow_ratio
+        if mode == "BUY":
+            if flow <= 40.0:
+                return 0.09
+            elif flow <= 50.0:
+                return 0.08
+            else:
+                return 0.07
+        else:
+            if flow >= 60.0:
+                return 0.09
+            elif flow >= 50.0:
+                return 0.08
+            else:
+                return 0.07
+
+    def execute_killer3_buy(self):
+        idle_fund = self.get_killer3_idle_fund()
+        if idle_fund < 10.0 or self.live_price <= 0:
+            return
+        k_round = self.active_round
+        if self.killer3_round_trades_done.get(k_round, 0) >= 10:
+            return
+        target_size = self.get_killer3_trade_size()
+        if target_size < 10.0 or target_size > self.usdt_balance:
+            return
+        fee = target_size * self.taker_fee_pct
+        net_invest = target_size - fee
+        sol_amt = net_invest / self.live_price
+        self.usdt_balance -= target_size
+        self.killer3_round_trades_done[k_round] = self.killer3_round_trades_done.get(k_round, 0) + 1
+        pos_id = "K3_" + str(uuid.uuid4())[:6]
+        pos = {
+            "id": pos_id,
+            "round": k_round,
+            "subTrade": self.killer3_round_trades_done[k_round],
+            "label": f"KILLER3 R{k_round} (#{self.killer3_round_trades_done[k_round]})",
+            "entryPrice": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "invested": round(target_size, 2),
+            "ts_high": round(self.live_price, 2),
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+        }
+        self.killer3_positions.append(pos)
+        self.killer3_last_ref_price = self.live_price
+        self.killer3_tb_active = False
+        self.killer3_tb_lowest = 0.0
+        asyncio.create_task(self.db_sync_state())
+
+    def execute_killer3_sell(self, pos):
+        pos_id = pos["id"]
+        sol_amt = pos["solAmount"]
+        invested = pos["invested"]
+        gross_val = sol_amt * self.live_price
+        fee = gross_val * self.taker_fee_pct
+        net_return = gross_val - fee
+        profit = net_return - invested
+        if profit <= 0:
+            return
+        self.usdt_balance += net_return
+        self.realized_pnl += profit
+        self.killer3_realized_pnl += profit
+        self.killer3_total_trades += 1
+        k_round = pos.get("round", 1)
+        if self.killer3_round_trades_done.get(k_round, 0) > 0:
+            self.killer3_round_trades_done[k_round] -= 1
+        self.killer3_positions = [p for p in self.killer3_positions if p["id"] != pos_id]
+        self.killer3_last_ref_price = self.live_price
+        trade_record = {
+            "orderId": pos_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "realizedPnl": round(profit, 4),
+            "round": k_round,
+            "execType": "KILLER3_SCALP_EXIT",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, trade_record)
+        db_payload = {
+            "order_id": pos_id,
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "sol_amount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "round": k_round,
+            "exec_type": "KILLER3_SCALP_EXIT"
+        }
+        asyncio.create_task(self.db_save_micro_trade(db_payload))
+        if not self.is_paused and len(self.killer3_positions) == 0 and self.get_killer3_idle_fund() >= 10.0:
+            self.execute_killer3_buy()
+
+    def run_killer3_scalper_tick(self):
+        if self.is_paused or self.live_price <= 0:
+            return
+        if len(self.killer3_positions) == 0 and self.get_killer3_idle_fund() >= 10.0:
+            self.execute_killer3_buy()
+            return
+        if self.killer3_last_ref_price <= 0:
+            self.killer3_last_ref_price = self.live_price
+        current_dip = self.killer3_last_ref_price - self.live_price
+        if current_dip >= 0.90 and len(self.killer3_positions) < 10:
+            if not self.killer3_tb_active:
+                self.killer3_tb_active = True
+                self.killer3_tb_lowest = self.live_price
+            else:
+                if self.live_price < self.killer3_tb_lowest:
+                    self.killer3_tb_lowest = self.live_price
+                callback = self.get_killer3_step_trail(mode="BUY")
+                if self.live_price >= (self.killer3_tb_lowest + callback):
+                    self.execute_killer3_buy()
+        for pos in list(self.killer3_positions):
+            entry_p = pos["entryPrice"]
+            if self.live_price > entry_p:
+                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
+                    pos["ts_high"] = round(self.live_price, 2)
+                gain = pos["ts_high"] - entry_p
+                if gain >= 0.90:
+                    pullback = self.get_killer3_step_trail(mode="SELL")
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.70:
+                        self.execute_killer3_sell(pos)
+
     def check_market_exhaustion(self, mode="SELL"):
         if len(self.price_history) < 6:
             return False
@@ -1023,6 +1187,7 @@ class UltraQuantSpotBot:
 
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
+        self.run_killer3_scalper_tick()
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
