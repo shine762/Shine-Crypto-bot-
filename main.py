@@ -876,7 +876,7 @@ class UltraQuantSpotBot:
             self.micro_last_ref_price = self.live_price
 
         current_dip = self.micro_last_ref_price - self.live_price
-        if current_dip >= 0.50 and len(self.micro_positions) < 10:
+        if current_dip >= 0.30 and len(self.micro_positions) < 10:
             if not self.micro_tb_active:
                 self.micro_tb_active = True
                 self.micro_tb_lowest = self.live_price
@@ -899,7 +899,7 @@ class UltraQuantSpotBot:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.45:
+                if gain >= 0.28:
                     if gain >= 1.20:
                         pullback = 0.03
                     elif gain >= 0.80:
