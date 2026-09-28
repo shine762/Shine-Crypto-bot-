@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -863,9 +863,9 @@ class UltraQuantSpotBot:
 
     def get_micro_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(100.0, (total_account / 50.0))
+        base_size = max(5.0, min(10.0, total_account * 0.08))
         idle_fund = self.get_scavenged_idle_fund()
-        return min(self.usdt_balance, min(idle_fund, base_size))
+        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
 
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
@@ -1006,9 +1006,9 @@ class UltraQuantSpotBot:
 
     def get_killer2_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(100.0, (total_account / 50.0))
+        base_size = max(5.0, min(10.0, total_account * 0.08))
         idle_fund = self.get_killer2_idle_fund()
-        return min(self.usdt_balance, min(idle_fund, base_size))
+        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
 
     def get_killer2_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
@@ -1168,9 +1168,9 @@ class UltraQuantSpotBot:
 
     def get_killer3_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(100.0, (total_account / 50.0))
+        base_size = max(5.0, min(10.0, total_account * 0.08))
         idle_fund = self.get_killer3_idle_fund()
-        return min(self.usdt_balance, min(idle_fund, base_size))
+        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
 
     def get_killer3_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
@@ -1321,8 +1321,8 @@ class UltraQuantSpotBot:
         if not self.harvester_active:
             if self.active_round in [6, 7, 8] and self.live_price < 240.0:
                 r8_total_alloc = total_account * self.round_allocations.get(8, 0.27)
-                borrow_budget = max(50.0, min(self.usdt_balance, r8_total_alloc))
-                if borrow_budget >= 50.0:
+                borrow_budget = max(15.0, min(max(0.0, self.usdt_balance), r8_total_alloc))
+                if borrow_budget >= 15.0 and self.usdt_balance >= borrow_budget:
                     half_budget = borrow_budget / 2.0
                     fee = half_budget * self.taker_fee_pct
                     sol_bought = (half_budget - fee) / self.live_price
