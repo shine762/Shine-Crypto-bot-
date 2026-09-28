@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -30,7 +30,7 @@ class UltraQuantSpotBot:
     def __init__(self):
         self.is_paused = False
         self.live_price = 0.0
-        self.usdt_balance = 10000.0
+        self.usdt_balance = 100.0
         self.sol_balance = 0.0
         self.invested_amount = 0.0
         self.avg_entry_price = 0.0
@@ -55,7 +55,7 @@ class UltraQuantSpotBot:
         self.initial_tb_active = False
         self.initial_tb_peak = 0.0
         self.initial_tb_lowest = 0.0
-        self.initial_capital = 10000.0
+        self.initial_capital = 100.0
         self.macro_vault_sol = 0.0
         self.macro_vault_invested = 0.0
         self.macro_vault_entry = 0.0
@@ -102,7 +102,7 @@ class UltraQuantSpotBot:
         self.harvester_realized_pnl = 0.0
         self.harvester_cycle_count = 0
         self.harvester_status = "IDLE (WAITING R6-R8)"
-        self.manual_test_balance = 1000.0
+        self.manual_test_balance = 100.0
         self.wallet_active_positions = []
         self.manual_trades_history = []
         self.auto_loop_active = False
@@ -587,13 +587,28 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_engine_trade(t_record))
 
-    def execute_manual_sell(self):
+    def execute_manual_sell(self, pos_id=None):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
             return
-        total_sol = sum(p["solAmount"] for p in self.wallet_active_positions)
-        total_invested = sum(p["invested"] for p in self.wallet_active_positions)
+
+        target_positions = []
+        if pos_id:
+            for p in self.wallet_active_positions:
+                if p.get("id") == pos_id:
+                    target_positions.append(p)
+                    break
+        else:
+            target_positions = [p for p in self.wallet_active_positions if p.get("solAmount", 0) > 0]
+
+        if len(target_positions) == 0:
+            return
+
+        total_sol = sum(p.get("solAmount", 0.0) for p in target_positions)
+        total_invested = sum(p.get("invested", 0.0) for p in target_positions)
+
         if total_sol <= 0:
             return
+
         gross_value = total_sol * self.live_price
         fee = gross_value * self.taker_fee_pct
         net_value = gross_value - fee
@@ -603,9 +618,15 @@ class UltraQuantSpotBot:
         if gross_profit > 0:
             owner_cut = round(gross_profit * 0.10, 4)
             user_net_profit = round(gross_profit - owner_cut, 4)
+
         self.manual_test_balance += net_value
+
+        for p in target_positions:
+            if p in self.wallet_active_positions:
+                self.wallet_active_positions.remove(p)
+
         t_record = {
-            "orderId": "MAN_S_" + str(uuid.uuid4())[:6],
+            "orderId": "MAN_S_" + (str(pos_id) if pos_id else str(uuid.uuid4())[:6]),
             "side": "MANUAL_SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(total_sol, 4),
@@ -617,7 +638,6 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
-        self.wallet_active_positions = []
         asyncio.create_task(self.db_save_engine_trade(t_record))
 
     def create_advanced_order(self, ord_data):
@@ -628,13 +648,14 @@ class UltraQuantSpotBot:
         stop_p = float(ord_data.get("stopPrice", 0.0))
         limit_p = float(ord_data.get("limitPrice", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
+        pos_id = ord_data.get("posId") or ord_data.get("id")
         o_id = "ORD_" + str(uuid.uuid4())[:6]
 
         if o_type == "MARKET":
             if side == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
-                self.execute_manual_sell()
+                self.execute_manual_sell(pos_id=pos_id)
             return
 
         order_obj = {
