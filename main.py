@@ -105,6 +105,8 @@ class UltraQuantSpotBot:
         self.manual_test_balance = 1000.0
         self.wallet_active_positions = []
         self.manual_trades_history = []
+        self.auto_loop_active = False
+        self.auto_loop_order = None
 
     async def load_from_database(self):
         try:
@@ -427,6 +429,7 @@ class UltraQuantSpotBot:
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
             "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
+            "autoLoop": self.auto_loop_order,
             "harvesterActive": self.harvester_active,
             "harvesterSol": round(self.harvester_vault_sol, 4),
             "harvesterInvested": round(self.harvester_vault_invested, 2),
@@ -616,6 +619,138 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         self.wallet_active_positions = []
         asyncio.create_task(self.db_save_engine_trade(t_record))
+def create_advanced_order(self, ord_data):
+        o_type = ord_data.get("orderType", "MARKET")
+        side = ord_data.get("side", "BUY")
+        amt = float(ord_data.get("amount", 0.0))
+        price = float(ord_data.get("price", self.live_price))
+        stop_p = float(ord_data.get("stopPrice", 0.0))
+        limit_p = float(ord_data.get("limitPrice", 0.0))
+        cb_pct = float(ord_data.get("callbackPct", 1.0))
+        o_id = "ORD_" + str(uuid.uuid4())[:6]
+
+        if o_type == "MARKET":
+            if side == "BUY":
+                self.execute_manual_buy(amt, "MARKET", self.live_price)
+            else:
+                self.execute_manual_sell()
+            return
+
+        order_obj = {
+            "id": o_id,
+            "orderType": o_type,
+            "side": side,
+            "amount": amt,
+            "price": price,
+            "stopPrice": stop_p,
+            "limitPrice": limit_p,
+            "callbackPct": cb_pct,
+            "peakTracked": self.live_price,
+            "lowestTracked": self.live_price,
+            "status": "OPEN",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.wallet_active_positions.append(order_obj)
+    def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
+        if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
+            return
+        if self.usdt_balance < usdt_amt and self.manual_test_balance < usdt_amt:
+            return
+        self.auto_loop_order = {
+            "id": "ATL_" + str(uuid.uuid4())[:6],
+            "usdtAmount": float(usdt_amt),
+            "buyTrigger": float(buy_trigger),
+            "buyCallbackPct": float(buy_cb),
+            "sellTrigger": float(sell_trigger),
+            "sellCallbackPct": float(sell_cb),
+            "stage": "WAITING_BUY_TRIGGER",
+            "lowestTracked": float(buy_trigger),
+            "solBought": 0.0,
+            "buyExecutedPrice": 0.0,
+            "peakTracked": float(sell_trigger),
+            "profitRealized": 0.0,
+            "status": "ARMED"
+        }
+        self.auto_loop_active = True
+
+    def run_auto_trailing_loop_tick(self):
+        if not self.auto_loop_active or not self.auto_loop_order or self.live_price <= 0:
+            return
+        ord = self.auto_loop_order
+        stg = ord["stage"]
+
+        if stg == "WAITING_BUY_TRIGGER":
+            if self.live_price <= ord["buyTrigger"]:
+                ord["stage"] = "TRAILING_BUY"
+                ord["lowestTracked"] = self.live_price
+                ord["status"] = "TRAILING BOTTOM DIP"
+
+        elif stg == "TRAILING_BUY":
+            if self.live_price < ord["lowestTracked"]:
+                ord["lowestTracked"] = self.live_price
+            bounce_needed = ord["lowestTracked"] * (1.0 + (ord["buyCallbackPct"] / 100.0))
+            if self.live_price >= bounce_needed:
+                invest_amt = ord["usdtAmount"]
+                fee = invest_amt * self.taker_fee_pct
+                sol_qty = (invest_amt - fee) / self.live_price
+                if self.manual_test_balance >= invest_amt:
+                    self.manual_test_balance -= invest_amt
+                elif self.usdt_balance >= invest_amt:
+                    self.usdt_balance -= invest_amt
+                ord["solBought"] = sol_qty
+                ord["buyExecutedPrice"] = self.live_price
+                ord["stage"] = "WAITING_SELL_TRIGGER"
+                ord["status"] = f"BOUGHT @ ${round(self.live_price, 2)} - RIDING TO ${ord['sellTrigger']}"
+                t_rec = {
+                    "orderId": ord["id"] + "_B",
+                    "side": "AUTO_LOOP_BUY",
+                    "price": round(self.live_price, 2),
+                    "solAmount": round(sol_qty, 4),
+                    "fee": round(fee, 4),
+                    "profit": 0.0,
+                    "execType": "AUTO_TRAILING_LOOP",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self.trades_history.insert(0, t_rec)
+                self.manual_trades_history.insert(0, t_rec)
+                asyncio.create_task(self.db_save_engine_trade(t_rec))
+
+        elif stg == "WAITING_SELL_TRIGGER":
+            if self.live_price >= ord["sellTrigger"]:
+                ord["stage"] = "TRAILING_SELL"
+                ord["peakTracked"] = self.live_price
+                ord["status"] = "PEAK TRAILING STOP ARMED"
+
+        elif stg == "TRAILING_SELL":
+            if self.live_price > ord["peakTracked"]:
+                ord["peakTracked"] = self.live_price
+            pullback_trigger = ord["peakTracked"] * (1.0 - (ord["sellCallbackPct"] / 100.0))
+            if self.live_price <= pullback_trigger and self.live_price > ord["buyExecutedPrice"]:
+                sold_sol = ord["solBought"]
+                gross = sold_sol * self.live_price
+                fee = gross * self.taker_fee_pct
+                net_ret = gross - fee
+                profit = net_ret - ord["usdtAmount"]
+                self.manual_test_balance += net_ret
+                self.realized_pnl += profit
+                ord["profitRealized"] = round(profit, 4)
+                ord["stage"] = "COMPLETED"
+                ord["status"] = f"COMPLETED PROFIT +${round(profit, 2)}"
+                t_rec = {
+                    "orderId": ord["id"] + "_S",
+                    "side": "AUTO_LOOP_SELL",
+                    "price": round(self.live_price, 2),
+                    "solAmount": round(sold_sol, 4),
+                    "fee": round(fee, 4),
+                    "profit": round(profit, 4),
+                    "realizedPnl": round(profit, 4),
+                    "execType": "AUTO_TRAILING_LOOP",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self.trades_history.insert(0, t_rec)
+                self.manual_trades_history.insert(0, t_rec)
+                asyncio.create_task(self.db_save_engine_trade(t_rec))
+                self.auto_loop_active = False
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
             return
@@ -799,43 +934,39 @@ class UltraQuantSpotBot:
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
-        if len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 10.0:
+
+        idle_fund = self.get_scavenged_idle_fund()
+        if len(self.micro_positions) == 0 and idle_fund >= 10.0:
             self.execute_micro_buy()
             return
-        if self.micro_last_ref_price <= 0:
-            self.micro_last_ref_price = self.live_price
-        current_dip = self.micro_last_ref_price - self.live_price
-        if current_dip >= 0.30 and len(self.micro_positions) < 10:
-            if not self.micro_tb_active:
-                self.micro_tb_active = True
-                self.micro_tb_lowest = self.live_price
-            else:
-                if self.live_price < self.micro_tb_lowest:
-                    self.micro_tb_lowest = self.live_price
-                drop_distance = self.micro_last_ref_price - self.micro_tb_lowest
-                if drop_distance >= 1.20:
-                    callback = 0.03
-                elif drop_distance >= 0.80:
-                    callback = 0.02
-                else:
-                    callback = 0.01
-                if self.live_price >= (self.micro_tb_lowest + callback):
-                    self.execute_micro_buy()
+
         for pos in list(self.micro_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.28:
-                    if gain >= 1.20:
-                        pullback = 0.03
-                    elif gain >= 0.80:
-                        pullback = 0.02
-                    else:
-                        pullback = 0.01
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.20:
+                if gain >= 0.30:
+                    pullback = 0.02 if gain >= 0.60 else 0.01
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.22:
                         self.execute_micro_sell(pos)
+                        return
+
+        if len(self.micro_positions) < 10 and idle_fund >= 10.0:
+            lowest_entry = min(p["entryPrice"] for p in self.micro_positions)
+            current_dip = lowest_entry - self.live_price
+
+            if current_dip >= 0.35:
+                if not self.micro_tb_active:
+                    self.micro_tb_active = True
+                    self.micro_tb_lowest = self.live_price
+                else:
+                    if self.live_price < self.micro_tb_lowest:
+                        self.micro_tb_lowest = self.live_price
+                    if self.live_price >= (self.micro_tb_lowest + 0.05):
+                        self.execute_micro_buy()
+            else:
+                self.micro_tb_active = False
 
     def get_killer2_idle_fund(self):
         if self.usdt_balance <= 5.0:
@@ -963,32 +1094,39 @@ class UltraQuantSpotBot:
     def run_killer2_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
-        if len(self.killer2_positions) == 0 and self.get_killer2_idle_fund() >= 10.0:
+
+        idle_fund = self.get_killer2_idle_fund()
+        if len(self.killer2_positions) == 0 and idle_fund >= 10.0:
             self.execute_killer2_buy()
             return
-        if self.killer2_last_ref_price <= 0:
-            self.killer2_last_ref_price = self.live_price
-        current_dip = self.killer2_last_ref_price - self.live_price
-        if current_dip >= 0.60 and len(self.killer2_positions) < 10:
-            if not self.killer2_tb_active:
-                self.killer2_tb_active = True
-                self.killer2_tb_lowest = self.live_price
-            else:
-                if self.live_price < self.killer2_tb_lowest:
-                    self.killer2_tb_lowest = self.live_price
-                callback = self.get_killer2_step_trail(mode="BUY")
-                if self.live_price >= (self.killer2_tb_lowest + callback):
-                    self.execute_killer2_buy()
+
         for pos in list(self.killer2_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.60:
-                    pullback = self.get_killer2_step_trail(mode="SELL")
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.45:
+                if gain >= 0.45:
+                    pullback = 0.05 if gain >= 0.80 else 0.03
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.35:
                         self.execute_killer2_sell(pos)
+                        return
+
+        if len(self.killer2_positions) < 10 and idle_fund >= 10.0:
+            lowest_entry = min(p["entryPrice"] for p in self.killer2_positions)
+            current_dip = lowest_entry - self.live_price
+
+            if current_dip >= 0.60:
+                if not self.killer2_tb_active:
+                    self.killer2_tb_active = True
+                    self.killer2_tb_lowest = self.live_price
+                else:
+                    if self.live_price < self.killer2_tb_lowest:
+                        self.killer2_tb_lowest = self.live_price
+                    if self.live_price >= (self.killer2_tb_lowest + 0.15):
+                        self.execute_killer2_buy()
+            else:
+                self.killer2_tb_active = False
 
     def get_killer3_idle_fund(self):
         if self.usdt_balance <= 5.0:
@@ -1118,32 +1256,39 @@ class UltraQuantSpotBot:
     def run_killer3_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
-        if len(self.killer3_positions) == 0 and self.get_killer3_idle_fund() >= 10.0:
+
+        idle_fund = self.get_killer3_idle_fund()
+        if len(self.killer3_positions) == 0 and idle_fund >= 10.0:
             self.execute_killer3_buy()
             return
-        if self.killer3_last_ref_price <= 0:
-            self.killer3_last_ref_price = self.live_price
-        current_dip = self.killer3_last_ref_price - self.live_price
-        if current_dip >= 0.90 and len(self.killer3_positions) < 10:
-            if not self.killer3_tb_active:
-                self.killer3_tb_active = True
-                self.killer3_tb_lowest = self.live_price
-            else:
-                if self.live_price < self.killer3_tb_lowest:
-                    self.killer3_tb_lowest = self.live_price
-                callback = self.get_killer3_step_trail(mode="BUY")
-                if self.live_price >= (self.killer3_tb_lowest + callback):
-                    self.execute_killer3_buy()
+
         for pos in list(self.killer3_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.90:
-                    pullback = self.get_killer3_step_trail(mode="SELL")
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.70:
+                if gain >= 0.65:
+                    pullback = 0.08 if gain >= 1.20 else 0.05
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.50:
                         self.execute_killer3_sell(pos)
+                        return
+
+        if len(self.killer3_positions) < 10 and idle_fund >= 10.0:
+            lowest_entry = min(p["entryPrice"] for p in self.killer3_positions)
+            current_dip = lowest_entry - self.live_price
+
+            if current_dip >= 0.90:
+                if not self.killer3_tb_active:
+                    self.killer3_tb_active = True
+                    self.killer3_tb_lowest = self.live_price
+                else:
+                    if self.live_price < self.killer3_tb_lowest:
+                        self.killer3_tb_lowest = self.live_price
+                    if self.live_price >= (self.killer3_tb_lowest + 0.20):
+                        self.execute_killer3_buy()
+            else:
+                self.killer3_tb_active = False
 
     def run_harvester_infinity_tick(self):
         if self.is_paused or self.live_price <= 0:
@@ -1249,45 +1394,87 @@ class UltraQuantSpotBot:
             self.harvester_last_action_price = self.live_price
         price_diff = self.live_price - self.harvester_last_action_price
 
-        if price_diff >= 0.80 and self.harvester_vault_sol > 0.05:
-            portion_sol = self.harvester_vault_sol * 0.10
-            gross_val = portion_sol * self.live_price
-            fee = gross_val * self.taker_fee_pct
-            net_val = gross_val - fee
-            cost = portion_sol * (self.harvester_vault_invested / self.harvester_vault_sol)
-            profit = net_val - cost
-            if profit < self.min_net_profit_usdt:
-                return
-            self.harvester_vault_sol -= portion_sol
-            self.harvester_vault_invested = max(0.0, self.harvester_vault_invested - cost)
-            self.harvester_vault_cash += net_val
-            self.realized_pnl += profit
-            self.harvester_realized_pnl += profit
-            self.harvester_last_action_price = self.live_price
-            self.harvester_status = f"SWING SELL (+${round(profit,2)})"
-            t_record = {
-                "orderId": "HRV_S_" + str(uuid.uuid4())[:4],
-                "side": "SELL",
-                "price": round(self.live_price, 2),
-                "solAmount": round(portion_sol, 4),
-                "fee": round(fee, 4),
-                "profit": round(profit, 4),
-                "realizedPnl": round(profit, 4),
-                "round": self.active_round,
-                "execType": "HARVESTER_SWING_EXIT",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            self.trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_engine_trade({
-                "order_id": t_record["orderId"],
-                "side": "SELL",
-                "price": t_record["price"],
-                "sol_amount": t_record["solAmount"],
-                "fee": t_record["fee"],
-                "profit": t_record["profit"],
-                "round": self.active_round,
-                "exec_type": "HARVESTER_SWING_EXIT"
-            }))
+        total_vault_val = (self.harvester_vault_sol * self.live_price) + self.harvester_vault_cash
+        if total_vault_val <= 0:
+            return
+
+        cash_ratio = self.harvester_vault_cash / total_vault_val
+        is_whale_bullish = (self.whale_orderflow_ratio >= 51.5) and (self.whale_sentiment != "BEARISH")
+        is_whale_bearish = (self.whale_orderflow_ratio < 48.5) or (self.whale_sentiment == "BEARISH")
+
+        if price_diff >= 1.20 and self.harvester_vault_sol > 0.05 and cash_ratio < 0.55:
+            if is_whale_bearish or price_diff >= 2.0:
+                portion_sol = self.harvester_vault_sol * 0.10
+                gross_val = portion_sol * self.live_price
+                fee = gross_val * self.taker_fee_pct
+                net_val = gross_val - fee
+                cost = portion_sol * (self.harvester_vault_invested / self.harvester_vault_sol)
+                profit = net_val - cost
+                if profit >= self.min_net_profit_usdt:
+                    self.harvester_vault_sol -= portion_sol
+                    self.harvester_vault_invested = max(0.0, self.harvester_vault_invested - cost)
+                    self.harvester_vault_cash += net_val
+                    self.realized_pnl += profit
+                    self.harvester_realized_pnl += profit
+                    self.harvester_last_action_price = self.live_price
+                    self.harvester_status = f"SWING SELL (+${round(profit,2)})"
+                    t_record = {
+                        "orderId": "HRV_S_" + str(uuid.uuid4())[:4],
+                        "side": "SELL",
+                        "price": round(self.live_price, 2),
+                        "solAmount": round(portion_sol, 4),
+                        "fee": round(fee, 4),
+                        "profit": round(profit, 4),
+                        "realizedPnl": round(profit, 4),
+                        "round": self.active_round,
+                        "execType": "HARVESTER_SWING_EXIT",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_engine_trade({
+                        "order_id": t_record["orderId"],
+                        "side": "SELL",
+                        "price": t_record["price"],
+                        "sol_amount": t_record["solAmount"],
+                        "fee": t_record["fee"],
+                        "profit": t_record["profit"],
+                        "round": self.active_round,
+                        "exec_type": "HARVESTER_SWING_EXIT"
+                    }))
+
+        elif price_diff <= -1.20 and cash_ratio > 0.45 and self.harvester_vault_cash >= 15.0:
+            if is_whale_bullish:
+                reinvest_size = min(self.harvester_vault_cash * 0.20, self.harvester_borrowed_r8 * 0.10)
+                if reinvest_size >= 10.0 and (self.harvester_vault_cash - reinvest_size) >= (total_vault_val * 0.40):
+                    fee = reinvest_size * self.taker_fee_pct
+                    sol_bought = (reinvest_size - fee) / self.live_price
+                    self.harvester_vault_cash -= reinvest_size
+                    self.harvester_vault_invested += reinvest_size
+                    self.harvester_vault_sol += sol_bought
+                    self.harvester_last_action_price = self.live_price
+                    self.harvester_status = "50/50 REBALANCE BUY"
+                    t_record = {
+                        "orderId": "HRV_B_" + str(uuid.uuid4())[:4],
+                        "side": "BUY",
+                        "price": round(self.live_price, 2),
+                        "solAmount": round(sol_bought, 4),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "round": self.active_round,
+                        "execType": "HARVESTER_SWING_BUY",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_engine_trade({
+                        "order_id": t_record["orderId"],
+                        "side": "BUY",
+                        "price": t_record["price"],
+                        "sol_amount": t_record["solAmount"],
+                        "fee": t_record["fee"],
+                        "profit": 0.0,
+                        "round": self.active_round,
+                        "exec_type": "HARVESTER_SWING_BUY"
+                    }))
 
         elif price_diff <= -0.80 and self.harvester_vault_cash >= 15.0:
             reinvest_size = min(self.harvester_vault_cash, self.harvester_borrowed_r8 * 0.10)
@@ -1398,7 +1585,53 @@ class UltraQuantSpotBot:
         self.run_killer2_scalper_tick()
         self.run_killer3_scalper_tick()
         self.run_harvester_infinity_tick()
+        self.run_auto_trailing_loop_tick()
+for ord in list(self.wallet_active_positions):
+            if not ord.get("orderType") or ord.get("orderType") in ["MARKET"]:
+                continue
+            o_type = ord["orderType"]
+            side = ord["side"]
+            amt = ord["amount"]
 
+            if o_type in ["LIMIT", "ADVANCED_LIMIT", "ICEBERG", "TWAP"]:
+                if side == "BUY" and self.live_price <= ord["price"]:
+                    self.execute_manual_buy(amt, "LIMIT", ord["price"])
+                    self.wallet_active_positions.remove(ord)
+                elif side == "SELL" and self.live_price >= ord["price"]:
+                    self.execute_manual_sell()
+                    self.wallet_active_positions.remove(ord)
+
+            elif o_type in ["TP_SL", "OCO"]:
+                if self.live_price >= ord["limitPrice"]:
+                    self.execute_manual_sell()
+                    self.wallet_active_positions.remove(ord)
+                elif self.live_price <= ord["stopPrice"]:
+                    self.execute_manual_sell()
+                    self.wallet_active_positions.remove(ord)
+
+            elif o_type == "TRIGGER":
+                if side == "BUY" and self.live_price >= ord["stopPrice"]:
+                    self.execute_manual_buy(amt, "MARKET", self.live_price)
+                    self.wallet_active_positions.remove(ord)
+                elif side == "SELL" and self.live_price <= ord["stopPrice"]:
+                    self.execute_manual_sell()
+                    self.wallet_active_positions.remove(ord)
+
+            elif o_type == "TRAILING_STOP":
+                if side == "SELL":
+                    if self.live_price > ord["peakTracked"]:
+                        ord["peakTracked"] = self.live_price
+                    floor = ord["peakTracked"] * (1.0 - (ord["callbackPct"] / 100.0))
+                    if self.live_price <= floor:
+                        self.execute_manual_sell()
+                        self.wallet_active_positions.remove(ord)
+                elif side == "BUY":
+                    if self.live_price < ord["lowestTracked"]:
+                        ord["lowestTracked"] = self.live_price
+                    ceil = ord["lowestTracked"] * (1.0 + (ord["callbackPct"] / 100.0))
+                    if self.live_price >= ceil:
+                        self.execute_manual_buy(amt, "MARKET", self.live_price)
+                        self.wallet_active_positions.remove(ord)
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             return
@@ -1416,11 +1649,12 @@ class UltraQuantSpotBot:
         last_entry = regular_positions[-1]["entryPrice"]
         current_dip = last_entry - self.live_price
 
-        if current_dip < 0.45:
+        min_required_dip = 2.00
+        if current_dip < min_required_dip:
             self.tb_active = False
             self.tb_stage = "IDLE"
         else:
-            if not self.tb_active and current_dip >= 0.60:
+            if not self.tb_active:
                 self.tb_active = True
                 self.tb_lowest_price = self.live_price
 
@@ -1430,20 +1664,21 @@ class UltraQuantSpotBot:
 
                 total_drop = last_entry - self.tb_lowest_price
 
-                if total_drop >= 1.20:
-                    self.tb_stage = "1.20$"
-                    required_bounce = 0.35
-                elif total_drop >= 0.90:
-                    self.tb_stage = "0.90$"
-                    required_bounce = 0.25
+                if total_drop >= 4.0:
+                    self.tb_stage = "DEEP_DIP"
+                    required_bounce_pct = 0.010
+                elif total_drop >= 2.5:
+                    self.tb_stage = "MED_DIP"
+                    required_bounce_pct = 0.008
                 else:
-                    self.tb_stage = "0.60$"
-                    required_bounce = 0.15
+                    self.tb_stage = "MIN_DIP"
+                    required_bounce_pct = 0.008
 
-                if self.whale_orderflow_ratio >= 65.0:
-                    required_bounce = max(0.10, round(required_bounce - 0.05, 2))
+                bounce_target = self.tb_lowest_price * (1.0 + required_bounce_pct)
+                is_market_rebounding = self.live_price >= bounce_target
+                is_whale_confirmed = (self.whale_orderflow_ratio >= 51.5) and (self.whale_sentiment != "BEARISH")
 
-                if self.live_price >= (self.tb_lowest_price + required_bounce):
+                if is_market_rebounding and is_whale_confirmed:
                     self.tb_active = False
                     self.tb_stage = "IDLE"
                     active_count = len([p for p in regular_positions if p.get("round") == self.active_round])
@@ -1582,13 +1817,15 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = True
                 elif action == "RESUME":
                     bot.is_paused = False
-                elif action == "MANUAL_BUY":
-                    buy_amt = float(msg.get("amount", 50.0))
-                    ord_type = str(msg.get("orderType", "MARKET")).upper()
-                    l_price = float(msg.get("limitPrice", 0.0))
-                    bot.execute_manual_buy(buy_amt, ord_type, l_price)
-                elif action == "MANUAL_SELL":
-                    bot.execute_manual_sell()
+                elif action in ["MANUAL_BUY", "MANUAL_SELL"]:
+                    bot.create_advanced_order(msg)
+                elif action == "CREATE_AUTO_LOOP":
+                    u_amt = float(msg.get("amount", 100.0))
+                    b_trig = float(msg.get("buyTrigger", 100.0))
+                    b_cb = float(msg.get("buyCallback", 1.0))
+                    s_trig = float(msg.get("sellTrigger", 120.0))
+                    s_cb = float(msg.get("sellCallback", 1.0))
+                    bot.create_auto_loop_order(u_amt, b_trig, b_cb, s_trig, s_cb)
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
                 pass
