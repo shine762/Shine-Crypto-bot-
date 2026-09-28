@@ -1588,7 +1588,8 @@ class UltraQuantSpotBot:
         self.run_killer3_scalper_tick()
         self.run_harvester_infinity_tick()
         self.run_auto_trailing_loop_tick()
-for ord in list(self.wallet_active_positions):
+
+        for ord in list(self.wallet_active_positions):
             if not ord.get("orderType") or ord.get("orderType") in ["MARKET"]:
                 continue
             o_type = ord["orderType"]
@@ -1634,6 +1635,7 @@ for ord in list(self.wallet_active_positions):
                     if self.live_price >= ceil:
                         self.execute_manual_buy(amt, "MARKET", self.live_price)
                         self.wallet_active_positions.remove(ord)
+
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
             return
