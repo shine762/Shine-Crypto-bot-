@@ -619,7 +619,8 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         self.wallet_active_positions = []
         asyncio.create_task(self.db_save_engine_trade(t_record))
-def create_advanced_order(self, ord_data):
+
+    def create_advanced_order(self, ord_data):
         o_type = ord_data.get("orderType", "MARKET")
         side = ord_data.get("side", "BUY")
         amt = float(ord_data.get("amount", 0.0))
@@ -651,6 +652,7 @@ def create_advanced_order(self, ord_data):
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.wallet_active_positions.append(order_obj)
+
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
             return
