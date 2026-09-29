@@ -403,7 +403,7 @@ class UltraQuantSpotBot:
         w_unreal_pct = round(((self.live_price - w_avg_entry) / w_avg_entry) * 100.0, 2) if w_avg_entry > 0 else 0.0
 
         w_locked_usdt = sum(o.get("invested", o.get("amount", 0.0)) for o in open_orders_list if o.get("side") == "BUY")
-        w_total_usdt = round(self.manual_test_balance + w_locked_usdt + w_invested_total, 2)
+        w_total_usdt = round(self.manual_test_balance + w_locked_usdt, 2)
 
         return {
             "isPaused": self.is_paused,
@@ -751,11 +751,11 @@ class UltraQuantSpotBot:
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = "ORD_" + str(uuid.uuid4())[:6]
 
-        if o_type == "MARKET":
-            if side == "BUY":
+        if o_type.upper() == "MARKET":
+            if side.upper() == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
-                self.execute_manual_sell(sell_amount_sol=amt)
+                self.execute_manual_sell(pos_id=None, sell_amount_sol=amt)
             return
 
         if side == "BUY":
