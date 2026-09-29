@@ -373,8 +373,7 @@ class UltraQuantSpotBot:
 
         positions_list = list(getattr(self, "wallet_active_positions", []))
         open_orders_list = list(getattr(self, "wallet_open_orders", []))
-        if self.auto_loop_active and self.auto_loop_order:
-            atl = self.auto_loop_order
+        for atl in self.auto_loops:
             open_orders_list.insert(0, {
                 "id": atl.get("id"),
                 "orderId": atl.get("id"),
@@ -387,7 +386,7 @@ class UltraQuantSpotBot:
                 "entryPrice": round(atl.get("buyExecutedPrice", 0.0), 2),
                 "stopPrice": round(atl.get("buyTrigger", 0.0), 2),
                 "limitPrice": round(atl.get("sellTrigger", 0.0), 2),
-                "callbackPct": atl.get("sellCallbackPct" if "SELL" in str(atl.get("stage", "")) else "buyCallbackPct", 1.0),
+                "callbackPct": atl.get("sellCallbackPct", 0.01),
                 "status": "OPEN",
                 "statusText": atl.get("status", "OPEN"),
                 "label": "Auto Trailing Loop",
@@ -710,11 +709,11 @@ class UltraQuantSpotBot:
         action = ord_data.get("action", "")
 
         if action == "CANCEL_ORDER" or ord_data.get("cancel"):
-            if self.auto_loop_order and (self.auto_loop_order.get("id") == pos_id or str(pos_id).startswith("ATL_")):
-                self.manual_test_balance += self.auto_loop_order.get("usdtAmount", 0.0)
-                self.auto_loop_active = False
-                self.auto_loop_order = None
+            if pos_id and str(pos_id).startswith("ATL_"):
+                self.cancel_auto_loop_slot(pos_id)
+                return
             if pos_id == "ALL":
+                self.cancel_auto_loop_slot("ALL")
                 for p in self.wallet_open_orders:
                     if p.get("side") == "BUY":
                         self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
