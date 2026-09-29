@@ -1786,6 +1786,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = False
                 elif action in ["MANUAL_BUY", "MANUAL_SELL"]:
                     bot.create_advanced_order(msg)
+                elif action == "CANCEL_AUTO_LOOP":
+                    bot.auto_loop_active = False
+                    bot.auto_loop_order = None
                 elif action == "CREATE_AUTO_LOOP":
                     u_amt = float(msg.get("amount", 100.0))
                     b_trig = float(msg.get("buyTrigger", 100.0))
