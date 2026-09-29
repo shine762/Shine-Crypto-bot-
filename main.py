@@ -162,7 +162,7 @@ class UltraQuantSpotBot:
                                     self.killer3_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
-                                elif elif p_id.startswith("HRV_"):
+                                elif p_id.startswith("HRV_"):
                                     pass
                                 else:
                                     loaded_positions.append(pos_obj)
