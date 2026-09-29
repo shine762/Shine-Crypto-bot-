@@ -107,8 +107,7 @@ class UltraQuantSpotBot:
         self.wallet_active_positions = []
         self.wallet_open_orders = []
         self.manual_trades_history = []
-        self.auto_loop_active = False
-        self.auto_loop_order = None
+        self.auto_loops = []
 
     async def load_from_database(self):
         try:
@@ -465,7 +464,7 @@ class UltraQuantSpotBot:
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
             "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
-            "autoLoop": self.auto_loop_order,
+            "autoLoops": self.auto_loops,
             "harvesterActive": self.harvester_active,
             "harvesterSol": round(self.harvester_vault_sol, 4),
             "harvesterInvested": round(self.harvester_vault_invested, 2),
@@ -784,108 +783,131 @@ class UltraQuantSpotBot:
         }
         self.wallet_open_orders.insert(0, order_obj)
 
-    def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
+    def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb, auto_repeat=True, slot_id=None):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
             return
+        if len(self.auto_loops) >= 10 and not slot_id:
+            return
+
+        if slot_id:
+            for loop in self.auto_loops:
+                if loop["id"] == slot_id:
+                    loop["buyTrigger"] = float(buy_trigger)
+                    loop["buyCallbackPct"] = float(buy_cb)
+                    loop["sellTrigger"] = float(sell_trigger)
+                    loop["sellCallbackPct"] = float(sell_cb)
+                    loop["autoRepeat"] = bool(auto_repeat)
+                    return
+
         if self.manual_test_balance < usdt_amt:
             return
+
         self.manual_test_balance -= usdt_amt
-        self.auto_loop_order = {
+        new_loop = {
             "id": "ATL_" + str(uuid.uuid4())[:6],
             "usdtAmount": float(usdt_amt),
             "buyTrigger": float(buy_trigger),
             "buyCallbackPct": float(buy_cb),
             "sellTrigger": float(sell_trigger),
             "sellCallbackPct": float(sell_cb),
+            "autoRepeat": bool(auto_repeat),
             "stage": "WAITING_BUY_TRIGGER",
-            "lowestTracked": float(buy_trigger),
             "solBought": 0.0,
             "buyExecutedPrice": 0.0,
             "peakTracked": float(sell_trigger),
             "profitRealized": 0.0,
-            "status": "ARMED (FUNDS LOCKED)"
+            "status": "ARMED (WAITING BUY)"
         }
-        self.auto_loop_active = True
+        self.auto_loops.append(new_loop)
+
+    def cancel_auto_loop_slot(self, slot_id):
+        for loop in list(self.auto_loops):
+            if loop["id"] == slot_id or slot_id == "ALL":
+                if loop.get("solBought", 0.0) <= 0:
+                    self.manual_test_balance += loop.get("usdtAmount", 0.0)
+                else:
+                    gross = loop["solBought"] * self.live_price
+                    self.manual_test_balance += gross
+                self.auto_loops.remove(loop)
 
     def run_auto_trailing_loop_tick(self):
-        if not self.auto_loop_active or not self.auto_loop_order or self.live_price <= 0:
+        if not self.auto_loops or self.live_price <= 0:
             return
-        ord = self.auto_loop_order
-        stg = ord["stage"]
 
-        if stg == "WAITING_BUY_TRIGGER":
-            if self.live_price <= ord["buyTrigger"]:
-                ord["stage"] = "TRAILING_BUY"
-                ord["lowestTracked"] = self.live_price
-                ord["status"] = "TRAILING BOTTOM DIP"
+        for ord in list(self.auto_loops):
+            stg = ord["stage"]
 
-        elif stg == "TRAILING_BUY":
-            if self.live_price < ord["lowestTracked"]:
-                ord["lowestTracked"] = self.live_price
-            bounce_needed = ord["lowestTracked"] * (1.0 + (ord["buyCallbackPct"] / 100.0))
-            if self.live_price >= bounce_needed:
-                invest_amt = ord["usdtAmount"]
-                fee = invest_amt * self.taker_fee_pct
-                sol_qty = (invest_amt - fee) / self.live_price
-                ord["solBought"] = sol_qty
-                ord["buyExecutedPrice"] = self.live_price
-                ord["stage"] = "WAITING_SELL_TRIGGER"
-                ord["status"] = f"BOUGHT @ ${round(self.live_price, 2)} - RIDING TO ${ord['sellTrigger']}"
-                t_rec = {
-                    "orderId": ord["id"] + "_B",
-                    "side": "AUTO_LOOP_BUY",
-                    "price": round(self.live_price, 2),
-                    "solAmount": round(sol_qty, 4),
-                    "fee": round(fee, 4),
-                    "profit": 0.0,
-                    "execType": "AUTO_TRAILING_LOOP",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.trades_history.insert(0, t_rec)
-                self.manual_trades_history.insert(0, t_rec)
-                asyncio.create_task(self.db_save_engine_trade(t_rec))
+            if stg == "WAITING_BUY_TRIGGER":
+                if self.live_price <= ord["buyTrigger"]:
+                    invest_amt = ord["usdtAmount"]
+                    fee = invest_amt * self.taker_fee_pct
+                    sol_qty = (invest_amt - fee) / self.live_price
+                    ord["solBought"] = sol_qty
+                    ord["buyExecutedPrice"] = self.live_price
+                    ord["peakTracked"] = self.live_price
+                    ord["stage"] = "WAITING_SELL_TRIGGER"
+                    ord["status"] = f"BOUGHT @ ${round(self.live_price, 2)} - WAITING TARGET"
+                    t_rec = {
+                        "orderId": ord["id"] + "_B",
+                        "side": "AUTO_LOOP_BUY",
+                        "price": round(self.live_price, 2),
+                        "solAmount": round(sol_qty, 4),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "execType": "AUTO_TRAILING_LOOP",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.trades_history.insert(0, t_rec)
+                    self.manual_trades_history.insert(0, t_rec)
+                    asyncio.create_task(self.db_save_engine_trade(t_rec))
 
-        elif stg == "WAITING_SELL_TRIGGER":
-            if self.live_price >= ord["sellTrigger"]:
-                ord["stage"] = "TRAILING_SELL"
-                ord["peakTracked"] = self.live_price
-                ord["status"] = "PEAK TRAILING STOP ARMED"
+            elif stg == "WAITING_SELL_TRIGGER":
+                if self.live_price >= ord["sellTrigger"]:
+                    ord["stage"] = "TRAILING_SELL"
+                    ord["peakTracked"] = self.live_price
+                    ord["status"] = "TRAILING PROFIT STOP"
 
-        elif stg == "TRAILING_SELL":
-            if self.live_price > ord["peakTracked"]:
-                ord["peakTracked"] = self.live_price
-            pullback_trigger = ord["peakTracked"] * (1.0 - (ord["sellCallbackPct"] / 100.0))
-            if self.live_price <= pullback_trigger and self.live_price > ord["buyExecutedPrice"]:
-                sold_sol = ord["solBought"]
-                gross = sold_sol * self.live_price
-                fee = gross * self.taker_fee_pct
-                net_ret = gross - fee
-                profit = net_ret - ord["usdtAmount"]
-                self.manual_realized_pnl += profit
-                self.realized_pnl += profit
-                ord["profitRealized"] = round(profit, 4)
-                if profit > 0:
-                    self.manual_test_balance += profit
-                t_rec = {
-                    "orderId": ord["id"] + "_S",
-                    "side": "AUTO_LOOP_SELL",
-                    "price": round(self.live_price, 2),
-                    "solAmount": round(sold_sol, 4),
-                    "fee": round(fee, 4),
-                    "profit": round(profit, 4),
-                    "realizedPnl": round(profit, 4),
-                    "execType": "AUTO_TRAILING_LOOP",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.trades_history.insert(0, t_rec)
-                self.manual_trades_history.insert(0, t_rec)
-                asyncio.create_task(self.db_save_engine_trade(t_rec))
-                ord["stage"] = "WAITING_BUY_TRIGGER"
-                ord["lowestTracked"] = ord["buyTrigger"]
-                ord["solBought"] = 0.0
-                ord["buyExecutedPrice"] = 0.0
-                ord["peakTracked"] = ord["sellTrigger"]
-                ord["status"] = "CYCLE RESTARTED (LOOP ACTIVE)"
+            elif stg == "TRAILING_SELL":
+                if self.live_price > ord["peakTracked"]:
+                    ord["peakTracked"] = self.live_price
+
+                pullback_trigger = ord["peakTracked"] * (1.0 - (ord["sellCallbackPct"] / 100.0))
+                if self.live_price <= pullback_trigger and self.live_price > ord["buyExecutedPrice"]:
+                    sold_sol = ord["solBought"]
+                    gross = sold_sol * self.live_price
+                    fee = gross * self.taker_fee_pct
+                    net_ret = gross - fee
+                    profit = net_ret - ord["usdtAmount"]
+                    self.manual_realized_pnl += profit
+                    self.realized_pnl += profit
+                    ord["profitRealized"] = round(profit, 4)
+
+                    t_rec = {
+                        "orderId": ord["id"] + "_S",
+                        "side": "AUTO_LOOP_SELL",
+                        "price": round(self.live_price, 2),
+                        "solAmount": round(sold_sol, 4),
+                        "fee": round(fee, 4),
+                        "profit": round(profit, 4),
+                        "realizedPnl": round(profit, 4),
+                        "execType": "AUTO_TRAILING_LOOP",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.trades_history.insert(0, t_rec)
+                    self.manual_trades_history.insert(0, t_rec)
+                    asyncio.create_task(self.db_save_engine_trade(t_rec))
+
+                    if ord.get("autoRepeat", True):
+                        if profit > 0:
+                            self.manual_test_balance += profit
+                        ord["stage"] = "WAITING_BUY_TRIGGER"
+                        ord["solBought"] = 0.0
+                        ord["buyExecutedPrice"] = 0.0
+                        ord["peakTracked"] = ord["sellTrigger"]
+                        ord["status"] = "AUTO RESTARTED (LOOP ACTIVE)"
+                    else:
+                        self.manual_test_balance += net_ret
+                        self.auto_loops.remove(ord)
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
             return
@@ -1766,15 +1788,17 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
                     bot.create_advanced_order(msg)
                 elif action in ["CANCEL_AUTO_LOOP", "STOP_AUTO_LOOP"]:
-                    bot.auto_loop_active = False
-                    bot.auto_loop_order = None
-                elif action == "CREATE_AUTO_LOOP":
-                    u_amt = float(msg.get("amount", 100.0))
+                    s_id = msg.get("slotId", "ALL")
+                    bot.cancel_auto_loop_slot(s_id)
+                elif action in ["CREATE_AUTO_LOOP", "EDIT_AUTO_LOOP"]:
+                    u_amt = float(msg.get("amount", 10.0))
                     b_trig = float(msg.get("buyTrigger", 100.0))
-                    b_cb = float(msg.get("buyCallback", 1.0))
-                    s_trig = float(msg.get("sellTrigger", 120.0))
-                    s_cb = float(msg.get("sellCallback", 1.0))
-                    bot.create_auto_loop_order(u_amt, b_trig, b_cb, s_trig, s_cb)
+                    b_cb = float(msg.get("buyCallback", 0.01))
+                    s_trig = float(msg.get("sellTrigger", 105.0))
+                    s_cb = float(msg.get("sellCallback", 0.01))
+                    a_rep = bool(msg.get("autoRepeat", True))
+                    s_id = msg.get("slotId", None)
+                    bot.create_auto_loop_order(u_amt, b_trig, b_cb, s_trig, s_cb, a_rep, s_id)
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
                 pass
