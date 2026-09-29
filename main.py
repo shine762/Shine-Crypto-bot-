@@ -103,6 +103,7 @@ class UltraQuantSpotBot:
         self.harvester_cycle_count = 0
         self.harvester_status = "IDLE (WAITING R6-R8)"
         self.manual_test_balance = 100.0
+        self.manual_realized_pnl = 0.0
         self.wallet_active_positions = []
         self.wallet_open_orders = []
         self.manual_trades_history = []
@@ -393,17 +394,30 @@ class UltraQuantSpotBot:
                 "label": "Auto Trailing Loop",
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
+
         w_sol_total = sum(p.get("solAmount", 0.0) for p in positions_list)
         w_invested_total = sum(p.get("invested", 0.0) for p in positions_list)
-        w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
+        w_avg_entry = round(w_invested_total / w_sol_total, 2) if w_sol_total > 0 else 0.0
+        
+        w_unreal_pnl = round((self.live_price - w_avg_entry) * w_sol_total, 2) if w_sol_total > 0 else 0.0
+        w_unreal_pct = round(((self.live_price - w_avg_entry) / w_avg_entry) * 100.0, 2) if w_avg_entry > 0 else 0.0
+
+        w_locked_usdt = sum(o.get("invested", o.get("amount", 0.0)) for o in open_orders_list if o.get("side") == "BUY")
+        w_total_usdt = round(self.manual_test_balance + w_locked_usdt + w_invested_total, 2)
 
         return {
             "isPaused": self.is_paused,
             "price": self.live_price,
             "livePrice": self.live_price,
+            "manualTestBalance": round(self.manual_test_balance, 2),
+            "walletLockedUsdt": round(w_locked_usdt, 2),
+            "walletTotalUsdt": w_total_usdt,
             "walletSol": round(w_sol_total, 4),
             "walletInvested": round(w_invested_total, 2),
-            "walletAvgEntry": round(w_avg_entry, 2),
+            "walletAvgEntry": w_avg_entry,
+            "walletUnrealizedPnl": w_unreal_pnl,
+            "walletUnrealizedPct": w_unreal_pct,
+            "walletRealizedPnl": round(self.manual_realized_pnl, 2),
             "walletActivePositions": positions_list,
             "walletOpenOrders": open_orders_list,
             "openOrders": open_orders_list,
@@ -651,6 +665,7 @@ class UltraQuantSpotBot:
         user_net_profit = round(gross_profit - owner_cut, 4) if gross_profit > 0 else round(gross_profit, 4)
 
         self.manual_test_balance += net_value
+        self.manual_realized_pnl += user_net_profit
 
         if pos_id:
             for p in list(self.wallet_active_positions):
@@ -697,13 +712,19 @@ class UltraQuantSpotBot:
 
         if action == "CANCEL_ORDER" or ord_data.get("cancel"):
             if self.auto_loop_order and (self.auto_loop_order.get("id") == pos_id or str(pos_id).startswith("ATL_")):
+                self.manual_test_balance += self.auto_loop_order.get("usdtAmount", 0.0)
                 self.auto_loop_active = False
                 self.auto_loop_order = None
             if pos_id == "ALL":
+                for p in self.wallet_open_orders:
+                    if p.get("side") == "BUY":
+                        self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
                 self.wallet_open_orders.clear()
                 return
             for p in list(self.wallet_open_orders):
                 if p.get("id") == pos_id:
+                    if p.get("side") == "BUY":
+                        self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
                     self.wallet_open_orders.remove(p)
                     return
             return
@@ -736,6 +757,11 @@ class UltraQuantSpotBot:
             else:
                 self.execute_manual_sell(sell_amount_sol=amt)
             return
+
+        if side == "BUY":
+            if self.manual_test_balance < amt:
+                return
+            self.manual_test_balance -= amt
 
         sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
         inv_amt = amt if side == "BUY" else (amt * price)
@@ -1484,6 +1510,7 @@ class UltraQuantSpotBot:
 
             if o_type in ["LIMIT", "ADVANCED_LIMIT", "ICEBERG", "TWAP"]:
                 if side == "BUY" and self.live_price <= target_p:
+                    self.manual_test_balance += amt
                     self.execute_manual_buy(amt, o_type, target_p)
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
