@@ -1,4 +1,4 @@
-import asyncio
+  import asyncio
 import json
 import uuid
 import os
@@ -162,11 +162,8 @@ class UltraQuantSpotBot:
                                     self.killer3_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
-                                elif p_id.startswith("HRV_"):
-                                    self.harvester_active = True
-                                    self.harvester_vault_sol += pos_obj["solAmount"]
-                                    self.harvester_vault_invested += pos_obj["invested"]
-                                    self.harvester_status = "50/50 RESTORED"
+                                elif elif p_id.startswith("HRV_"):
+                                    pass
                                 else:
                                     loaded_positions.append(pos_obj)
 
@@ -1314,61 +1311,7 @@ class UltraQuantSpotBot:
                 self.killer3_tb_active = False
 
     def run_harvester_infinity_tick(self):
-        if self.is_paused or self.live_price <= 0:
-            return
-        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-
-        if not self.harvester_active:
-            if self.active_round in [6, 7, 8] and self.live_price < 240.0:
-                r8_total_alloc = total_account * self.round_allocations.get(8, 0.27)
-                borrow_budget = max(15.0, min(max(0.0, self.usdt_balance), r8_total_alloc))
-                if borrow_budget >= 15.0 and self.usdt_balance >= borrow_budget:
-                    half_budget = borrow_budget / 2.0
-                    fee = half_budget * self.taker_fee_pct
-                    sol_bought = (half_budget - fee) / self.live_price
-                    self.usdt_balance -= half_budget
-                    self.harvester_borrowed_r8 = borrow_budget
-                    self.harvester_vault_invested = half_budget
-                    self.harvester_vault_cash = half_budget
-                    self.harvester_vault_sol = sol_bought
-                    self.harvester_last_action_price = self.live_price
-                    self.harvester_active = True
-                    self.harvester_status = "50/50 RUNNING"
-                    pos_id = "HRV_INIT_" + str(uuid.uuid4())[:4]
-                    pos = {
-                        "id": pos_id,
-                        "round": self.active_round,
-                        "subTrade": 1,
-                        "label": "HARVESTER 50/50 VAULT",
-                        "entryPrice": round(self.live_price, 2),
-                        "solAmount": round(sol_bought, 4),
-                        "invested": round(half_budget, 2),
-                        "isMacro": True,
-                        "targetPrice": 250.0
-                    }
-                    t_record = {
-                        "orderId": pos_id,
-                        "side": "BUY",
-                        "price": round(self.live_price, 2),
-                        "solAmount": round(sol_bought, 4),
-                        "fee": round(fee, 4),
-                        "profit": 0.0,
-                        "round": self.active_round,
-                        "execType": "HARVESTER_VAULT_INIT",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_buy(pos, {
-                        "order_id": pos_id,
-                        "side": "BUY",
-                        "price": round(self.live_price, 2),
-                        "sol_amount": round(sol_bought, 4),
-                        "fee": round(fee, 4),
-                        "profit": 0.0,
-                        "round": self.active_round,
-                        "exec_type": "HARVESTER_VAULT_INIT"
-                    }))
-            return
+        return
 
         if self.live_price >= 250.0 and self.harvester_vault_sol > 0:
             sold_sol = self.harvester_vault_sol
@@ -1607,7 +1550,6 @@ class UltraQuantSpotBot:
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
         self.run_killer3_scalper_tick()
-        self.run_harvester_infinity_tick()
         self.run_auto_trailing_loop_tick()
 
         for ord in list(self.wallet_active_positions):
