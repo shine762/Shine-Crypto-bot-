@@ -787,7 +787,9 @@ class UltraQuantSpotBot:
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
             return
-        usdt_amt = min(usdt_amt, max(self.manual_test_balance, self.usdt_balance, 10.0))
+        if self.manual_test_balance < usdt_amt:
+            return
+        self.manual_test_balance -= usdt_amt
         self.auto_loop_order = {
             "id": "ATL_" + str(uuid.uuid4())[:6],
             "usdtAmount": float(usdt_amt),
@@ -801,7 +803,7 @@ class UltraQuantSpotBot:
             "buyExecutedPrice": 0.0,
             "peakTracked": float(sell_trigger),
             "profitRealized": 0.0,
-            "status": "ARMED"
+            "status": "ARMED (FUNDS LOCKED)"
         }
         self.auto_loop_active = True
 
@@ -825,10 +827,6 @@ class UltraQuantSpotBot:
                 invest_amt = ord["usdtAmount"]
                 fee = invest_amt * self.taker_fee_pct
                 sol_qty = (invest_amt - fee) / self.live_price
-                if self.manual_test_balance >= invest_amt:
-                    self.manual_test_balance -= invest_amt
-                elif self.usdt_balance >= invest_amt:
-                    self.usdt_balance -= invest_amt
                 ord["solBought"] = sol_qty
                 ord["buyExecutedPrice"] = self.live_price
                 ord["stage"] = "WAITING_SELL_TRIGGER"
@@ -863,11 +861,11 @@ class UltraQuantSpotBot:
                 fee = gross * self.taker_fee_pct
                 net_ret = gross - fee
                 profit = net_ret - ord["usdtAmount"]
-                self.manual_test_balance += net_ret
+                self.manual_realized_pnl += profit
                 self.realized_pnl += profit
                 ord["profitRealized"] = round(profit, 4)
-                ord["stage"] = "COMPLETED"
-                ord["status"] = f"COMPLETED PROFIT +${round(profit, 2)}"
+                if profit > 0:
+                    self.manual_test_balance += profit
                 t_rec = {
                     "orderId": ord["id"] + "_S",
                     "side": "AUTO_LOOP_SELL",
@@ -882,7 +880,12 @@ class UltraQuantSpotBot:
                 self.trades_history.insert(0, t_rec)
                 self.manual_trades_history.insert(0, t_rec)
                 asyncio.create_task(self.db_save_engine_trade(t_rec))
-                self.auto_loop_active = False
+                ord["stage"] = "WAITING_BUY_TRIGGER"
+                ord["lowestTracked"] = ord["buyTrigger"]
+                ord["solBought"] = 0.0
+                ord["buyExecutedPrice"] = 0.0
+                ord["peakTracked"] = ord["sellTrigger"]
+                ord["status"] = "CYCLE RESTARTED (LOOP ACTIVE)"
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
             return
@@ -1519,7 +1522,7 @@ class UltraQuantSpotBot:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
 
-            elif o_type in ["TP_SL", "OCO"]:
+            elif o_type in ["TP_SL", "TP/SL", "OCO"]:
                 tp_p = ord.get("limitPrice", 0.0)
                 sl_p = ord.get("stopPrice", 0.0)
                 if side == "SELL":
@@ -1533,26 +1536,29 @@ class UltraQuantSpotBot:
                             self.wallet_open_orders.remove(ord)
                 else:
                     if tp_p > 0 and self.live_price <= tp_p:
-                        self.execute_manual_buy(amt, "TP_BUY", tp_p)
+                        self.manual_test_balance += amt
+                        self.execute_manual_buy(amt, "TP_BUY", self.live_price)
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
                     elif sl_p > 0 and self.live_price >= sl_p:
-                        self.execute_manual_buy(amt, "STOP_BUY", sl_p)
+                        self.manual_test_balance += amt
+                        self.execute_manual_buy(amt, "STOP_BUY", self.live_price)
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
 
             elif o_type == "TRIGGER":
                 trig_p = ord.get("stopPrice", target_p)
-                if side == "BUY" and self.live_price >= trig_p:
+                if side == "BUY" and self.live_price <= trig_p:
+                    self.manual_test_balance += amt
                     self.execute_manual_buy(amt, "TRIGGER", self.live_price)
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                elif side == "SELL" and self.live_price <= trig_p:
+                elif side == "SELL" and self.live_price >= trig_p:
                     self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
 
-            elif o_type == "TRAILING_STOP":
+            elif o_type in ["TRAILING_STOP", "TRAILING STOP"]:
                 cb = ord.get("callbackPct", 1.0)
                 if side == "SELL":
                     if self.live_price > ord.get("peakTracked", self.live_price):
@@ -1563,10 +1569,11 @@ class UltraQuantSpotBot:
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
                 elif side == "BUY":
-                    if self.live_price < ord.get("lowestTracked", self.live_price):
+                    if "lowestTracked" not in ord or self.live_price < ord["lowestTracked"]:
                         ord["lowestTracked"] = self.live_price
                     ceil = ord["lowestTracked"] * (1.0 + (cb / 100.0))
-                    if self.live_price >= ceil:
+                    if self.live_price >= ceil and ord["lowestTracked"] < ord.get("entryPrice", self.live_price):
+                        self.manual_test_balance += amt
                         self.execute_manual_buy(amt, "TRAILING_BUY", self.live_price)
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
