@@ -104,6 +104,7 @@ class UltraQuantSpotBot:
         self.harvester_status = "IDLE (WAITING R6-R8)"
         self.manual_test_balance = 100.0
         self.wallet_active_positions = []
+        self.wallet_open_orders = []
         self.manual_trades_history = []
         self.auto_loop_active = False
         self.auto_loop_order = None
@@ -370,15 +371,14 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
-        wallet_positions = getattr(self, "wallet_active_positions", [])
-        open_orders_list = list(wallet_positions)
+        positions_list = list(getattr(self, "wallet_active_positions", []))
+        open_orders_list = list(getattr(self, "wallet_open_orders", []))
         if self.auto_loop_active and self.auto_loop_order:
             atl = self.auto_loop_order
             open_orders_list.insert(0, {
                 "id": atl.get("id"),
                 "orderId": atl.get("id"),
-                "orderType": "AUTO_LOOP",
-                "type": "AUTO_LOOP",
+                "orderType": "Auto Trailing Loop",
                 "side": "BUY" if "BUY" in str(atl.get("stage", "")) else "SELL",
                 "amount": atl.get("usdtAmount", 0.0),
                 "solAmount": round(atl.get("solBought", 0.0), 4),
@@ -393,11 +393,8 @@ class UltraQuantSpotBot:
                 "label": "Auto Trailing Loop",
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
-        w_sol_total = sum(p.get("solAmount", 0.0) for p in wallet_positions)
-        w_invested_total = sum(p.get("invested", 0.0) for p in wallet_positions)
-        if self.auto_loop_active and self.auto_loop_order and self.auto_loop_order.get("solBought", 0.0) > 0:
-            w_sol_total += self.auto_loop_order.get("solBought", 0.0)
-            w_invested_total += self.auto_loop_order.get("usdtAmount", 0.0)
+        w_sol_total = sum(p.get("solAmount", 0.0) for p in positions_list)
+        w_invested_total = sum(p.get("invested", 0.0) for p in positions_list)
         w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
 
         return {
@@ -407,11 +404,10 @@ class UltraQuantSpotBot:
             "walletSol": round(w_sol_total, 4),
             "walletInvested": round(w_invested_total, 2),
             "walletAvgEntry": round(w_avg_entry, 2),
-            "walletActivePositions": open_orders_list,
+            "walletActivePositions": positions_list,
+            "walletOpenOrders": open_orders_list,
             "openOrders": open_orders_list,
             "orders": open_orders_list,
-            "openOrders": wallet_positions,
-            "orders": wallet_positions,
             "pnl": round(unrealized_pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "usdtBalance": round(self.usdt_balance, 2),
@@ -581,6 +577,8 @@ class UltraQuantSpotBot:
         if amount_usdt <= 0 or target_price <= 0:
             return
         if self.manual_test_balance < amount_usdt:
+            amount_usdt = self.manual_test_balance
+        if amount_usdt <= 0:
             return
         fee = amount_usdt * self.taker_fee_pct
         net_invest = amount_usdt - fee
@@ -592,39 +590,42 @@ class UltraQuantSpotBot:
             "round": 0,
             "subTrade": 0,
             "label": f"WALLET {order_type} BUY",
+            "side": "BUY",
             "entryPrice": round(target_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
             "orderType": order_type,
             "isManualWallet": True,
+            "status": "FILLED",
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
-        self.wallet_active_positions.append(manual_pos)
+        self.wallet_active_positions.insert(0, manual_pos)
         t_record = {
             "orderId": pos_id,
-            "side": f"MANUAL_{order_type}_BUY",
+            "side": "BUY",
             "price": round(target_price, 2),
             "solAmount": round(sol_bought, 4),
             "invested": round(amount_usdt, 2),
             "fee": round(fee, 4),
-            "execType": "NON_CUSTODIAL_TEST_WALLET",
+            "profit": 0.0,
+            "execType": f"{order_type}_BUY_FILLED",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_engine_trade(t_record))
 
-    def execute_manual_sell(self, pos_id=None):
+    def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
             return
 
         target_positions = []
         if pos_id:
-            for p in self.wallet_active_positions:
+            for p in list(self.wallet_active_positions):
                 if p.get("id") == pos_id:
                     target_positions.append(p)
                     break
         else:
-            target_positions = [p for p in self.wallet_active_positions if p.get("solAmount", 0) > 0]
+            target_positions = [p for p in list(self.wallet_active_positions) if p.get("solAmount", 0) > 0]
 
         if len(target_positions) == 0:
             return
@@ -632,35 +633,59 @@ class UltraQuantSpotBot:
         total_sol = sum(p.get("solAmount", 0.0) for p in target_positions)
         total_invested = sum(p.get("invested", 0.0) for p in target_positions)
 
-        if total_sol <= 0:
+        if sell_amount_sol > 0 and sell_amount_sol < total_sol:
+            sold_sol = sell_amount_sol
+            cost_basis = total_invested * (sold_sol / total_sol)
+        else:
+            sold_sol = total_sol
+            cost_basis = total_invested
+
+        if sold_sol <= 0:
             return
 
-        gross_value = total_sol * self.live_price
+        gross_value = sold_sol * self.live_price
         fee = gross_value * self.taker_fee_pct
         net_value = gross_value - fee
-        gross_profit = net_value - total_invested
-        owner_cut = 0.0
-        user_net_profit = gross_profit
-        if gross_profit > 0:
-            owner_cut = round(gross_profit * 0.10, 4)
-            user_net_profit = round(gross_profit - owner_cut, 4)
+        gross_profit = net_value - cost_basis
+        owner_cut = round(gross_profit * 0.10, 4) if gross_profit > 0 else 0.0
+        user_net_profit = round(gross_profit - owner_cut, 4) if gross_profit > 0 else round(gross_profit, 4)
 
         self.manual_test_balance += net_value
 
-        for p in target_positions:
-            if p in self.wallet_active_positions:
-                self.wallet_active_positions.remove(p)
+        if pos_id:
+            for p in list(self.wallet_active_positions):
+                if p.get("id") == pos_id:
+                    self.wallet_active_positions.remove(p)
+        elif sold_sol >= total_sol:
+            self.wallet_active_positions.clear()
+        else:
+            rem_sol = total_sol - sold_sol
+            rem_inv = total_invested - cost_basis
+            self.wallet_active_positions.clear()
+            self.wallet_active_positions.append({
+                "id": "MAN_" + str(uuid.uuid4())[:6],
+                "round": 0,
+                "subTrade": 0,
+                "label": "WALLET REMAINING HOLDING",
+                "side": "BUY",
+                "entryPrice": round(rem_inv / rem_sol, 2) if rem_sol > 0 else round(self.live_price, 2),
+                "solAmount": round(rem_sol, 4),
+                "invested": round(rem_inv, 2),
+                "orderType": "MARKET",
+                "isManualWallet": True,
+                "status": "FILLED",
+                "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+            })
 
         t_record = {
             "orderId": "MAN_S_" + (str(pos_id) if pos_id else str(uuid.uuid4())[:6]),
-            "side": "MANUAL_SELL",
+            "side": "SELL",
             "price": round(self.live_price, 2),
-            "solAmount": round(total_sol, 4),
+            "solAmount": round(sold_sol, 4),
             "fee": round(fee, 4),
             "profit": round(user_net_profit, 4),
-            "ownerCut": owner_cut,
             "realizedPnl": round(user_net_profit, 4),
-            "execType": "NON_CUSTODIAL_TEST_WALLET",
+            "execType": "MARKET_SELL_FILLED",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
@@ -668,20 +693,34 @@ class UltraQuantSpotBot:
 
     def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
-        if pos_id:
+        action = ord_data.get("action", "")
+
+        if action == "CANCEL_ORDER" or ord_data.get("cancel"):
             if self.auto_loop_order and (self.auto_loop_order.get("id") == pos_id or str(pos_id).startswith("ATL_")):
                 self.auto_loop_active = False
                 self.auto_loop_order = None
+            if pos_id == "ALL":
+                self.wallet_open_orders.clear()
                 return
+            for p in list(self.wallet_open_orders):
+                if p.get("id") == pos_id:
+                    self.wallet_open_orders.remove(p)
+                    return
+            return
+
+        if pos_id:
             for p in list(self.wallet_active_positions):
                 if p.get("id") == pos_id:
-                    if p.get("isManualWallet"):
-                        self.execute_manual_sell(pos_id=pos_id)
-                    else:
-                        self.wallet_active_positions.remove(p)
+                    self.execute_manual_sell(pos_id=pos_id)
                     return
+            for p in list(self.wallet_open_orders):
+                if p.get("id") == pos_id:
+                    self.wallet_open_orders.remove(p)
+                    return
+            return
+
         o_type = ord_data.get("orderType", "MARKET")
-        side = ord_data.get("side", "SELL" if ord_data.get("action") == "MANUAL_SELL" else "BUY")
+        side = ord_data.get("side", "SELL" if "SELL" in str(action).upper() else "BUY")
         amt = float(ord_data.get("amount", 0.0))
         price = float(ord_data.get("price", self.live_price))
         if price <= 0:
@@ -695,7 +734,7 @@ class UltraQuantSpotBot:
             if side == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
-                self.execute_manual_sell(pos_id=pos_id)
+                self.execute_manual_sell(sell_amount_sol=amt)
             return
 
         sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
@@ -710,14 +749,14 @@ class UltraQuantSpotBot:
             "entryPrice": round(price, 2),
             "price": price,
             "stopPrice": stop_p,
-            "limitPrice": limit_p,
+            "limitPrice": limit_p if limit_p > 0 else price,
             "callbackPct": cb_pct,
             "peakTracked": self.live_price,
             "lowestTracked": self.live_price,
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        self.wallet_active_positions.append(order_obj)
+        self.wallet_open_orders.insert(0, order_obj)
 
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
@@ -1358,169 +1397,7 @@ class UltraQuantSpotBot:
                 self.killer3_tb_active = False
 
     def run_harvester_infinity_tick(self):
-        return
-
-        if self.live_price >= 250.0 and self.harvester_vault_sol > 0:
-            sold_sol = self.harvester_vault_sol
-            gross_val = sold_sol * self.live_price
-            fee = gross_val * self.taker_fee_pct
-            net_return = gross_val - fee
-            profit = (net_return + self.harvester_vault_cash) - self.harvester_borrowed_r8
-            if profit < self.min_net_profit_usdt:
-                return
-            self.usdt_balance += net_return
-            self.realized_pnl += profit
-            self.harvester_realized_pnl += profit
-            self.harvester_cycle_count += 1
-            self.harvester_active = False
-            self.harvester_vault_sol = 0.0
-            self.harvester_vault_invested = 0.0
-            self.harvester_vault_cash = 0.0
-            self.harvester_borrowed_r8 = 0.0
-            self.harvester_status = "ATH HARVESTED ($250) - WAITING R6-R8"
-            t_record = {
-                "orderId": "HRV_ATH_" + str(uuid.uuid4())[:4],
-                "side": "SELL",
-                "price": round(self.live_price, 2),
-                "solAmount": round(sold_sol, 4),
-                "fee": round(fee, 4),
-                "profit": round(profit, 4),
-                "realizedPnl": round(profit, 4),
-                "round": 1,
-                "execType": "HARVESTER_GRAND_ATH_EXIT",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            self.trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_engine_trade({
-                "order_id": t_record["orderId"],
-                "side": "SELL",
-                "price": t_record["price"],
-                "sol_amount": t_record["solAmount"],
-                "fee": t_record["fee"],
-                "profit": t_record["profit"],
-                "round": 1,
-                "exec_type": "HARVESTER_GRAND_ATH_EXIT"
-            }))
-            return
-
-        if self.harvester_last_action_price <= 0:
-            self.harvester_last_action_price = self.live_price
-        price_diff = self.live_price - self.harvester_last_action_price
-
-        total_vault_val = (self.harvester_vault_sol * self.live_price) + self.harvester_vault_cash
-        if total_vault_val <= 0:
-            return
-
-        cash_ratio = self.harvester_vault_cash / total_vault_val
-        is_whale_bullish = (self.whale_orderflow_ratio >= 51.5) and (self.whale_sentiment != "BEARISH")
-        is_whale_bearish = (self.whale_orderflow_ratio < 48.5) or (self.whale_sentiment == "BEARISH")
-
-        if price_diff >= 1.20 and self.harvester_vault_sol > 0.05 and cash_ratio < 0.55:
-            if is_whale_bearish or price_diff >= 2.0:
-                portion_sol = self.harvester_vault_sol * 0.10
-                gross_val = portion_sol * self.live_price
-                fee = gross_val * self.taker_fee_pct
-                net_val = gross_val - fee
-                cost = portion_sol * (self.harvester_vault_invested / self.harvester_vault_sol)
-                profit = net_val - cost
-                if profit >= self.min_net_profit_usdt:
-                    self.harvester_vault_sol -= portion_sol
-                    self.harvester_vault_invested = max(0.0, self.harvester_vault_invested - cost)
-                    self.harvester_vault_cash += net_val
-                    self.realized_pnl += profit
-                    self.harvester_realized_pnl += profit
-                    self.harvester_last_action_price = self.live_price
-                    self.harvester_status = f"SWING SELL (+${round(profit,2)})"
-                    t_record = {
-                        "orderId": "HRV_S_" + str(uuid.uuid4())[:4],
-                        "side": "SELL",
-                        "price": round(self.live_price, 2),
-                        "solAmount": round(portion_sol, 4),
-                        "fee": round(fee, 4),
-                        "profit": round(profit, 4),
-                        "realizedPnl": round(profit, 4),
-                        "round": self.active_round,
-                        "execType": "HARVESTER_SWING_EXIT",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_engine_trade({
-                        "order_id": t_record["orderId"],
-                        "side": "SELL",
-                        "price": t_record["price"],
-                        "sol_amount": t_record["solAmount"],
-                        "fee": t_record["fee"],
-                        "profit": t_record["profit"],
-                        "round": self.active_round,
-                        "exec_type": "HARVESTER_SWING_EXIT"
-                    }))
-
-        elif price_diff <= -1.20 and cash_ratio > 0.45 and self.harvester_vault_cash >= 15.0:
-            if is_whale_bullish:
-                reinvest_size = min(self.harvester_vault_cash * 0.20, self.harvester_borrowed_r8 * 0.10)
-                if reinvest_size >= 10.0 and (self.harvester_vault_cash - reinvest_size) >= (total_vault_val * 0.40):
-                    fee = reinvest_size * self.taker_fee_pct
-                    sol_bought = (reinvest_size - fee) / self.live_price
-                    self.harvester_vault_cash -= reinvest_size
-                    self.harvester_vault_invested += reinvest_size
-                    self.harvester_vault_sol += sol_bought
-                    self.harvester_last_action_price = self.live_price
-                    self.harvester_status = "50/50 REBALANCE BUY"
-                    t_record = {
-                        "orderId": "HRV_B_" + str(uuid.uuid4())[:4],
-                        "side": "BUY",
-                        "price": round(self.live_price, 2),
-                        "solAmount": round(sol_bought, 4),
-                        "fee": round(fee, 4),
-                        "profit": 0.0,
-                        "round": self.active_round,
-                        "execType": "HARVESTER_SWING_BUY",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_engine_trade({
-                        "order_id": t_record["orderId"],
-                        "side": "BUY",
-                        "price": t_record["price"],
-                        "sol_amount": t_record["solAmount"],
-                        "fee": t_record["fee"],
-                        "profit": 0.0,
-                        "round": self.active_round,
-                        "exec_type": "HARVESTER_SWING_BUY"
-                    }))
-
-        elif price_diff <= -0.80 and self.harvester_vault_cash >= 15.0:
-            reinvest_size = min(self.harvester_vault_cash, self.harvester_borrowed_r8 * 0.10)
-            if reinvest_size >= 10.0:
-                fee = reinvest_size * self.taker_fee_pct
-                sol_bought = (reinvest_size - fee) / self.live_price
-                self.harvester_vault_cash -= reinvest_size
-                self.harvester_vault_invested += reinvest_size
-                self.harvester_vault_sol += sol_bought
-                self.harvester_last_action_price = self.live_price
-                self.harvester_status = "REBUY RE-BALANCE"
-                t_record = {
-                    "orderId": "HRV_B_" + str(uuid.uuid4())[:4],
-                    "side": "BUY",
-                    "price": round(self.live_price, 2),
-                    "solAmount": round(sol_bought, 4),
-                    "fee": round(fee, 4),
-                    "profit": 0.0,
-                    "round": self.active_round,
-                    "execType": "HARVESTER_SWING_BUY",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_save_engine_trade({
-                    "order_id": t_record["orderId"],
-                    "side": "BUY",
-                    "price": t_record["price"],
-                    "sol_amount": t_record["solAmount"],
-                    "fee": t_record["fee"],
-                    "profit": 0.0,
-                    "round": self.active_round,
-                    "exec_type": "HARVESTER_SWING_BUY"
-                }))
+        pass
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
@@ -1599,60 +1476,73 @@ class UltraQuantSpotBot:
         self.run_killer3_scalper_tick()
         self.run_auto_trailing_loop_tick()
 
-        for ord in list(self.wallet_active_positions):
-            if not ord.get("orderType") or ord.get("orderType") in ["MARKET"]:
-                continue
-            o_type = ord["orderType"]
-            side = ord["side"]
-            amt = ord["amount"]
+        for ord in list(self.wallet_open_orders):
+            o_type = ord.get("orderType", "")
+            side = ord.get("side", "BUY")
+            amt = ord.get("amount", 0.0)
+            target_p = ord.get("price", self.live_price)
 
             if o_type in ["LIMIT", "ADVANCED_LIMIT", "ICEBERG", "TWAP"]:
-                if side == "BUY" and self.live_price <= ord["price"]:
-                    self.execute_manual_buy(amt, "LIMIT", ord["price"])
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
-                elif side == "SELL" and self.live_price >= ord["price"]:
-                    self.execute_manual_sell()
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
+                if side == "BUY" and self.live_price <= target_p:
+                    self.execute_manual_buy(amt, o_type, target_p)
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
+                elif side == "SELL" and self.live_price >= target_p:
+                    self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
 
             elif o_type in ["TP_SL", "OCO"]:
-                if self.live_price >= ord["limitPrice"]:
-                    self.execute_manual_sell()
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
-                elif self.live_price <= ord["stopPrice"]:
-                    self.execute_manual_sell()
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
+                tp_p = ord.get("limitPrice", 0.0)
+                sl_p = ord.get("stopPrice", 0.0)
+                if side == "SELL":
+                    if tp_p > 0 and self.live_price >= tp_p:
+                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                    elif sl_p > 0 and self.live_price <= sl_p:
+                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                else:
+                    if tp_p > 0 and self.live_price <= tp_p:
+                        self.execute_manual_buy(amt, "TP_BUY", tp_p)
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                    elif sl_p > 0 and self.live_price >= sl_p:
+                        self.execute_manual_buy(amt, "STOP_BUY", sl_p)
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
 
             elif o_type == "TRIGGER":
-                if side == "BUY" and self.live_price >= ord["stopPrice"]:
-                    self.execute_manual_buy(amt, "MARKET", self.live_price)
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
-                elif side == "SELL" and self.live_price <= ord["stopPrice"]:
-                    self.execute_manual_sell()
-                    if ord in self.wallet_active_positions:
-                        self.wallet_active_positions.remove(ord)
+                trig_p = ord.get("stopPrice", target_p)
+                if side == "BUY" and self.live_price >= trig_p:
+                    self.execute_manual_buy(amt, "TRIGGER", self.live_price)
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
+                elif side == "SELL" and self.live_price <= trig_p:
+                    self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
 
             elif o_type == "TRAILING_STOP":
+                cb = ord.get("callbackPct", 1.0)
                 if side == "SELL":
-                    if self.live_price > ord["peakTracked"]:
+                    if self.live_price > ord.get("peakTracked", self.live_price):
                         ord["peakTracked"] = self.live_price
-                    floor = ord["peakTracked"] * (1.0 - (ord["callbackPct"] / 100.0))
+                    floor = ord["peakTracked"] * (1.0 - (cb / 100.0))
                     if self.live_price <= floor:
-                        self.execute_manual_sell()
-                        if ord in self.wallet_active_positions:
-                            self.wallet_active_positions.remove(ord)
+                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
                 elif side == "BUY":
-                    if self.live_price < ord["lowestTracked"]:
+                    if self.live_price < ord.get("lowestTracked", self.live_price):
                         ord["lowestTracked"] = self.live_price
-                    ceil = ord["lowestTracked"] * (1.0 + (ord["callbackPct"] / 100.0))
+                    ceil = ord["lowestTracked"] * (1.0 + (cb / 100.0))
                     if self.live_price >= ceil:
-                        self.execute_manual_buy(amt, "MARKET", self.live_price)
-                        if ord in self.wallet_active_positions:
-                            self.wallet_active_positions.remove(ord)
+                        self.execute_manual_buy(amt, "TRAILING_BUY", self.live_price)
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
