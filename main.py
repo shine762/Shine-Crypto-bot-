@@ -383,6 +383,8 @@ class UltraQuantSpotBot:
             "walletInvested": round(w_invested_total, 2),
             "walletAvgEntry": round(w_avg_entry, 2),
             "walletActivePositions": wallet_positions,
+            "openOrders": wallet_positions,
+            "orders": wallet_positions,
             "pnl": round(unrealized_pnl, 2),
             "pnlPct": round(pnl_pct, 2),
             "usdtBalance": round(self.usdt_balance, 2),
@@ -689,8 +691,7 @@ class UltraQuantSpotBot:
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
             return
-        if self.usdt_balance < usdt_amt and self.manual_test_balance < usdt_amt:
-            return
+        usdt_amt = min(usdt_amt, max(self.manual_test_balance, self.usdt_balance, 10.0))
         self.auto_loop_order = {
             "id": "ATL_" + str(uuid.uuid4())[:6],
             "usdtAmount": float(usdt_amt),
@@ -1807,9 +1808,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = True
                 elif action == "RESUME":
                     bot.is_paused = False
-                elif action in ["MANUAL_BUY", "MANUAL_SELL"]:
+                elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
                     bot.create_advanced_order(msg)
-                elif action == "CANCEL_AUTO_LOOP":
+                elif action in ["CANCEL_AUTO_LOOP", "STOP_AUTO_LOOP"]:
                     bot.auto_loop_active = False
                     bot.auto_loop_order = None
                 elif action == "CREATE_AUTO_LOOP":
