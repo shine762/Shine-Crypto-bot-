@@ -370,54 +370,10 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
-        def create_advanced_order(self, ord_data):
-        pos_id = ord_data.get("posId") or ord_data.get("id")
-        if pos_id:
-            for p in list(self.wallet_active_positions):
-                if p.get("id") == pos_id:
-                    if p.get("isManualWallet"):
-                        self.execute_manual_sell(pos_id=pos_id)
-                    else:
-                        self.wallet_active_positions.remove(p)
-                    return
-        o_type = ord_data.get("orderType", "MARKET")
-        side = ord_data.get("side", "SELL" if ord_data.get("action") == "MANUAL_SELL" else "BUY")
-        amt = float(ord_data.get("amount", 0.0))
-        price = float(ord_data.get("price", self.live_price))
-        if price <= 0:
-            price = self.live_price
-        stop_p = float(ord_data.get("stopPrice", 0.0))
-        limit_p = float(ord_data.get("limitPrice", 0.0))
-        cb_pct = float(ord_data.get("callbackPct", 1.0))
-        o_id = "ORD_" + str(uuid.uuid4())[:6]
-
-        if o_type == "MARKET":
-            if side == "BUY":
-                self.execute_manual_buy(amt, "MARKET", self.live_price)
-            else:
-                self.execute_manual_sell(pos_id=pos_id)
-            return
-
-        sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
-        inv_amt = amt if side == "BUY" else (amt * price)
-        order_obj = {
-            "id": o_id,
-            "orderType": o_type,
-            "side": side,
-            "amount": amt,
-            "solAmount": round(sol_qty, 4),
-            "invested": round(inv_amt, 2),
-            "entryPrice": round(price, 2),
-            "price": price,
-            "stopPrice": stop_p,
-            "limitPrice": limit_p,
-            "callbackPct": cb_pct,
-            "peakTracked": self.live_price,
-            "lowestTracked": self.live_price,
-            "status": "OPEN",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        self.wallet_active_positions.append(order_obj)
+        wallet_positions = getattr(self, "wallet_active_positions", [])
+        w_sol_total = sum(p.get("solAmount", 0.0) for p in wallet_positions)
+        w_invested_total = sum(p.get("invested", 0.0) for p in wallet_positions)
+        w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
 
         return {
             "isPaused": self.is_paused,
@@ -682,14 +638,24 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_save_engine_trade(t_record))
 
     def create_advanced_order(self, ord_data):
+        pos_id = ord_data.get("posId") or ord_data.get("id")
+        if pos_id:
+            for p in list(self.wallet_active_positions):
+                if p.get("id") == pos_id:
+                    if p.get("isManualWallet"):
+                        self.execute_manual_sell(pos_id=pos_id)
+                    else:
+                        self.wallet_active_positions.remove(p)
+                    return
         o_type = ord_data.get("orderType", "MARKET")
-        side = ord_data.get("side", "BUY")
+        side = ord_data.get("side", "SELL" if ord_data.get("action") == "MANUAL_SELL" else "BUY")
         amt = float(ord_data.get("amount", 0.0))
         price = float(ord_data.get("price", self.live_price))
+        if price <= 0:
+            price = self.live_price
         stop_p = float(ord_data.get("stopPrice", 0.0))
         limit_p = float(ord_data.get("limitPrice", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
-        pos_id = ord_data.get("posId") or ord_data.get("id")
         o_id = "ORD_" + str(uuid.uuid4())[:6]
 
         if o_type == "MARKET":
@@ -699,11 +665,16 @@ class UltraQuantSpotBot:
                 self.execute_manual_sell(pos_id=pos_id)
             return
 
+        sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
+        inv_amt = amt if side == "BUY" else (amt * price)
         order_obj = {
             "id": o_id,
             "orderType": o_type,
             "side": side,
             "amount": amt,
+            "solAmount": round(sol_qty, 4),
+            "invested": round(inv_amt, 2),
+            "entryPrice": round(price, 2),
             "price": price,
             "stopPrice": stop_p,
             "limitPrice": limit_p,
