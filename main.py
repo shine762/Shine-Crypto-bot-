@@ -371,8 +371,33 @@ class UltraQuantSpotBot:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
         wallet_positions = getattr(self, "wallet_active_positions", [])
+        open_orders_list = list(wallet_positions)
+        if self.auto_loop_active and self.auto_loop_order:
+            atl = self.auto_loop_order
+            open_orders_list.insert(0, {
+                "id": atl.get("id"),
+                "orderId": atl.get("id"),
+                "orderType": "AUTO_LOOP",
+                "type": "AUTO_LOOP",
+                "side": "BUY" if "BUY" in str(atl.get("stage", "")) else "SELL",
+                "amount": atl.get("usdtAmount", 0.0),
+                "solAmount": round(atl.get("solBought", 0.0), 4),
+                "invested": round(atl.get("usdtAmount", 0.0), 2),
+                "price": round(atl.get("buyExecutedPrice", 0.0) if atl.get("buyExecutedPrice", 0.0) > 0 else atl.get("buyTrigger", 0.0), 2),
+                "entryPrice": round(atl.get("buyExecutedPrice", 0.0), 2),
+                "stopPrice": round(atl.get("buyTrigger", 0.0), 2),
+                "limitPrice": round(atl.get("sellTrigger", 0.0), 2),
+                "callbackPct": atl.get("sellCallbackPct" if "SELL" in str(atl.get("stage", "")) else "buyCallbackPct", 1.0),
+                "status": "OPEN",
+                "statusText": atl.get("status", "OPEN"),
+                "label": "Auto Trailing Loop",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
         w_sol_total = sum(p.get("solAmount", 0.0) for p in wallet_positions)
         w_invested_total = sum(p.get("invested", 0.0) for p in wallet_positions)
+        if self.auto_loop_active and self.auto_loop_order and self.auto_loop_order.get("solBought", 0.0) > 0:
+            w_sol_total += self.auto_loop_order.get("solBought", 0.0)
+            w_invested_total += self.auto_loop_order.get("usdtAmount", 0.0)
         w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
 
         return {
@@ -382,7 +407,9 @@ class UltraQuantSpotBot:
             "walletSol": round(w_sol_total, 4),
             "walletInvested": round(w_invested_total, 2),
             "walletAvgEntry": round(w_avg_entry, 2),
-            "walletActivePositions": wallet_positions,
+            "walletActivePositions": open_orders_list,
+            "openOrders": open_orders_list,
+            "orders": open_orders_list,
             "openOrders": wallet_positions,
             "orders": wallet_positions,
             "pnl": round(unrealized_pnl, 2),
@@ -642,6 +669,10 @@ class UltraQuantSpotBot:
     def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
         if pos_id:
+            if self.auto_loop_order and (self.auto_loop_order.get("id") == pos_id or str(pos_id).startswith("ATL_")):
+                self.auto_loop_active = False
+                self.auto_loop_order = None
+                return
             for p in list(self.wallet_active_positions):
                 if p.get("id") == pos_id:
                     if p.get("isManualWallet"):
