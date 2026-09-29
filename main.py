@@ -370,10 +370,54 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
-        wallet_positions = getattr(self, 'wallet_active_positions', [])
-        w_sol_total = sum(p["solAmount"] for p in wallet_positions)
-        w_invested_total = sum(p["invested"] for p in wallet_positions)
-        w_avg_entry = (w_invested_total / w_sol_total) if w_sol_total > 0 else 0.0
+        def create_advanced_order(self, ord_data):
+        pos_id = ord_data.get("posId") or ord_data.get("id")
+        if pos_id:
+            for p in list(self.wallet_active_positions):
+                if p.get("id") == pos_id:
+                    if p.get("isManualWallet"):
+                        self.execute_manual_sell(pos_id=pos_id)
+                    else:
+                        self.wallet_active_positions.remove(p)
+                    return
+        o_type = ord_data.get("orderType", "MARKET")
+        side = ord_data.get("side", "SELL" if ord_data.get("action") == "MANUAL_SELL" else "BUY")
+        amt = float(ord_data.get("amount", 0.0))
+        price = float(ord_data.get("price", self.live_price))
+        if price <= 0:
+            price = self.live_price
+        stop_p = float(ord_data.get("stopPrice", 0.0))
+        limit_p = float(ord_data.get("limitPrice", 0.0))
+        cb_pct = float(ord_data.get("callbackPct", 1.0))
+        o_id = "ORD_" + str(uuid.uuid4())[:6]
+
+        if o_type == "MARKET":
+            if side == "BUY":
+                self.execute_manual_buy(amt, "MARKET", self.live_price)
+            else:
+                self.execute_manual_sell(pos_id=pos_id)
+            return
+
+        sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
+        inv_amt = amt if side == "BUY" else (amt * price)
+        order_obj = {
+            "id": o_id,
+            "orderType": o_type,
+            "side": side,
+            "amount": amt,
+            "solAmount": round(sol_qty, 4),
+            "invested": round(inv_amt, 2),
+            "entryPrice": round(price, 2),
+            "price": price,
+            "stopPrice": stop_p,
+            "limitPrice": limit_p,
+            "callbackPct": cb_pct,
+            "peakTracked": self.live_price,
+            "lowestTracked": self.live_price,
+            "status": "OPEN",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.wallet_active_positions.append(order_obj)
 
         return {
             "isPaused": self.is_paused,
@@ -1562,26 +1606,32 @@ class UltraQuantSpotBot:
             if o_type in ["LIMIT", "ADVANCED_LIMIT", "ICEBERG", "TWAP"]:
                 if side == "BUY" and self.live_price <= ord["price"]:
                     self.execute_manual_buy(amt, "LIMIT", ord["price"])
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
                 elif side == "SELL" and self.live_price >= ord["price"]:
                     self.execute_manual_sell()
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
 
             elif o_type in ["TP_SL", "OCO"]:
                 if self.live_price >= ord["limitPrice"]:
                     self.execute_manual_sell()
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
                 elif self.live_price <= ord["stopPrice"]:
                     self.execute_manual_sell()
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
 
             elif o_type == "TRIGGER":
                 if side == "BUY" and self.live_price >= ord["stopPrice"]:
                     self.execute_manual_buy(amt, "MARKET", self.live_price)
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
                 elif side == "SELL" and self.live_price <= ord["stopPrice"]:
                     self.execute_manual_sell()
-                    self.wallet_active_positions.remove(ord)
+                    if ord in self.wallet_active_positions:
+                        self.wallet_active_positions.remove(ord)
 
             elif o_type == "TRAILING_STOP":
                 if side == "SELL":
@@ -1590,14 +1640,16 @@ class UltraQuantSpotBot:
                     floor = ord["peakTracked"] * (1.0 - (ord["callbackPct"] / 100.0))
                     if self.live_price <= floor:
                         self.execute_manual_sell()
-                        self.wallet_active_positions.remove(ord)
+                        if ord in self.wallet_active_positions:
+                            self.wallet_active_positions.remove(ord)
                 elif side == "BUY":
                     if self.live_price < ord["lowestTracked"]:
                         ord["lowestTracked"] = self.live_price
                     ceil = ord["lowestTracked"] * (1.0 + (ord["callbackPct"] / 100.0))
                     if self.live_price >= ceil:
                         self.execute_manual_buy(amt, "MARKET", self.live_price)
-                        self.wallet_active_positions.remove(ord)
+                        if ord in self.wallet_active_positions:
+                            self.wallet_active_positions.remove(ord)
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
