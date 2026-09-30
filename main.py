@@ -113,13 +113,14 @@ class UltraQuantSpotBot:
                         if data and len(data) > 0:
                             row = data[0]
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
-                            if "usdt_balance" in row and float(row.get("usdt_balance")) > 0:
+                            if "usdt_balance" in row and row.get("usdt_balance") is not None:
                                 self.usdt_balance = float(row.get("usdt_balance"))
-                            if "sol_balance" in row:
+                                self.manual_test_balance = float(row.get("usdt_balance"))
+                            if "sol_balance" in row and row.get("sol_balance") is not None:
                                 self.sol_balance = float(row.get("sol_balance"))
-                            if "invested_amount" in row:
+                            if "invested_amount" in row and row.get("invested_amount") is not None:
                                 self.invested_amount = float(row.get("invested_amount"))
-                            if "avg_entry_price" in row:
+                            if "avg_entry_price" in row and row.get("avg_entry_price") is not None:
                                 self.avg_entry_price = float(row.get("avg_entry_price"))
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
@@ -230,8 +231,7 @@ class UltraQuantSpotBot:
     async def db_sync_state(self):
         try:
             payload = {
-                "id": 1,
-                "usdt_balance": round(self.usdt_balance, 2),
+                "usdt_balance": round(self.manual_test_balance, 2),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
                 "avg_entry_price": round(self.avg_entry_price, 2),
@@ -241,12 +241,8 @@ class UltraQuantSpotBot:
                 "sub_trade_count": self.sub_trade_count,
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            headers = dict(SUPABASE_HEADERS)
-            headers["Prefer"] = "resolution=merge-duplicates"
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.post(f"{SUPABASE_URL}/rest/v1/bot_state", json=payload) as resp:
-                    if resp.status not in [200, 201, 204]:
-                        await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
         except Exception:
             pass
 
@@ -623,7 +619,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
-        self.usdt_balance = self.manual_test_balance
+        self.usdt_balance = round(self.manual_test_balance, 2)
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
 
@@ -806,6 +802,8 @@ class UltraQuantSpotBot:
             return
 
         self.manual_test_balance -= usdt_amt
+        self.usdt_balance = round(self.manual_test_balance, 2)
+        asyncio.create_task(self.db_sync_state())
         new_loop = {
             "id": "ATL_" + str(uuid.uuid4())[:6],
             "usdtAmount": float(usdt_amt),
