@@ -158,6 +158,8 @@ class UltraQuantSpotBot:
                                     self.killer3_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
+                                elif p_id.startswith("MAN_"):
+                                    self.wallet_active_positions.append(pos_obj)
                                 else:
                                     loaded_positions.append(pos_obj)
 
@@ -622,7 +624,7 @@ class UltraQuantSpotBot:
         }
         self.manual_trades_history.insert(0, t_record)
         self.usdt_balance = self.manual_test_balance
-        asyncio.create_task(self.db_save_engine_trade(t_record))
+        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
 
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
@@ -702,7 +704,8 @@ class UltraQuantSpotBot:
         }
         self.manual_trades_history.insert(0, t_record)
         self.usdt_balance = self.manual_test_balance
-        asyncio.create_task(self.db_save_engine_trade(t_record))
+        target_id = pos_id if pos_id else ("MAN_" + str(uuid.uuid4())[:6])
+        asyncio.create_task(self.db_save_sell_individual(target_id, t_record))
         asyncio.create_task(self.db_sync_state())
 
     def create_advanced_order(self, ord_data):
