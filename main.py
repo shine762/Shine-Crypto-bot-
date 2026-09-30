@@ -49,13 +49,8 @@ class UltraQuantSpotBot:
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
-        self.manual_trades_history = []
         self.price_history = []
         self.latest_signal = {"action": "HOLD", "price": 0.0, "text": "Scanning market for high-probability signals..."}
-        self.initial_tb_active = False
-        self.initial_tb_peak = 0.0
-        self.initial_tb_lowest = 0.0
-        self.initial_capital = 100.0
         self.macro_vault_sol = 0.0
         self.macro_vault_invested = 0.0
         self.macro_vault_entry = 0.0
@@ -163,8 +158,6 @@ class UltraQuantSpotBot:
                                     self.killer3_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
-                                elif p_id.startswith("HRV_"):
-                                    pass
                                 else:
                                     loaded_positions.append(pos_obj)
 
@@ -235,6 +228,7 @@ class UltraQuantSpotBot:
     async def db_sync_state(self):
         try:
             payload = {
+                "id": 1,
                 "usdt_balance": round(self.usdt_balance, 2),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
@@ -245,8 +239,12 @@ class UltraQuantSpotBot:
                 "sub_trade_count": self.sub_trade_count,
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
+            headers = dict(SUPABASE_HEADERS)
+            headers["Prefer"] = "resolution=merge-duplicates"
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.post(f"{SUPABASE_URL}/rest/v1/bot_state", json=payload) as resp:
+                    if resp.status not in [200, 201, 204]:
+                        await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
         except Exception:
             pass
 
@@ -443,7 +441,6 @@ class UltraQuantSpotBot:
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
             "canManualTrade": True,
-            "manualTestBalance": round(self.manual_test_balance, 2),
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
@@ -624,7 +621,9 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
+        self.usdt_balance = self.manual_test_balance
         asyncio.create_task(self.db_save_engine_trade(t_record))
+        asyncio.create_task(self.db_sync_state())
 
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
@@ -702,7 +701,9 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
+        self.usdt_balance = self.manual_test_balance
         asyncio.create_task(self.db_save_engine_trade(t_record))
+        asyncio.create_task(self.db_sync_state())
 
     def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
@@ -1445,9 +1446,6 @@ class UltraQuantSpotBot:
                         self.execute_killer3_buy()
             else:
                 self.killer3_tb_active = False
-
-    def run_harvester_infinity_tick(self):
-        pass
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
