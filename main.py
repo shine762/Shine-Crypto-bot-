@@ -115,6 +115,8 @@ class UltraQuantSpotBot:
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
                             if "usdt_balance" in row and row.get("usdt_balance") is not None:
                                 self.usdt_balance = float(row.get("usdt_balance"))
+                            if "wallet_balance" in row and row.get("wallet_balance") is not None:
+                                self.manual_test_balance = float(row.get("wallet_balance"))
                             if "sol_balance" in row and row.get("sol_balance") is not None:
                                 self.sol_balance = float(row.get("sol_balance"))
                             if "invested_amount" in row and row.get("invested_amount") is not None:
@@ -230,7 +232,8 @@ class UltraQuantSpotBot:
     async def db_sync_state(self):
         try:
             payload = {
-                "usdt_balance": round(self.manual_test_balance, 2),
+                "usdt_balance": round(self.usdt_balance, 2),
+                "wallet_balance": round(self.manual_test_balance, 2),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
                 "avg_entry_price": round(self.avg_entry_price, 2),
@@ -619,6 +622,7 @@ class UltraQuantSpotBot:
         }
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+        asyncio.create_task(self.db_sync_state())
 
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
@@ -698,6 +702,7 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         target_id = pos_id if pos_id else ("MAN_" + str(uuid.uuid4())[:6])
         asyncio.create_task(self.db_save_sell_individual(target_id, t_record))
+        asyncio.create_task(self.db_sync_state())
 
     def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
@@ -797,6 +802,7 @@ class UltraQuantSpotBot:
             return
 
         self.manual_test_balance -= usdt_amt
+        asyncio.create_task(self.db_sync_state())
         new_loop = {
             "id": "ATL_" + str(uuid.uuid4())[:6],
             "usdtAmount": float(usdt_amt),
