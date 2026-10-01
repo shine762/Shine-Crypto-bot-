@@ -985,21 +985,29 @@ class UltraQuantSpotBot:
     def get_scavenged_idle_fund(self):
         if self.usdt_balance <= 5.0:
             return 0.0
-        total_account = self.usdt_balance + (self.sol_balance * self.live_price)
-        scavenged_pool = 0.0
-        for r in range(1, 9):
-            if r != self.active_round:
-                allocated = total_account * self.round_allocations.get(r, 0.0)
-                used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
-                unspent = allocated * (1.0 - used_ratio)
-                scavenged_pool += unspent
-        return max(0.0, min(self.usdt_balance, scavenged_pool))
+        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
+        cur_alloc = total_account * self.round_allocations.get(self.active_round, 0.05)
+        cur_done = self.micro_round_trades_done.get(self.active_round, 0)
+        cur_unspent = max(0.0, cur_alloc * (1.0 - (cur_done / 10.0)))
+
+        if self.active_round < 5:
+            return max(0.0, min(self.usdt_balance, cur_unspent))
+
+        borrowed_pool = 0.0
+        for r in range(1, self.active_round):
+            r_alloc = total_account * self.round_allocations.get(r, 0.0)
+            r_done = self.round_trades_done.get(r, 0) + self.micro_round_trades_done.get(r, 0)
+            r_unspent = max(0.0, r_alloc * (1.0 - min(1.0, r_done / 10.0)))
+            borrowed_pool += r_unspent
+
+        total_avail = cur_unspent + borrowed_pool
+        return max(0.0, min(self.usdt_balance, total_avail))
 
     def get_micro_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(5.0, min(10.0, total_account * 0.08))
+        calc_size = max(5.0, total_account * 0.05)
         idle_fund = self.get_scavenged_idle_fund()
-        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
+        return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
@@ -1116,40 +1124,40 @@ class UltraQuantSpotBot:
             self.execute_micro_buy()
             return
 
-        if len(self.micro_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+        max_trades = 10 if self.active_round >= 5 else 4
+        if len(self.micro_positions) < max_trades and idle_fund >= 5.0 and self.usdt_balance >= 5.0:
             lowest_entry = min(p["entryPrice"] for p in self.micro_positions)
             current_dip = lowest_entry - self.live_price
 
-            if current_dip >= 0.80:
+            if current_dip >= 0.70:
                 if not self.micro_tb_active:
                     self.micro_tb_active = True
                     self.micro_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.micro_tb_lowest:
                         self.micro_tb_lowest = self.live_price
-                    if self.live_price >= (self.micro_tb_lowest + 0.12):
+                    if self.live_price >= (self.micro_tb_lowest + 0.10):
                         self.execute_micro_buy()
             else:
                 self.micro_tb_active = False
 
     def get_killer2_idle_fund(self):
-        if self.usdt_balance <= 5.0:
+        if self.usdt_balance <= 5.0 or self.active_round < 5:
             return 0.0
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        scavenged_pool = 0.0
-        for r in range(1, 9):
-            if r != self.active_round:
-                allocated = total_account * self.round_allocations.get(r, 0.0)
-                used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
-                unspent = allocated * (1.0 - used_ratio)
-                scavenged_pool += unspent
-        return max(0.0, min(self.usdt_balance, scavenged_pool))
+        borrowed_pool = 0.0
+        for r in range(1, self.active_round):
+            r_alloc = total_account * self.round_allocations.get(r, 0.0)
+            r_done = self.round_trades_done.get(r, 0) + self.killer2_round_trades_done.get(r, 0)
+            r_unspent = max(0.0, r_alloc * (1.0 - min(1.0, r_done / 10.0)))
+            borrowed_pool += r_unspent
+        return max(0.0, min(self.usdt_balance, borrowed_pool))
 
     def get_killer2_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(5.0, min(10.0, total_account * 0.08))
+        calc_size = max(5.0, total_account * 0.06)
         idle_fund = self.get_killer2_idle_fund()
-        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
+        return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
     def get_killer2_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
@@ -1302,25 +1310,19 @@ class UltraQuantSpotBot:
                 self.killer2_tb_active = False
 
     def get_killer3_idle_fund(self):
-        if self.usdt_balance <= 5.0:
+        if self.usdt_balance <= 5.0 or self.active_round < 5:
             return 0.0
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        scavenged_pool = 0.0
-        eligible_rounds = [r for r in range(1, 9) if abs(r - self.active_round) >= 2]
-        if not eligible_rounds:
-            eligible_rounds = [r for r in range(1, 9) if r != self.active_round]
-        for r in eligible_rounds:
-            allocated = total_account * self.round_allocations.get(r, 0.0)
-            used_ratio = min(1.0, self.round_trades_done.get(r, 0) / 10.0)
-            unspent = allocated * (1.0 - used_ratio)
-            scavenged_pool += unspent
-        return max(0.0, min(self.usdt_balance, scavenged_pool))
+        r8_alloc = total_account * self.round_allocations.get(8, 0.27)
+        r8_done = self.round_trades_done.get(8, 0) + self.killer3_round_trades_done.get(8, 0)
+        r8_unspent = max(0.0, r8_alloc * (1.0 - min(1.0, r8_done / 10.0)))
+        return max(0.0, min(self.usdt_balance, r8_unspent))
 
     def get_killer3_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        base_size = max(5.0, min(10.0, total_account * 0.08))
+        calc_size = max(5.0, total_account * 0.08)
         idle_fund = self.get_killer3_idle_fund()
-        return min(max(0.0, self.usdt_balance), min(idle_fund, base_size))
+        return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
     def get_killer3_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
