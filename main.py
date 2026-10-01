@@ -1092,35 +1092,42 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_scavenged_idle_fund()
-        if len(self.micro_positions) == 0 and idle_fund >= 5.0:
-            self.execute_micro_buy()
-            return
-
         for pos in list(self.micro_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.45:
-                    pullback = 0.03 if gain >= 0.70 else 0.02
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.38:
+                if gain >= 0.35:
+                    pullback = 0.03 if gain >= 0.65 else 0.02
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.25:
                         self.execute_micro_sell(pos)
                         return
 
-        if len(self.micro_positions) < 10 and idle_fund >= 5.0:
+        ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else self.live_price)
+        dip_from_ref = ref_anchor - self.live_price
+
+        if dip_from_ref > 2.20:
+            self.micro_tb_active = False
+            return
+
+        idle_fund = self.get_scavenged_idle_fund()
+        if len(self.micro_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+            self.execute_micro_buy()
+            return
+
+        if len(self.micro_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
             lowest_entry = min(p["entryPrice"] for p in self.micro_positions)
             current_dip = lowest_entry - self.live_price
 
-            if current_dip >= 0.35:
+            if current_dip >= 0.80:
                 if not self.micro_tb_active:
                     self.micro_tb_active = True
                     self.micro_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.micro_tb_lowest:
                         self.micro_tb_lowest = self.live_price
-                    if self.live_price >= (self.micro_tb_lowest + 0.05):
+                    if self.live_price >= (self.micro_tb_lowest + 0.12):
                         self.execute_micro_buy()
             else:
                 self.micro_tb_active = False
@@ -1252,35 +1259,44 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_killer2_idle_fund()
-        if len(self.killer2_positions) == 0 and idle_fund >= 5.0:
-            self.execute_killer2_buy()
-            return
-
         for pos in list(self.killer2_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.45:
-                    pullback = 0.05 if gain >= 0.80 else 0.03
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.35:
+                if gain >= 0.55:
+                    pullback = 0.05 if gain >= 0.90 else 0.03
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.40:
                         self.execute_killer2_sell(pos)
                         return
 
-        if len(self.killer2_positions) < 10 and idle_fund >= 5.0:
-            lowest_entry = min(p["entryPrice"] for p in self.killer2_positions)
-            current_dip = lowest_entry - self.live_price
+        ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else 0.0)
+        if ref_anchor <= 0:
+            return
 
-            if current_dip >= 0.60:
+        dip_from_ref = ref_anchor - self.live_price
+        if dip_from_ref < 2.20 or dip_from_ref > 5.00:
+            self.killer2_tb_active = False
+            return
+
+        idle_fund = self.get_killer2_idle_fund()
+        if len(self.killer2_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+            self.execute_killer2_buy()
+            return
+
+        if len(self.killer2_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+            lowest_k2 = min(p["entryPrice"] for p in self.killer2_positions)
+            current_k2_dip = lowest_k2 - self.live_price
+
+            if current_k2_dip >= 1.20:
                 if not self.killer2_tb_active:
                     self.killer2_tb_active = True
                     self.killer2_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.killer2_tb_lowest:
                         self.killer2_tb_lowest = self.live_price
-                    if self.live_price >= (self.killer2_tb_lowest + 0.15):
+                    if self.live_price >= (self.killer2_tb_lowest + 0.18):
                         self.execute_killer2_buy()
             else:
                 self.killer2_tb_active = False
@@ -1414,35 +1430,44 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_killer3_idle_fund()
-        if len(self.killer3_positions) == 0 and idle_fund >= 5.0:
-            self.execute_killer3_buy()
-            return
-
         for pos in list(self.killer3_positions):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.65:
-                    pullback = 0.08 if gain >= 1.20 else 0.05
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.50:
+                if gain >= 0.80:
+                    pullback = 0.08 if gain >= 1.40 else 0.05
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.60:
                         self.execute_killer3_sell(pos)
                         return
 
-        if len(self.killer3_positions) < 10 and idle_fund >= 5.0:
-            lowest_entry = min(p["entryPrice"] for p in self.killer3_positions)
-            current_dip = lowest_entry - self.live_price
+        ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else 0.0)
+        if ref_anchor <= 0:
+            return
 
-            if current_dip >= 0.90:
+        dip_from_ref = ref_anchor - self.live_price
+        if dip_from_ref < 5.00:
+            self.killer3_tb_active = False
+            return
+
+        idle_fund = self.get_killer3_idle_fund()
+        if len(self.killer3_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
+            self.execute_killer3_buy()
+            return
+
+        if len(self.killer3_positions) < 3 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
+            lowest_k3 = min(p["entryPrice"] for p in self.killer3_positions)
+            current_k3_dip = lowest_k3 - self.live_price
+
+            if current_k3_dip >= 1.80:
                 if not self.killer3_tb_active:
                     self.killer3_tb_active = True
                     self.killer3_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.killer3_tb_lowest:
                         self.killer3_tb_lowest = self.live_price
-                    if self.live_price >= (self.killer3_tb_lowest + 0.20):
+                    if self.live_price >= (self.killer3_tb_lowest + 0.25):
                         self.execute_killer3_buy()
             else:
                 self.killer3_tb_active = False
