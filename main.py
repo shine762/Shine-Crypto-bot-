@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -1040,6 +1040,18 @@ class UltraQuantSpotBot:
         self.micro_last_ref_price = self.live_price
         self.micro_tb_active = False
         self.micro_tb_lowest = 0.0
+        t_record = {
+            "orderId": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": m_round,
+            "execType": "MICRO_SCALP_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id,
             "side": "BUY",
@@ -1207,6 +1219,18 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = self.live_price
         self.killer2_tb_active = False
         self.killer2_tb_lowest = 0.0
+        t_record = {
+            "orderId": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": k_round,
+            "execType": "KILLER2_SCALP_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id,
             "side": "BUY",
@@ -1372,6 +1396,18 @@ class UltraQuantSpotBot:
         self.killer3_last_ref_price = self.live_price
         self.killer3_tb_active = False
         self.killer3_tb_lowest = 0.0
+        t_record = {
+            "orderId": pos_id,
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": k_round,
+            "execType": "KILLER3_SCALP_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id,
             "side": "BUY",
