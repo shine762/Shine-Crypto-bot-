@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -62,7 +62,7 @@ class UltraQuantSpotBot:
         self.whale_orderflow_ratio = 50.0
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
-        self.min_net_profit_usdt = 0.06
+        self.min_net_profit_usdt = 0.02
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -1813,7 +1813,7 @@ class UltraQuantSpotBot:
         last_entry = regular_positions[-1]["entryPrice"]
         current_dip = last_entry - self.live_price
 
-        min_required_dip = 2.00
+        min_required_dip = 0.50
         if current_dip < min_required_dip:
             self.tb_active = False
             self.tb_stage = "IDLE"
@@ -1828,16 +1828,15 @@ class UltraQuantSpotBot:
 
                 total_drop = last_entry - self.tb_lowest_price
 
-                if total_drop >= 4.0:
+                if total_drop >= 1.50:
                     self.tb_stage = "DEEP_DIP"
-                    required_bounce_pct = 0.010
-                elif total_drop >= 2.5:
+                    required_bounce_pct = 0.003
+                elif total_drop >= 0.90:
                     self.tb_stage = "MED_DIP"
-                    required_bounce_pct = 0.008
+                    required_bounce_pct = 0.002
                 else:
                     self.tb_stage = "MIN_DIP"
-                    required_bounce_pct = 0.008
-
+                    required_bounce_pct = 0.002
                 bounce_target = self.tb_lowest_price * (1.0 + required_bounce_pct)
                 is_market_rebounding = self.live_price >= bounce_target
                 is_whale_confirmed = (self.whale_orderflow_ratio >= 51.5) and (self.whale_sentiment != "BEARISH")
@@ -1872,7 +1871,7 @@ class UltraQuantSpotBot:
                 projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
 
                 if projected_p >= self.min_net_profit_usdt:
-                    trail_gap = 0.20 if peak_gain >= 0.80 else 0.12
+                    trail_gap = 0.08 if peak_gain >= 0.40 else 0.04
                     calc_stop = round(pos["ts_high"] - trail_gap, 2)
                     if "ts_low" not in pos or calc_stop > pos["ts_low"]:
                         pos["ts_low"] = calc_stop
