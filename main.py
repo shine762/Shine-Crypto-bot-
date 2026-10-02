@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -520,7 +520,7 @@ class UltraQuantSpotBot:
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
-        if self.usdt_balance <= 5 or self.live_price <= 0:
+        if self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -537,14 +537,14 @@ class UltraQuantSpotBot:
             if current_r8_done >= total_r8_trades:
                 return
             trades_remaining = max(1, total_r8_trades - current_r8_done)
-            invest_target = max(5.0, (self.usdt_balance / trades_remaining) * vol_multiplier)
+            invest_target = max(10.0, (self.usdt_balance / trades_remaining) * vol_multiplier)
         else:
             current_done = self.round_trades_done.get(self.active_round, 0)
             if current_done >= 10:
                 return
             base_alloc = self.round_allocations.get(self.active_round, 0.01)
             sub_alloc = base_alloc / 10.0
-            invest_target = max(5.0, total_account_val * sub_alloc * vol_multiplier)
+            invest_target = max(10.0, total_account_val * sub_alloc * vol_multiplier)
 
         if invest_target > self.usdt_balance:
             invest_target = self.usdt_balance
@@ -1089,19 +1089,19 @@ class UltraQuantSpotBot:
 
     def get_micro_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        calc_size = max(5.0, total_account * 0.05)
+        calc_size = max(10.0, total_account * 0.10)
         idle_fund = self.get_scavenged_idle_fund()
         return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
-        if idle_fund < 5.0 or self.live_price <= 0:
+        if idle_fund < 10.0 or self.live_price <= 0:
             return
         m_round = self.active_round
         if self.micro_round_trades_done.get(m_round, 0) >= 10:
             return
         target_size = self.get_micro_trade_size()
-        if target_size < 5.0 or target_size > self.usdt_balance:
+        if target_size < 10.0 or target_size > self.usdt_balance:
             return
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -1252,7 +1252,7 @@ class UltraQuantSpotBot:
 
     def get_killer2_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        calc_size = max(5.0, total_account * 0.06)
+        calc_size = max(10.0, total_account * 0.10)
         idle_fund = self.get_killer2_idle_fund()
         return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
@@ -1275,13 +1275,13 @@ class UltraQuantSpotBot:
 
     def execute_killer2_buy(self):
         idle_fund = self.get_killer2_idle_fund()
-        if idle_fund < 5.0 or self.live_price <= 0:
+        if idle_fund < 10.0 or self.live_price <= 0:
             return
         k_round = self.active_round
         if self.killer2_round_trades_done.get(k_round, 0) >= 10:
             return
         target_size = self.get_killer2_trade_size()
-        if target_size < 5.0 or target_size > self.usdt_balance:
+        if target_size < 10.0 or target_size > self.usdt_balance:
             return
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -1377,17 +1377,29 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        for pos in list(self.killer2_positions):
+        total_k2 = len(self.killer2_positions)
+        origin_dump_price = max(self.killer2_last_ref_price, ref_anchor if 'ref_anchor' in locals() and ref_anchor > 0 else self.live_price + 3.0)
+        is_deep_round = self.active_round in [6, 7, 8]
+
+        for idx, pos in enumerate(list(self.killer2_positions)):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
-                gain = pos["ts_high"] - entry_p
-                if gain >= 0.55:
-                    pullback = 0.05 if gain >= 0.90 else 0.03
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.40:
+
+                is_runner = is_deep_round and (total_k2 >= 2) and (idx >= (total_k2 // 2))
+
+                if is_runner:
+                    if self.live_price >= (origin_dump_price - 0.15):
                         self.execute_killer2_sell(pos)
                         return
+                else:
+                    gain = pos["ts_high"] - entry_p
+                    if gain >= 0.55:
+                        pullback = 0.05 if gain >= 0.90 else 0.03
+                        if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.40:
+                            self.execute_killer2_sell(pos)
+                            return
 
         ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else 0.0)
         if ref_anchor <= 0:
@@ -1399,25 +1411,32 @@ class UltraQuantSpotBot:
             return
 
         idle_fund = self.get_killer2_idle_fund()
-        if len(self.killer2_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
-            self.execute_killer2_buy()
+        if idle_fund < 5.0 or self.usdt_balance < 15.0 or len(self.killer2_positions) >= 4:
+            self.killer2_tb_active = False
             return
 
-        if len(self.killer2_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+        if len(self.killer2_positions) == 0:
+            target_dip_active = (dip_from_ref >= 2.20)
+        else:
             lowest_k2 = min(p["entryPrice"] for p in self.killer2_positions)
-            current_k2_dip = lowest_k2 - self.live_price
+            target_dip_active = (lowest_k2 - self.live_price >= 1.20)
 
-            if current_k2_dip >= 1.20:
-                if not self.killer2_tb_active:
-                    self.killer2_tb_active = True
-                    self.killer2_tb_lowest = self.live_price
-                else:
-                    if self.live_price < self.killer2_tb_lowest:
-                        self.killer2_tb_lowest = self.live_price
-                    if self.live_price >= (self.killer2_tb_lowest + 0.18):
-                        self.execute_killer2_buy()
+        if target_dip_active:
+            if not self.killer2_tb_active:
+                self.killer2_tb_active = True
+                self.killer2_tb_lowest = self.live_price
             else:
-                self.killer2_tb_active = False
+                if self.live_price < self.killer2_tb_lowest:
+                    self.killer2_tb_lowest = self.live_price
+
+                is_rebound = self.live_price >= (self.killer2_tb_lowest + 0.30)
+                is_whale_confirmed = (self.whale_orderflow_ratio >= 65.0) and (self.whale_sentiment != "BEARISH")
+
+                if is_rebound and is_whale_confirmed:
+                    self.killer2_tb_active = False
+                    self.execute_killer2_buy()
+        else:
+            self.killer2_tb_active = False
 
     def get_killer3_idle_fund(self):
         if self.usdt_balance <= 5.0 or self.active_round < 5:
@@ -1430,7 +1449,7 @@ class UltraQuantSpotBot:
 
     def get_killer3_trade_size(self):
         total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        calc_size = max(5.0, total_account * 0.08)
+        calc_size = max(10.0, total_account * 0.10)
         idle_fund = self.get_killer3_idle_fund()
         return max(0.0, min(self.usdt_balance, min(idle_fund, calc_size)))
 
@@ -1453,13 +1472,13 @@ class UltraQuantSpotBot:
 
     def execute_killer3_buy(self):
         idle_fund = self.get_killer3_idle_fund()
-        if idle_fund < 5.0 or self.live_price <= 0:
+        if idle_fund < 10.0 or self.live_price <= 0:
             return
         k_round = self.active_round
         if self.killer3_round_trades_done.get(k_round, 0) >= 10:
             return
         target_size = self.get_killer3_trade_size()
-        if target_size < 5.0 or target_size > self.usdt_balance:
+        if target_size < 10.0 or target_size > self.usdt_balance:
             return
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -1555,17 +1574,29 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        for pos in list(self.killer3_positions):
+        total_k3 = len(self.killer3_positions)
+        origin_dump_price = max(self.killer3_last_ref_price, ref_anchor if 'ref_anchor' in locals() and ref_anchor > 0 else self.live_price + 3.5)
+        is_deep_round = self.active_round in [6, 7, 8]
+
+        for idx, pos in enumerate(list(self.killer3_positions)):
             entry_p = pos["entryPrice"]
             if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
-                gain = pos["ts_high"] - entry_p
-                if gain >= 0.80:
-                    pullback = 0.08 if gain >= 1.40 else 0.05
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.60:
+
+                is_runner = is_deep_round and (total_k3 >= 2) and (idx >= (total_k3 // 2))
+
+                if is_runner:
+                    if self.live_price >= (origin_dump_price - 0.20):
                         self.execute_killer3_sell(pos)
                         return
+                else:
+                    gain = pos["ts_high"] - entry_p
+                    if gain >= 0.80:
+                        pullback = 0.08 if gain >= 1.40 else 0.05
+                        if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.60:
+                            self.execute_killer3_sell(pos)
+                            return
 
         ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else 0.0)
         if ref_anchor <= 0:
@@ -1577,25 +1608,32 @@ class UltraQuantSpotBot:
             return
 
         idle_fund = self.get_killer3_idle_fund()
-        if len(self.killer3_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
-            self.execute_killer3_buy()
+        if idle_fund < 5.0 or self.usdt_balance < 10.0 or len(self.killer3_positions) >= 4:
+            self.killer3_tb_active = False
             return
 
-        if len(self.killer3_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
+        if len(self.killer3_positions) == 0:
+            target_dip_active = (dip_from_ref >= 3.20)
+        else:
             lowest_k3 = min(p["entryPrice"] for p in self.killer3_positions)
-            current_k3_dip = lowest_k3 - self.live_price
+            target_dip_active = (lowest_k3 - self.live_price >= 1.10)
 
-            if current_k3_dip >= 1.10:
-                if not self.killer3_tb_active:
-                    self.killer3_tb_active = True
-                    self.killer3_tb_lowest = self.live_price
-                else:
-                    if self.live_price < self.killer3_tb_lowest:
-                        self.killer3_tb_lowest = self.live_price
-                    if self.live_price >= (self.killer3_tb_lowest + 0.18):
-                        self.execute_killer3_buy()
+        if target_dip_active:
+            if not self.killer3_tb_active:
+                self.killer3_tb_active = True
+                self.killer3_tb_lowest = self.live_price
             else:
-                self.killer3_tb_active = False
+                if self.live_price < self.killer3_tb_lowest:
+                    self.killer3_tb_lowest = self.live_price
+
+                is_rebound = self.live_price >= (self.killer3_tb_lowest + 0.35)
+                is_whale_confirmed = (self.whale_orderflow_ratio >= 65.0) and (self.whale_sentiment != "BEARISH")
+
+                if is_rebound and is_whale_confirmed:
+                    self.killer3_tb_active = False
+                    self.execute_killer3_buy()
+        else:
+            self.killer3_tb_active = False
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
