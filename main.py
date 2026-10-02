@@ -62,7 +62,7 @@ class UltraQuantSpotBot:
         self.whale_orderflow_ratio = 50.0
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
-        self.min_net_profit_usdt = 0.02
+        self.min_net_profit_usdt = 0.06
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -804,6 +804,9 @@ class UltraQuantSpotBot:
             "callbackPct": cb_pct,
             "peakTracked": self.live_price,
             "lowestTracked": self.live_price,
+            "slicesTotal": 5,
+            "slicesLeft": 5,
+            "lastExecTime": 0.0,
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -1054,7 +1057,7 @@ class UltraQuantSpotBot:
             "id": pos_id,
             "round": m_round,
             "subTrade": self.micro_round_trades_done[m_round],
-            "label": f"MICRO R{m_round} (#{self.micro_round_trades_done[m_round]})",
+            "label": f"APEX VELOCITY R{m_round} (#{self.micro_round_trades_done[m_round]})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
@@ -1144,9 +1147,9 @@ class UltraQuantSpotBot:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
-                if gain >= 0.35:
-                    pullback = 0.03 if gain >= 0.65 else 0.02
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.25:
+                if gain >= 0.75:
+                    pullback = 0.06 if gain >= 1.20 else 0.04
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.60:
                         self.execute_micro_sell(pos)
                         return
 
@@ -1234,7 +1237,7 @@ class UltraQuantSpotBot:
             "id": pos_id,
             "round": k_round,
             "subTrade": self.killer2_round_trades_done[k_round],
-            "label": f"KILLER2 R{k_round} (#{self.killer2_round_trades_done[k_round]})",
+            "label": f"QUANTUM PULSE R{k_round} (#{self.killer2_round_trades_done[k_round]})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
@@ -1412,7 +1415,7 @@ class UltraQuantSpotBot:
             "id": pos_id,
             "round": k_round,
             "subTrade": self.killer3_round_trades_done[k_round],
-            "label": f"KILLER3 R{k_round} (#{self.killer3_round_trades_done[k_round]})",
+            "label": f"TITAN ABYSS R{k_round} (#{self.killer3_round_trades_done[k_round]})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
@@ -1513,7 +1516,7 @@ class UltraQuantSpotBot:
             return
 
         dip_from_ref = ref_anchor - self.live_price
-        if dip_from_ref < 5.00:
+        if dip_from_ref < 3.20:
             self.killer3_tb_active = False
             return
 
@@ -1522,18 +1525,18 @@ class UltraQuantSpotBot:
             self.execute_killer3_buy()
             return
 
-        if len(self.killer3_positions) < 3 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
+        if len(self.killer3_positions) < 4 and idle_fund >= 5.0 and self.usdt_balance >= 10.0:
             lowest_k3 = min(p["entryPrice"] for p in self.killer3_positions)
             current_k3_dip = lowest_k3 - self.live_price
 
-            if current_k3_dip >= 1.80:
+            if current_k3_dip >= 1.10:
                 if not self.killer3_tb_active:
                     self.killer3_tb_active = True
                     self.killer3_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.killer3_tb_lowest:
                         self.killer3_tb_lowest = self.live_price
-                    if self.live_price >= (self.killer3_tb_lowest + 0.25):
+                    if self.live_price >= (self.killer3_tb_lowest + 0.18):
                         self.execute_killer3_buy()
             else:
                 self.killer3_tb_active = False
@@ -1621,7 +1624,8 @@ class UltraQuantSpotBot:
             amt = ord.get("amount", 0.0)
             target_p = ord.get("price", self.live_price)
 
-            if o_type in ["LIMIT", "ADVANCED_LIMIT", "ICEBERG", "TWAP"]:
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if o_type in ["LIMIT", "ADVANCED_LIMIT"]:
                 if side == "BUY" and self.live_price <= target_p:
                     self.manual_test_balance += amt
                     self.execute_manual_buy(amt, o_type, target_p)
@@ -1631,6 +1635,54 @@ class UltraQuantSpotBot:
                     self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
+
+            elif o_type == "ICEBERG":
+                if (now_ts - ord.get("lastExecTime", 0.0)) >= 3.0:
+                    s_left = ord.get("slicesLeft", 5)
+                    if side == "BUY" and self.live_price <= target_p and s_left > 0:
+                        slice_amt = round(ord.get("amount", amt) / s_left, 2)
+                        self.manual_test_balance += slice_amt
+                        self.execute_manual_buy(slice_amt, "ICEBERG_SLICE", self.live_price)
+                        ord["amount"] = round(max(0.0, ord.get("amount", amt) - slice_amt), 2)
+                        ord["slicesLeft"] = s_left - 1
+                        ord["lastExecTime"] = now_ts
+                        if ord["slicesLeft"] <= 0 or ord["amount"] <= 1.0:
+                            if ord in self.wallet_open_orders:
+                                self.wallet_open_orders.remove(ord)
+                    elif side == "SELL" and self.live_price >= target_p and s_left > 0:
+                        total_sol = ord.get("solAmount", amt)
+                        slice_sol = round(total_sol / s_left, 4)
+                        self.execute_manual_sell(sell_amount_sol=slice_sol)
+                        ord["solAmount"] = round(max(0.0, total_sol - slice_sol), 4)
+                        ord["slicesLeft"] = s_left - 1
+                        ord["lastExecTime"] = now_ts
+                        if ord["slicesLeft"] <= 0 or ord["solAmount"] <= 0.001:
+                            if ord in self.wallet_open_orders:
+                                self.wallet_open_orders.remove(ord)
+
+            elif o_type == "TWAP":
+                if (now_ts - ord.get("lastExecTime", 0.0)) >= 4.0:
+                    s_left = ord.get("slicesLeft", 5)
+                    if side == "BUY" and self.live_price <= (target_p * 1.01) and s_left > 0:
+                        slice_amt = round(ord.get("amount", amt) / s_left, 2)
+                        self.manual_test_balance += slice_amt
+                        self.execute_manual_buy(slice_amt, "TWAP_SLICE", self.live_price)
+                        ord["amount"] = round(max(0.0, ord.get("amount", amt) - slice_amt), 2)
+                        ord["slicesLeft"] = s_left - 1
+                        ord["lastExecTime"] = now_ts
+                        if ord["slicesLeft"] <= 0 or ord["amount"] <= 1.0:
+                            if ord in self.wallet_open_orders:
+                                self.wallet_open_orders.remove(ord)
+                    elif side == "SELL" and self.live_price >= (target_p * 0.99) and s_left > 0:
+                        total_sol = ord.get("solAmount", amt)
+                        slice_sol = round(total_sol / s_left, 4)
+                        self.execute_manual_sell(sell_amount_sol=slice_sol)
+                        ord["solAmount"] = round(max(0.0, total_sol - slice_sol), 4)
+                        ord["slicesLeft"] = s_left - 1
+                        ord["lastExecTime"] = now_ts
+                        if ord["slicesLeft"] <= 0 or ord["solAmount"] <= 0.001:
+                            if ord in self.wallet_open_orders:
+                                self.wallet_open_orders.remove(ord)
 
             elif o_type in ["TP_SL", "TP/SL", "OCO"]:
                 tp_p = ord.get("limitPrice", 0.0)
@@ -1764,7 +1816,7 @@ class UltraQuantSpotBot:
                 projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
 
                 if projected_p >= self.min_net_profit_usdt:
-                    trail_gap = 0.15 if peak_gain >= 0.60 else 0.10
+                    trail_gap = 0.20 if peak_gain >= 0.80 else 0.12
                     calc_stop = round(pos["ts_high"] - trail_gap, 2)
                     if "ts_low" not in pos or calc_stop > pos["ts_low"]:
                         pos["ts_low"] = calc_stop
