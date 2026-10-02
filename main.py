@@ -270,8 +270,7 @@ class UltraQuantSpotBot:
                             self.manual_trades_history = wallet_logs
 
                             recalc_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.harvester_realized_pnl, 2)
-                            if recalc_pnl > self.realized_pnl:
-                                self.realized_pnl = recalc_pnl
+                            self.realized_pnl = round(max(self.realized_pnl, recalc_pnl), 2)
                 await self.db_sync_state()
         except Exception:
             pass
@@ -966,7 +965,6 @@ class UltraQuantSpotBot:
                     net_ret = gross - fee
                     profit = net_ret - ord["usdtAmount"]
                     self.manual_realized_pnl += profit
-                    self.realized_pnl += profit
                     ord["profitRealized"] = round(profit, 4)
 
                     t_rec = {
