@@ -225,7 +225,7 @@ class UltraQuantSpotBot:
                                     "execType": e_type,
                                     "timestamp": t.get("created_at")
                                 }
-                                if if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
+                                if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
                                     wallet_logs.append(formatted_t)
                                     if t.get("side") == "SELL":
                                         self.manual_realized_pnl += p_val
