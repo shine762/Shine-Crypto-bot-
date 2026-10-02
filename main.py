@@ -162,6 +162,28 @@ class UltraQuantSpotBot:
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
                                 elif p_id.startswith("MAN_"):
                                     self.wallet_active_positions.append(pos_obj)
+                                elif p_id.startswith("ATL_"):
+                                    lbl_parts = str(pos_obj.get("label", "")).split("|")
+                                    b_cb = float(lbl_parts[1]) if len(lbl_parts) > 1 else 0.01
+                                    s_cb = float(lbl_parts[2]) if len(lbl_parts) > 2 else 0.01
+                                    a_rep = (lbl_parts[3] == "1") if len(lbl_parts) > 3 else True
+                                    stg = lbl_parts[4] if len(lbl_parts) > 4 else "WAITING_BUY_TRIGGER"
+                                    loop_obj = {
+                                        "id": p_id,
+                                        "usdtAmount": float(pos_obj.get("invested", 10.0)),
+                                        "buyTrigger": float(pos_obj.get("entryPrice", 0.0)),
+                                        "buyCallbackPct": b_cb,
+                                        "sellTrigger": float(pos_obj.get("targetPrice", 0.0)),
+                                        "sellCallbackPct": s_cb,
+                                        "autoRepeat": a_rep,
+                                        "stage": stg,
+                                        "solBought": float(pos_obj.get("solAmount", 0.0)),
+                                        "buyExecutedPrice": float(pos_obj.get("entryPrice", 0.0)) if stg != "WAITING_BUY_TRIGGER" else 0.0,
+                                        "peakTracked": float(pos_obj.get("targetPrice", 0.0)),
+                                        "profitRealized": 0.0,
+                                        "status": "RESTORED (LOOP ACTIVE)"
+                                    }
+                                    self.auto_loops.append(loop_obj)
                                 else:
                                     loaded_positions.append(pos_obj)
 
@@ -227,7 +249,7 @@ class UltraQuantSpotBot:
                                 }
                                 if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
                                     wallet_logs.append(formatted_t)
-                                    if t.get("side") == "SELL":
+                                    if t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type:
                                         self.manual_realized_pnl += p_val
                                 else:
                                     bot_logs.append(formatted_t)
@@ -832,9 +854,11 @@ class UltraQuantSpotBot:
             return
 
         self.manual_test_balance -= usdt_amt
-        asyncio.create_task(self.db_sync_state())
+        loop_id = "ATL_" + str(uuid.uuid4())[:6]
+        rep_val = "1" if auto_repeat else "0"
+        lbl_meta = f"ATL|{buy_cb}|{sell_cb}|{rep_val}|WAITING_BUY_TRIGGER"
         new_loop = {
-            "id": "ATL_" + str(uuid.uuid4())[:6],
+            "id": loop_id,
             "usdtAmount": float(usdt_amt),
             "buyTrigger": float(buy_trigger),
             "buyCallbackPct": float(buy_cb),
@@ -849,16 +873,50 @@ class UltraQuantSpotBot:
             "status": "ARMED (WAITING BUY)"
         }
         self.auto_loops.append(new_loop)
+        pos_record = {
+            "id": loop_id,
+            "round": 0,
+            "subTrade": 0,
+            "label": lbl_meta,
+            "entryPrice": float(buy_trigger),
+            "solAmount": 0.0,
+            "invested": float(usdt_amt),
+            "isMacro": False,
+            "targetPrice": float(sell_trigger)
+        }
+        asyncio.create_task(self.db_save_buy(pos_record, {
+            "order_id": loop_id,
+            "side": "AUTO_LOOP_OPEN",
+            "price": float(buy_trigger),
+            "sol_amount": 0.0,
+            "fee": 0.0,
+            "profit": 0.0,
+            "round": 0,
+            "exec_type": "AUTO_TRAILING_LOOP"
+        }))
+        asyncio.create_task(self.db_sync_state())
 
     def cancel_auto_loop_slot(self, slot_id):
         for loop in list(self.auto_loops):
             if loop["id"] == slot_id or slot_id == "ALL":
+                target_id = loop["id"]
                 if loop.get("solBought", 0.0) <= 0:
                     self.manual_test_balance += loop.get("usdtAmount", 0.0)
                 else:
                     gross = loop["solBought"] * self.live_price
                     self.manual_test_balance += gross
                 self.auto_loops.remove(loop)
+                asyncio.create_task(self.db_save_sell_individual(target_id, {
+                    "order_id": target_id + "_CANCEL",
+                    "side": "CANCEL",
+                    "price": round(self.live_price, 2),
+                    "sol_amount": 0.0,
+                    "fee": 0.0,
+                    "profit": 0.0,
+                    "round": 0,
+                    "exec_type": "AUTO_LOOP_CANCELED"
+                }))
+        asyncio.create_task(self.db_sync_state())
 
     def run_auto_trailing_loop_tick(self):
         if not self.auto_loops or self.live_price <= 0:
