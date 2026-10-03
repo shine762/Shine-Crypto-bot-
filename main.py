@@ -132,6 +132,8 @@ class UltraQuantSpotBot:
                             self.micro_positions = []
                             self.killer2_positions = []
                             self.killer3_positions = []
+                            self.wallet_active_positions = []
+                            self.auto_loops = []
 
                             for p in pos_data:
                                 p_id = str(p.get("id", ""))
@@ -1209,31 +1211,29 @@ class UltraQuantSpotBot:
                         self.execute_micro_sell(pos)
                         return
 
-        ref_anchor = self.avg_entry_price if self.avg_entry_price > 0 else (self.active_positions[0]["entryPrice"] if self.active_positions else self.live_price)
-        dip_from_ref = ref_anchor - self.live_price
-
-        if dip_from_ref > 2.20:
+        idle_fund = self.get_scavenged_idle_fund()
+        if idle_fund < 10.0 or self.usdt_balance < 10.0:
             self.micro_tb_active = False
             return
 
-        idle_fund = self.get_scavenged_idle_fund()
-        if len(self.micro_positions) == 0 and idle_fund >= 5.0 and self.usdt_balance >= 15.0:
+        max_trades = 10 if self.active_round >= 5 else 4
+
+        if len(self.micro_positions) == 0:
             self.execute_micro_buy()
             return
 
-        max_trades = 10 if self.active_round >= 5 else 4
-        if len(self.micro_positions) < max_trades and idle_fund >= 5.0 and self.usdt_balance >= 5.0:
+        if len(self.micro_positions) < max_trades:
             lowest_entry = min(p["entryPrice"] for p in self.micro_positions)
             current_dip = lowest_entry - self.live_price
 
-            if current_dip >= 0.70:
+            if current_dip >= 0.50:
                 if not self.micro_tb_active:
                     self.micro_tb_active = True
                     self.micro_tb_lowest = self.live_price
                 else:
                     if self.live_price < self.micro_tb_lowest:
                         self.micro_tb_lowest = self.live_price
-                    if self.live_price >= (self.micro_tb_lowest + 0.10):
+                    if self.live_price >= (self.micro_tb_lowest + 0.12):
                         self.execute_micro_buy()
             else:
                 self.micro_tb_active = False
