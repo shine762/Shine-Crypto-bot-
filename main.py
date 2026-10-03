@@ -511,6 +511,7 @@ class UltraQuantSpotBot:
             "killer3TotalTrades": self.killer3_total_trades,
             "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
             "autoLoops": self.auto_loops,
+            "copySubscribers": getattr(self, "copy_subscribers", []),
             "harvesterActive": self.harvester_active,
             "harvesterSol": round(self.harvester_vault_sol, 4),
             "harvesterInvested": round(self.harvester_vault_invested, 2),
@@ -2038,14 +2039,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     c_slots = int(msg.get("slotsAllowed", 1))
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
+                    sub_id = "BOT_" + str(uuid.uuid4())[:6]
                     bot.copy_subscribers.append({
+                        "id": sub_id,
                         "botType": c_type,
                         "amount": c_amt,
                         "slotsAllowed": c_slots,
-                        "activeSlots": 0,
+                        "activeSlots": c_slots,
                         "realizedPnl": 0.0,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
+                    if bot.manual_test_balance >= c_amt:
+                        bot.manual_test_balance -= c_amt
+                    bot.execute_manual_buy(c_amt, "COPY_BOT_BUY", bot.live_price)
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
                 pass
