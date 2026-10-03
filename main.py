@@ -2024,9 +2024,17 @@ async def websocket_endpoint(websocket: WebSocket):
                     s_id = msg.get("slotId", "ALL")
                     bot.cancel_auto_loop_slot(s_id)
                 elif action in ["CREATE_AUTO_LOOP", "EDIT_AUTO_LOOP"]:
-elif action == "START_COPY_TRADE":
+                    u_amt = float(msg.get("amount", 10.0))
+                    b_trig = float(msg.get("buyTrigger", 100.0))
+                    b_cb = float(msg.get("buyCallback", 0.01))
+                    s_trig = float(msg.get("sellTrigger", 105.0))
+                    s_cb = float(msg.get("sellCallback", 0.01))
+                    a_rep = bool(msg.get("autoRepeat", True))
+                    s_id = msg.get("slotId", None)
+                    bot.create_auto_loop_order(u_amt, b_trig, b_cb, s_trig, s_cb, a_rep, s_id)
+                elif action == "START_COPY_TRADE":
                     c_amt = float(msg.get("amount", 10.0))
-                    c_type = msg.get("botType", "MICRO_SCALP")
+                    c_type = str(msg.get("botType", "VELOCITY_DCA"))
                     c_slots = int(msg.get("slotsAllowed", 1))
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
@@ -2038,14 +2046,6 @@ elif action == "START_COPY_TRADE":
                         "realizedPnl": 0.0,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
-                    u_amt = float(msg.get("amount", 10.0))
-                    b_trig = float(msg.get("buyTrigger", 100.0))
-                    b_cb = float(msg.get("buyCallback", 0.01))
-                    s_trig = float(msg.get("sellTrigger", 105.0))
-                    s_cb = float(msg.get("sellCallback", 0.01))
-                    a_rep = bool(msg.get("autoRepeat", True))
-                    s_id = msg.get("slotId", None)
-                    bot.create_auto_loop_order(u_amt, b_trig, b_cb, s_trig, s_cb, a_rep, s_id)
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
                 pass
