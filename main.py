@@ -2024,6 +2024,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     s_id = msg.get("slotId", "ALL")
                     bot.cancel_auto_loop_slot(s_id)
                 elif action in ["CREATE_AUTO_LOOP", "EDIT_AUTO_LOOP"]:
+elif action == "START_COPY_TRADE":
+                    c_amt = float(msg.get("amount", 10.0))
+                    c_type = msg.get("botType", "MICRO_SCALP")
+                    c_slots = int(msg.get("slotsAllowed", 1))
+                    if not hasattr(bot, "copy_subscribers"):
+                        bot.copy_subscribers = []
+                    bot.copy_subscribers.append({
+                        "botType": c_type,
+                        "amount": c_amt,
+                        "slotsAllowed": c_slots,
+                        "activeSlots": 0,
+                        "realizedPnl": 0.0,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
                     u_amt = float(msg.get("amount", 10.0))
                     b_trig = float(msg.get("buyTrigger", 100.0))
                     b_cb = float(msg.get("buyCallback", 0.01))
