@@ -754,9 +754,7 @@ class UltraQuantSpotBot:
         gross_value = sold_sol * self.live_price
         fee = gross_value * self.taker_fee_pct
         net_value = gross_value - fee
-        gross_profit = net_value - cost_basis
-        owner_cut = round(gross_profit * 0.10, 4) if gross_profit > 0 else 0.0
-        user_net_profit = round(gross_profit - owner_cut, 4) if gross_profit > 0 else round(gross_profit, 4)
+        user_net_profit = round(net_value - cost_basis, 4)
 
         self.manual_test_balance += net_value
         self.manual_realized_pnl += user_net_profit
@@ -2103,8 +2101,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
                     sub_id = "BOT_" + str(uuid.uuid4())[:6]
-                    if bot.manual_test_balance >= c_amt:
-                        bot.manual_test_balance -= c_amt
                     bot.copy_subscribers.append({
                         "id": sub_id,
                         "botType": c_type,
