@@ -720,6 +720,7 @@ def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
                     }
                     self.manual_trades_history.insert(0, t_rec)
                     asyncio.create_task(self.db_save_engine_trade(t_rec))
+
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
             return
