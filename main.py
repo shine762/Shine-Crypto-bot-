@@ -1152,9 +1152,9 @@ class UltraQuantSpotBot:
         return max(0.0, min(self.usdt_balance, total_avail))
 
     def get_micro_trade_size(self):
-        target_size = 20.0 if self.usdt_balance >= 20.0 else self.usdt_balance
-        idle_fund = self.get_scavenged_idle_fund()
-        return max(0.0, min(self.usdt_balance, min(idle_fund, target_size)))
+        if self.usdt_balance < 10.0:
+            return 0.0
+        return min(20.0, self.usdt_balance)
 
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
@@ -1300,16 +1300,9 @@ class UltraQuantSpotBot:
                 self.micro_tb_active = False
 
     def get_killer2_idle_fund(self):
-        if self.usdt_balance <= 5.0 or self.active_round < 5:
+        if self.usdt_balance < 10.0:
             return 0.0
-        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        borrowed_pool = 0.0
-        for r in range(1, self.active_round):
-            r_alloc = total_account * self.round_allocations.get(r, 0.0)
-            r_done = self.round_trades_done.get(r, 0) + self.killer2_round_trades_done.get(r, 0)
-            r_unspent = max(0.0, r_alloc * (1.0 - min(1.0, r_done / 10.0)))
-            borrowed_pool += r_unspent
-        return max(0.0, min(self.usdt_balance, borrowed_pool))
+        return self.usdt_balance
 
     def get_killer2_trade_size(self):
         target_size = 20.0 if self.usdt_balance >= 20.0 else self.usdt_balance
@@ -1486,13 +1479,9 @@ class UltraQuantSpotBot:
             self.killer2_tb_active = False
 
     def get_killer3_idle_fund(self):
-        if self.usdt_balance <= 5.0 or self.active_round < 5:
+        if self.usdt_balance < 10.0:
             return 0.0
-        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        r8_alloc = total_account * self.round_allocations.get(8, 0.27)
-        r8_done = self.round_trades_done.get(8, 0) + self.killer3_round_trades_done.get(8, 0)
-        r8_unspent = max(0.0, r8_alloc * (1.0 - min(1.0, r8_done / 10.0)))
-        return max(0.0, min(self.usdt_balance, r8_unspent))
+        return self.usdt_balance
 
     def get_killer3_trade_size(self):
         target_size = 20.0 if self.usdt_balance >= 20.0 else self.usdt_balance
