@@ -694,7 +694,8 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
-def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
+
+    def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
         if not hasattr(self, "copy_subscribers") or not self.copy_subscribers:
             return
         for sub in self.copy_subscribers:
