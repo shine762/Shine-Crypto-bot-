@@ -320,17 +320,37 @@ class UltraQuantSpotBot:
 
     async def db_save_sell_individual(self, pos_id, trade_data):
         try:
+            db_row = {
+                "order_id": trade_data.get("order_id") or trade_data.get("orderId"),
+                "side": trade_data.get("side"),
+                "price": trade_data.get("price"),
+                "sol_amount": trade_data.get("sol_amount") or trade_data.get("solAmount"),
+                "fee": trade_data.get("fee", 0.0),
+                "profit": trade_data.get("profit", 0.0),
+                "round": trade_data.get("round", 0),
+                "exec_type": trade_data.get("exec_type") or trade_data.get("execType", "SELL")
+            }
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.{pos_id}")
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
             await self.db_sync_state()
         except Exception:
             pass
 
     async def db_save_engine_trade(self, trade_data):
         try:
+            db_row = {
+                "order_id": trade_data.get("order_id") or trade_data.get("orderId"),
+                "side": trade_data.get("side"),
+                "price": trade_data.get("price"),
+                "sol_amount": trade_data.get("sol_amount") or trade_data.get("solAmount"),
+                "fee": trade_data.get("fee", 0.0),
+                "profit": trade_data.get("profit", 0.0),
+                "round": trade_data.get("round", 0),
+                "exec_type": trade_data.get("exec_type") or trade_data.get("execType")
+            }
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
             await self.db_sync_state()
         except Exception:
             pass
@@ -674,7 +694,32 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
-
+def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
+        if not hasattr(self, "copy_subscribers") or not self.copy_subscribers:
+            return
+        for sub in self.copy_subscribers:
+            if sub.get("botType") == bot_type:
+                sub_amt = float(sub.get("amount", 0.0))
+                slots = max(1, int(sub.get("slotsAllowed", 1)))
+                slot_capital = sub_amt / slots
+                sub_profit = round(slot_capital * (profit_pct / 100.0), 4)
+                if sub_profit > 0:
+                    self.manual_test_balance += sub_profit
+                    sub["realizedPnl"] = round(float(sub.get("realizedPnl", 0.0)) + sub_profit, 4)
+                    self.manual_realized_pnl = round(self.manual_realized_pnl + sub_profit, 4)
+                    t_rec = {
+                        "orderId": "COPY_" + str(uuid.uuid4())[:6],
+                        "side": "SELL",
+                        "price": round(exit_price, 2),
+                        "solAmount": round(slot_capital / exit_price, 4) if exit_price > 0 else 0.0,
+                        "fee": 0.0,
+                        "profit": sub_profit,
+                        "realizedPnl": sub_profit,
+                        "execType": f"COPY_{bot_type}_PROFIT",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_rec)
+                    asyncio.create_task(self.db_save_engine_trade(t_rec))
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
             return
@@ -929,6 +974,14 @@ class UltraQuantSpotBot:
 
             if stg == "WAITING_BUY_TRIGGER":
                 if self.live_price <= ord["buyTrigger"]:
+                    ord["stage"] = "TRAILING_BUY"
+                    ord["lowestTracked"] = self.live_price
+                    ord["status"] = "DIP HIT (TRACKING BOUNCE)"
+            elif stg == "TRAILING_BUY":
+                if self.live_price < ord.get("lowestTracked", self.live_price):
+                    ord["lowestTracked"] = self.live_price
+                cb_target = ord["lowestTracked"] * (1.0 + (ord["buyCallbackPct"] / 100.0))
+                if self.live_price >= cb_target:
                     invest_amt = ord["usdtAmount"]
                     fee = invest_amt * self.taker_fee_pct
                     sol_qty = (invest_amt - fee) / self.live_price
@@ -1058,6 +1111,14 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        p_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("TITAN_ABYSS", p_pct, self.live_price)
+        p_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("QUANTUM_PULSE", p_pct, self.live_price)
+        p_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("APEX_SCALPER", p_pct, self.live_price)
+        p_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("VELOCITY_DCA", p_pct, self.live_price)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id,
             "side": "SELL",
@@ -1805,7 +1866,7 @@ class UltraQuantSpotBot:
 
             elif o_type == "TRIGGER":
                 trig_p = ord.get("stopPrice", target_p)
-                if side == "BUY" and self.live_price <= trig_p:
+                if side == "BUY" and self.live_price >= trig_p:
                     self.manual_test_balance += amt
                     self.execute_manual_buy(amt, "TRIGGER", self.live_price)
                     if ord in self.wallet_open_orders:
@@ -2040,18 +2101,46 @@ async def websocket_endpoint(websocket: WebSocket):
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
                     sub_id = "BOT_" + str(uuid.uuid4())[:6]
+                    if bot.manual_test_balance >= c_amt:
+                        bot.manual_test_balance -= c_amt
                     bot.copy_subscribers.append({
                         "id": sub_id,
                         "botType": c_type,
                         "amount": c_amt,
+                        "entryPrice": bot.live_price,
                         "slotsAllowed": c_slots,
                         "activeSlots": c_slots,
                         "realizedPnl": 0.0,
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
-                    if bot.manual_test_balance >= c_amt:
-                        bot.manual_test_balance -= c_amt
-                    bot.execute_manual_buy(c_amt, "COPY_BOT_BUY", bot.live_price)
+                    bot.execute_manual_buy(c_amt, f"COPY_{c_type}", bot.live_price)
+                elif action == "CLOSE_COPY_TRADE":
+                    s_id = str(msg.get("subId", ""))
+                    if hasattr(bot, "copy_subscribers"):
+                        for sub in list(bot.copy_subscribers):
+                            if sub.get("id") == s_id:
+                                orig_amt = float(sub.get("amount", 0.0))
+                                buy_p = float(sub.get("entryPrice", bot.live_price))
+                                sol_q = orig_amt / buy_p if buy_p > 0 else 0.0
+                                cur_val = sol_q * bot.live_price
+                                net_profit = cur_val - orig_amt
+                                bot.manual_test_balance += max(0.0, cur_val)
+                                bot.manual_realized_pnl += net_profit
+                                bot.copy_subscribers.remove(sub)
+                                t_rec = {
+                                    "orderId": s_id + "_EXIT",
+                                    "side": "SELL",
+                                    "price": round(bot.live_price, 2),
+                                    "solAmount": round(sol_q, 4),
+                                    "fee": round(cur_val * bot.taker_fee_pct, 4),
+                                    "profit": round(net_profit, 4),
+                                    "realizedPnl": round(net_profit, 4),
+                                    "execType": "COPY_BOT_CLOSED",
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                }
+                                bot.manual_trades_history.insert(0, t_rec)
+                                asyncio.create_task(bot.db_save_engine_trade(t_rec))
+                                break
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
                 pass
