@@ -2098,6 +2098,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     c_amt = float(msg.get("amount", 10.0))
                     c_type = str(msg.get("botType", "VELOCITY_DCA"))
                     c_slots = int(msg.get("slotsAllowed", 1))
+                    if bot.manual_test_balance < c_amt or c_amt <= 0:
+                        continue
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
                     sub_id = "BOT_" + str(uuid.uuid4())[:6]
