@@ -49,6 +49,8 @@ class UltraQuantSpotBot:
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
+        self.spot_trades_history = []
+        self.scalp_trades_history = []
         self.price_history = []
         self.latest_signal = {"action": "HOLD", "price": 0.0, "text": "Scanning market for high-probability signals..."}
         self.macro_vault_sol = 0.0
@@ -233,6 +235,7 @@ class UltraQuantSpotBot:
 
                             bot_logs = []
                             wallet_logs = []
+                            scalp_logs = []
                             for t in t_data:
                                 e_type = str(t.get("exec_type", ""))
                                 ord_id = str(t.get("order_id", ""))
@@ -249,12 +252,12 @@ class UltraQuantSpotBot:
                                     "execType": e_type,
                                     "timestamp": t.get("created_at")
                                 }
-                                if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
+                                if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or ord_id.startswith("COPY_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
                                     wallet_logs.append(formatted_t)
-                                    if t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type:
+                                    if t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type or "PROFIT" in e_type:
                                         self.manual_realized_pnl += p_val
-                                else:
-                                    bot_logs.append(formatted_t)
+                                elif ord_id.startswith("M_") or ord_id.startswith("K2_") or ord_id.startswith("K3_") or "SCALP" in e_type:
+                                    scalp_logs.append(formatted_t)
                                     if e_type == "MICRO_SCALP_EXIT":
                                         self.micro_total_trades += 1
                                         self.micro_realized_pnl += p_val
@@ -264,15 +267,16 @@ class UltraQuantSpotBot:
                                     elif e_type == "KILLER3_SCALP_EXIT":
                                         self.killer3_total_trades += 1
                                         self.killer3_realized_pnl += p_val
-                                    elif e_type in ["HARVESTER_SWING_EXIT", "HARVESTER_GRAND_ATH_EXIT"]:
-                                        self.harvester_realized_pnl += p_val
-                                    elif t.get("side") == "SELL":
+                                else:
+                                    bot_logs.append(formatted_t)
+                                    if t.get("side") == "SELL":
                                         spot_closed_profit += p_val
+
+                            self.spot_trades_history = bot_logs
+                            self.scalp_trades_history = scalp_logs
                             self.trades_history = bot_logs
                             self.manual_trades_history = wallet_logs
-
-                            recalc_pnl = round(spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.harvester_realized_pnl, 2)
-                            self.realized_pnl = round(max(self.realized_pnl, recalc_pnl), 2)
+                            self.realized_pnl = round(max(self.realized_pnl, spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl), 2)
                 await self.db_sync_state()
         except Exception:
             pass
@@ -514,7 +518,8 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.trades_history,
+            "tradesHistory": self.spot_trades_history,
+            "scalpTradesHistory": self.scalp_trades_history,
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
             "botThought": ai_thoughts,
@@ -698,29 +703,30 @@ class UltraQuantSpotBot:
     def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
         if not hasattr(self, "copy_subscribers") or not self.copy_subscribers:
             return
-        for sub in self.copy_subscribers:
+        for sub in list(self.copy_subscribers):
             if sub.get("botType") == bot_type:
                 sub_amt = float(sub.get("amount", 0.0))
                 slots = max(1, int(sub.get("slotsAllowed", 1)))
                 slot_capital = sub_amt / slots
                 sub_profit = round(slot_capital * (profit_pct / 100.0), 4)
-                if sub_profit > 0:
-                    self.manual_test_balance += sub_profit
-                    sub["realizedPnl"] = round(float(sub.get("realizedPnl", 0.0)) + sub_profit, 4)
-                    self.manual_realized_pnl = round(self.manual_realized_pnl + sub_profit, 4)
-                    t_rec = {
-                        "orderId": "COPY_" + str(uuid.uuid4())[:6],
-                        "side": "SELL",
-                        "price": round(exit_price, 2),
-                        "solAmount": round(slot_capital / exit_price, 4) if exit_price > 0 else 0.0,
-                        "fee": 0.0,
-                        "profit": sub_profit,
-                        "realizedPnl": sub_profit,
-                        "execType": f"COPY_{bot_type}_PROFIT",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.manual_trades_history.insert(0, t_rec)
-                    asyncio.create_task(self.db_save_engine_trade(t_rec))
+                return_funds = slot_capital + sub_profit
+                self.manual_test_balance += return_funds
+                sub["realizedPnl"] = round(float(sub.get("realizedPnl", 0.0)) + sub_profit, 4)
+                self.manual_realized_pnl = round(self.manual_realized_pnl + sub_profit, 4)
+                t_rec = {
+                    "orderId": "COPY_" + str(uuid.uuid4())[:6],
+                    "side": "SELL",
+                    "price": round(exit_price, 2),
+                    "solAmount": round(slot_capital / exit_price, 4) if exit_price > 0 else 0.0,
+                    "fee": round(return_funds * self.taker_fee_pct, 4),
+                    "profit": sub_profit,
+                    "realizedPnl": sub_profit,
+                    "execType": f"COPY_{bot_type}_PROFIT",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self.manual_trades_history.insert(0, t_rec)
+                asyncio.create_task(self.db_save_engine_trade(t_rec))
+                asyncio.create_task(self.db_sync_state())
 
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
         if len(self.wallet_active_positions) == 0 or self.live_price <= 0:
