@@ -1154,7 +1154,7 @@ class UltraQuantSpotBot:
     def get_micro_trade_size(self):
         if self.usdt_balance < 10.0:
             return 0.0
-        return min(20.0, self.usdt_balance)
+        return 10.0
 
     def execute_micro_buy(self):
         idle_fund = self.get_scavenged_idle_fund()
@@ -1305,9 +1305,9 @@ class UltraQuantSpotBot:
         return self.usdt_balance
 
     def get_killer2_trade_size(self):
-        target_size = 20.0 if self.usdt_balance >= 20.0 else self.usdt_balance
-        idle_fund = self.get_killer2_idle_fund()
-        return max(0.0, min(self.usdt_balance, min(idle_fund, target_size)))
+        if self.usdt_balance < 10.0:
+            return 0.0
+        return 10.0
 
     def get_killer2_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
@@ -1484,9 +1484,9 @@ class UltraQuantSpotBot:
         return self.usdt_balance
 
     def get_killer3_trade_size(self):
-        target_size = 20.0 if self.usdt_balance >= 20.0 else self.usdt_balance
-        idle_fund = self.get_killer3_idle_fund()
-        return max(0.0, min(self.usdt_balance, min(idle_fund, target_size)))
+        if self.usdt_balance < 10.0:
+            return 0.0
+        return 10.0
 
     def get_killer3_step_trail(self, mode="BUY"):
         flow = self.whale_orderflow_ratio
