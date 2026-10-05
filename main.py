@@ -166,6 +166,22 @@ class UltraQuantSpotBot:
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
                                 elif p_id.startswith("MAN_"):
                                     self.wallet_active_positions.append(pos_obj)
+                                elif p_id.startswith("BOT_"):
+                                    if not hasattr(self, "copy_subscribers"):
+                                        self.copy_subscribers = []
+                                    lbl_parts = str(pos_obj.get("label", "")).split("|")
+                                    b_type = lbl_parts[1] if len(lbl_parts) > 1 else "VELOCITY_DCA"
+                                    s_allowed = int(lbl_parts[2]) if len(lbl_parts) > 2 else 1
+                                    self.copy_subscribers.append({
+                                        "id": p_id,
+                                        "botType": b_type,
+                                        "amount": float(pos_obj.get("invested", 10.0)),
+                                        "entryPrice": float(pos_obj.get("entryPrice", self.live_price)),
+                                        "slotsAllowed": s_allowed,
+                                        "activeSlots": s_allowed,
+                                        "realizedPnl": 0.0,
+                                        "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
+                                    })
                                 elif p_id.startswith("ATL_"):
                                     lbl_parts = str(pos_obj.get("label", "")).split("|")
                                     b_cb = float(lbl_parts[1]) if len(lbl_parts) > 1 else 0.01
@@ -2076,6 +2092,27 @@ async def websocket_endpoint(websocket: WebSocket):
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
                     bot.execute_manual_buy(c_amt, f"COPY_{c_type}", bot.live_price)
+                    copy_pos = {
+                        "id": sub_id,
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": f"COPY|{c_type}|{c_slots}",
+                        "entryPrice": round(bot.live_price, 2),
+                        "solAmount": round((c_amt / bot.live_price), 4) if bot.live_price > 0 else 0.0,
+                        "invested": round(c_amt, 2),
+                        "isMacro": False,
+                        "targetPrice": 0.0
+                    }
+                    asyncio.create_task(bot.db_save_buy(copy_pos, {
+                        "order_id": sub_id,
+                        "side": "COPY_START",
+                        "price": round(bot.live_price, 2),
+                        "sol_amount": round((c_amt / bot.live_price), 4) if bot.live_price > 0 else 0.0,
+                        "fee": 0.0,
+                        "profit": 0.0,
+                        "round": 0,
+                        "exec_type": f"COPY_{c_type}_SUBSCRIBED"
+                    }))
                 elif action == "CLOSE_COPY_TRADE":
                     s_id = str(msg.get("subId", ""))
                     if hasattr(bot, "copy_subscribers"):
@@ -2101,7 +2138,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     "timestamp": datetime.now(timezone.utc).isoformat()
                                 }
                                 bot.manual_trades_history.insert(0, t_rec)
-                                asyncio.create_task(bot.db_save_engine_trade(t_rec))
+                                asyncio.create_task(bot.db_save_sell_individual(s_id, t_rec))
                                 break
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
