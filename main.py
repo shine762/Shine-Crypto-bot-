@@ -207,35 +207,23 @@ class UltraQuantSpotBot:
                                     r_idx = p.get("round", 1)
                                     self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
 
-                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=100") as resp:
+                async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=500") as resp:
                     if resp.status == 200:
                         t_data = await resp.json()
                         if isinstance(t_data, list):
-                            self.trades_history = [{
-                                "orderId": t.get("order_id"),
-                                "side": t.get("side"),
-                                "price": float(t.get("price", 0)),
-                                "solAmount": float(t.get("sol_amount", 0)),
-                                "fee": float(t.get("fee", 0)),
-                                "profit": float(t.get("profit", 0)),
-                                "realizedPnl": float(t.get("profit", 0)),
-                                "round": t.get("round"),
-                                "execType": t.get("exec_type"),
-                                "timestamp": t.get("created_at")
-                            } for t in t_data]
-
-                            self.micro_realized_pnl = 0.0
-                            self.micro_total_trades = 0
-                            self.killer2_realized_pnl = 0.0
-                            self.killer2_total_trades = 0
-                            self.killer3_realized_pnl = 0.0
-                            self.killer3_total_trades = 0
-                            self.harvester_realized_pnl = 0.0
-                            spot_closed_profit = 0.0
-
                             bot_logs = []
                             wallet_logs = []
                             scalp_logs = []
+                            all_logs = []
+                            m_pnl = 0.0
+                            m_count = 0
+                            k2_pnl = 0.0
+                            k2_count = 0
+                            k3_pnl = 0.0
+                            k3_count = 0
+                            spot_closed_profit = 0.0
+                            wallet_pnl = 0.0
+
                             for t in t_data:
                                 e_type = str(t.get("exec_type", ""))
                                 ord_id = str(t.get("order_id", ""))
@@ -252,32 +240,39 @@ class UltraQuantSpotBot:
                                     "execType": e_type,
                                     "timestamp": t.get("created_at")
                                 }
+                                all_logs.append(formatted_t)
                                 if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or ord_id.startswith("COPY_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
                                     wallet_logs.append(formatted_t)
                                     if t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type or "PROFIT" in e_type:
-                                        self.manual_realized_pnl += p_val
+                                        wallet_pnl += p_val
                                 elif ord_id.startswith("M_") or ord_id.startswith("K2_") or ord_id.startswith("K3_") or "SCALP" in e_type:
                                     scalp_logs.append(formatted_t)
-                                    if e_type == "MICRO_SCALP_EXIT":
-                                        self.micro_total_trades += 1
-                                        self.micro_realized_pnl += p_val
-                                    elif e_type == "KILLER2_SCALP_EXIT":
-                                        self.killer2_total_trades += 1
-                                        self.killer2_realized_pnl += p_val
-                                    elif e_type == "KILLER3_SCALP_EXIT":
-                                        self.killer3_total_trades += 1
-                                        self.killer3_realized_pnl += p_val
+                                    if e_type == "MICRO_SCALP_EXIT" or ord_id.startswith("M_"):
+                                        m_count += 1
+                                        m_pnl += p_val
+                                    elif e_type == "KILLER2_SCALP_EXIT" or ord_id.startswith("K2_"):
+                                        k2_count += 1
+                                        k2_pnl += p_val
+                                    elif e_type == "KILLER3_SCALP_EXIT" or ord_id.startswith("K3_"):
+                                        k3_count += 1
+                                        k3_pnl += p_val
                                 else:
                                     bot_logs.append(formatted_t)
                                     if t.get("side") == "SELL":
                                         spot_closed_profit += p_val
 
+                            self.trades_history = all_logs
                             self.spot_trades_history = bot_logs
                             self.scalp_trades_history = scalp_logs
-                            self.trades_history = bot_logs
                             self.manual_trades_history = wallet_logs
-                            self.realized_pnl = round(max(self.realized_pnl, spot_closed_profit + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl), 2)
-                await self.db_sync_state()
+                            self.micro_realized_pnl = round(m_pnl, 4)
+                            self.micro_total_trades = m_count
+                            self.killer2_realized_pnl = round(k2_pnl, 4)
+                            self.killer2_total_trades = k2_count
+                            self.killer3_realized_pnl = round(k3_pnl, 4)
+                            self.killer3_total_trades = k3_count
+                            self.manual_realized_pnl = round(wallet_pnl, 4)
+                            self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
         except Exception:
             pass
 
@@ -518,7 +513,8 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.spot_trades_history,
+            "tradesHistory": self.trades_history if self.trades_history else self.spot_trades_history,
+            "spotTradesHistory": self.spot_trades_history,
             "scalpTradesHistory": self.scalp_trades_history,
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
