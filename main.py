@@ -22,8 +22,7 @@ SUPABASE_KEY = "sb_publishable_PgY6nJ0OeM4OIoJS3GVG8A_MZb--nVp"
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-    "Prefer": "return=minimal"
+    "Content-Type": "application/json"
 }
 
 class UltraQuantSpotBot:
@@ -336,14 +335,15 @@ class UltraQuantSpotBot:
     async def db_save_sell_individual(self, pos_id, trade_data):
         try:
             db_row = {
-                "order_id": trade_data.get("order_id") or trade_data.get("orderId"),
-                "side": trade_data.get("side"),
-                "price": trade_data.get("price"),
-                "sol_amount": trade_data.get("sol_amount") or trade_data.get("solAmount"),
-                "fee": trade_data.get("fee", 0.0),
-                "profit": trade_data.get("profit", 0.0),
-                "round": trade_data.get("round", 0),
-                "exec_type": trade_data.get("exec_type") or trade_data.get("execType", "SELL")
+                "order_id": str(trade_data.get("order_id") or trade_data.get("orderId")),
+                "side": str(trade_data.get("side")),
+                "price": float(trade_data.get("price", 0.0)),
+                "sol_amount": float(trade_data.get("sol_amount") or trade_data.get("solAmount", 0.0)),
+                "fee": float(trade_data.get("fee", 0.0)),
+                "profit": float(trade_data.get("profit", 0.0)),
+                "round": int(trade_data.get("round", 0)),
+                "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "SELL")),
+                "created_at": trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
             }
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.{pos_id}")
@@ -355,14 +355,15 @@ class UltraQuantSpotBot:
     async def db_save_engine_trade(self, trade_data):
         try:
             db_row = {
-                "order_id": trade_data.get("order_id") or trade_data.get("orderId"),
-                "side": trade_data.get("side"),
-                "price": trade_data.get("price"),
-                "sol_amount": trade_data.get("sol_amount") or trade_data.get("solAmount"),
-                "fee": trade_data.get("fee", 0.0),
-                "profit": trade_data.get("profit", 0.0),
-                "round": trade_data.get("round", 0),
-                "exec_type": trade_data.get("exec_type") or trade_data.get("execType")
+                "order_id": str(trade_data.get("order_id") or trade_data.get("orderId")),
+                "side": str(trade_data.get("side")),
+                "price": float(trade_data.get("price", 0.0)),
+                "sol_amount": float(trade_data.get("sol_amount") or trade_data.get("solAmount", 0.0)),
+                "fee": float(trade_data.get("fee", 0.0)),
+                "profit": float(trade_data.get("profit", 0.0)),
+                "round": int(trade_data.get("round", 0)),
+                "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "ENGINE")),
+                "created_at": trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
             }
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
@@ -1037,34 +1038,34 @@ class UltraQuantSpotBot:
                     gross = sold_sol * self.live_price
                     fee = gross * self.taker_fee_pct
                     net_ret = gross - fee
-                    profit = net_ret - ord["usdtAmount"]
-                    self.manual_realized_pnl += profit
-                    ord["profitRealized"] = round(profit, 4)
+                    profit = round(net_ret - ord["usdtAmount"], 4)
+                    self.manual_realized_pnl = round(self.manual_realized_pnl + profit, 4)
+                    self.manual_test_balance = round(self.manual_test_balance + profit, 2)
+                    ord["profitRealized"] = profit
 
                     t_rec = {
                         "orderId": ord["id"] + "_S",
-                        "side": "AUTO_LOOP_SELL",
+                        "side": "SELL",
                         "price": round(self.live_price, 2),
                         "solAmount": round(sold_sol, 4),
                         "fee": round(fee, 4),
-                        "profit": round(profit, 4),
-                        "realizedPnl": round(profit, 4),
-                        "execType": "AUTO_TRAILING_LOOP",
+                        "profit": profit,
+                        "realizedPnl": profit,
+                        "execType": "AUTO_TRAILING_LOOP_EXIT",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_rec)
                     asyncio.create_task(self.db_save_engine_trade(t_rec))
+                    asyncio.create_task(self.db_sync_state())
 
                     if ord.get("autoRepeat", True):
-                        if profit > 0:
-                            self.manual_test_balance += profit
                         ord["stage"] = "WAITING_BUY_TRIGGER"
                         ord["solBought"] = 0.0
                         ord["buyExecutedPrice"] = 0.0
                         ord["peakTracked"] = ord["sellTrigger"]
-                        ord["status"] = "AUTO RESTARTED (LOOP ACTIVE)"
+                        ord["status"] = "PROFIT BOOKED (LOOP REARMED)"
                     else:
-                        self.manual_test_balance += net_ret
+                        self.manual_test_balance = round(self.manual_test_balance + ord["usdtAmount"], 2)
                         self.auto_loops.remove(ord)
     def execute_macro_sell(self):
         if self.macro_vault_sol <= 0 or self.live_price < self.macro_target_price:
@@ -2033,6 +2034,7 @@ async def price_feed_fallback_worker():
 @app.on_event("startup")
 async def startup_event():
     await bot.load_from_database()
+    await asyncio.sleep(0.5)
     asyncio.create_task(binance_ws_worker())
     asyncio.create_task(price_feed_fallback_worker())
 
