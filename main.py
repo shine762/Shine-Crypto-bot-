@@ -124,6 +124,12 @@ class UltraQuantSpotBot:
                                 self.invested_amount = float(row.get("invested_amount"))
                             if "avg_entry_price" in row and row.get("avg_entry_price") is not None:
                                 self.avg_entry_price = float(row.get("avg_entry_price"))
+                            if "micro_realized_pnl" in row and row.get("micro_realized_pnl") is not None:
+                                self.micro_realized_pnl = float(row.get("micro_realized_pnl"))
+                            if "killer2_realized_pnl" in row and row.get("killer2_realized_pnl") is not None:
+                                self.killer2_realized_pnl = float(row.get("killer2_realized_pnl"))
+                            if "killer3_realized_pnl" in row and row.get("killer3_realized_pnl") is not None:
+                                self.killer3_realized_pnl = float(row.get("killer3_realized_pnl"))
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
@@ -302,6 +308,9 @@ class UltraQuantSpotBot:
                 "invested_amount": round(self.invested_amount, 2),
                 "avg_entry_price": round(self.avg_entry_price, 2),
                 "realized_pnl": round(self.realized_pnl, 2),
+                "micro_realized_pnl": round(self.micro_realized_pnl, 4),
+                "killer2_realized_pnl": round(self.killer2_realized_pnl, 4),
+                "killer3_realized_pnl": round(self.killer3_realized_pnl, 4),
                 "active_phase": self.active_phase,
                 "active_round": self.active_round,
                 "sub_trade_count": self.sub_trade_count,
@@ -636,6 +645,7 @@ class UltraQuantSpotBot:
             }
 
         self.active_positions.append(pos)
+        self.trigger_copy_buy("VELOCITY_DCA", self.live_price)
         t_record = {
             "orderId": pos_id,
             "side": "BUY",
@@ -713,27 +723,74 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
 
-    def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
-        if not hasattr(self, "copy_subscribers") or not self.copy_subscribers:
+    def trigger_copy_buy(self, bot_type, buy_price):
+        if not hasattr(self, "copy_subscribers") or not self.copy_subscribers or buy_price <= 0:
             return
         for sub in list(self.copy_subscribers):
             if sub.get("botType") == bot_type:
-                sub_amt = float(sub.get("amount", 0.0))
-                slots = max(1, int(sub.get("slotsAllowed", 1)))
-                slot_capital = sub_amt / slots
-                sub_profit = round(slot_capital * (profit_pct / 100.0), 4)
-                return_funds = slot_capital + sub_profit
-                self.manual_test_balance += return_funds
-                sub["realizedPnl"] = round(float(sub.get("realizedPnl", 0.0)) + sub_profit, 4)
-                self.manual_realized_pnl = round(self.manual_realized_pnl + sub_profit, 4)
+                slot_size = float(sub.get("slotSize", 10.0))
+                reserve = float(sub.get("availableReserve", 0.0))
+                positions = sub.get("activePositions", [])
+                max_slots = int(sub.get("slotsAllowed", 10))
+                if reserve >= slot_size and len(positions) < max_slots:
+                    fee = slot_size * self.taker_fee_pct
+                    sol_qty = (slot_size - fee) / buy_price
+                    pos_id = "CPOS_" + str(uuid.uuid4())[:6]
+                    pos_item = {
+                        "posId": pos_id,
+                        "entryPrice": round(buy_price, 2),
+                        "invested": round(slot_size, 2),
+                        "solAmount": round(sol_qty, 4),
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    positions.append(pos_item)
+                    sub["activePositions"] = positions
+                    sub["availableReserve"] = round(reserve - slot_size, 2)
+                    sub["activeSlots"] = len(positions)
+                    t_buy = {
+                        "orderId": pos_id,
+                        "side": "BUY",
+                        "price": round(buy_price, 2),
+                        "solAmount": round(sol_qty, 4),
+                        "invested": round(slot_size, 2),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "execType": f"COPY_{bot_type}_DIP_BUY",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_buy)
+                    asyncio.create_task(self.db_save_engine_trade(t_buy))
+                    asyncio.create_task(self.db_sync_state())
+
+    def distribute_copy_profit(self, bot_type, profit_pct, exit_price):
+        if not hasattr(self, "copy_subscribers") or not self.copy_subscribers or exit_price <= 0:
+            return
+        for sub in list(self.copy_subscribers):
+            if sub.get("botType") == bot_type:
+                positions = sub.get("activePositions", [])
+                if not positions:
+                    continue
+                pos_to_close = positions.pop(0)
+                sub["activePositions"] = positions
+                sub["activeSlots"] = len(positions)
+                invested = float(pos_to_close.get("invested", 10.0))
+                sol_amt = float(pos_to_close.get("solAmount", 0.0))
+                gross = sol_amt * exit_price
+                fee = gross * self.taker_fee_pct
+                net_ret = gross - fee
+                profit = round(net_ret - invested, 4)
+                sub["availableReserve"] = round(float(sub.get("availableReserve", 0.0)) + invested, 2)
+                sub["realizedPnl"] = round(float(sub.get("realizedPnl", 0.0)) + profit, 4)
+                self.manual_test_balance = round(self.manual_test_balance + profit, 2)
+                self.manual_realized_pnl = round(self.manual_realized_pnl + profit, 4)
                 t_rec = {
-                    "orderId": "COPY_" + str(uuid.uuid4())[:6],
+                    "orderId": "COPY_EXIT_" + str(uuid.uuid4())[:6],
                     "side": "SELL",
                     "price": round(exit_price, 2),
-                    "solAmount": round(slot_capital / exit_price, 4) if exit_price > 0 else 0.0,
-                    "fee": round(return_funds * self.taker_fee_pct, 4),
-                    "profit": sub_profit,
-                    "realizedPnl": sub_profit,
+                    "solAmount": round(sol_amt, 4),
+                    "fee": round(fee, 4),
+                    "profit": profit,
+                    "realizedPnl": profit,
                     "execType": f"COPY_{bot_type}_PROFIT",
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
@@ -1203,6 +1260,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
         self.micro_positions.append(pos)
+        self.trigger_copy_buy("APEX_SCALPER", self.live_price)
         self.micro_last_ref_price = self.live_price
         self.micro_tb_active = False
         self.micro_tb_lowest = 0.0
@@ -1248,6 +1306,8 @@ class UltraQuantSpotBot:
             self.micro_round_trades_done[m_round] -= 1
         self.micro_positions = [p for p in self.micro_positions if p["id"] != pos_id]
         self.micro_last_ref_price = self.live_price
+        m_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("APEX_SCALPER", m_pct, self.live_price)
         trade_record = {
             "orderId": pos_id + "_S",
             "side": "SELL",
@@ -1373,6 +1433,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
         self.killer2_positions.append(pos)
+        self.trigger_copy_buy("QUANTUM_PULSE", self.live_price)
         self.killer2_last_ref_price = self.live_price
         self.killer2_tb_active = False
         self.killer2_tb_lowest = 0.0
@@ -1418,6 +1479,8 @@ class UltraQuantSpotBot:
             self.killer2_round_trades_done[k_round] -= 1
         self.killer2_positions = [p for p in self.killer2_positions if p["id"] != pos_id]
         self.killer2_last_ref_price = self.live_price
+        k2_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("QUANTUM_PULSE", k2_pct, self.live_price)
         trade_record = {
             "orderId": pos_id + "_S",
             "side": "SELL",
@@ -1552,6 +1615,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
         self.killer3_positions.append(pos)
+        self.trigger_copy_buy("TITAN_ABYSS", self.live_price)
         self.killer3_last_ref_price = self.live_price
         self.killer3_tb_active = False
         self.killer3_tb_lowest = 0.0
@@ -1597,6 +1661,8 @@ class UltraQuantSpotBot:
             self.killer3_round_trades_done[k_round] -= 1
         self.killer3_positions = [p for p in self.killer3_positions if p["id"] != pos_id]
         self.killer3_last_ref_price = self.live_price
+        k3_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
+        self.distribute_copy_profit("TITAN_ABYSS", k3_pct, self.live_price)
         trade_record = {
             "orderId": pos_id + "_S",
             "side": "SELL",
@@ -2077,30 +2143,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "START_COPY_TRADE":
                     c_amt = float(msg.get("amount", 10.0))
                     c_type = str(msg.get("botType", "VELOCITY_DCA"))
-                    c_slots = int(msg.get("slotsAllowed", 1))
+                    c_slots = min(10, max(1, int(msg.get("slotsAllowed", 1))))
                     if bot.manual_test_balance < c_amt or c_amt <= 0:
                         continue
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
+                    bot.manual_test_balance -= c_amt
                     sub_id = "BOT_" + str(uuid.uuid4())[:6]
+                    per_slot_amt = round(c_amt / max(1, c_slots), 2)
                     bot.copy_subscribers.append({
                         "id": sub_id,
                         "botType": c_type,
-                        "amount": c_amt,
-                        "entryPrice": bot.live_price,
+                        "totalCapital": c_amt,
+                        "availableReserve": c_amt,
+                        "slotSize": per_slot_amt,
                         "slotsAllowed": c_slots,
-                        "activeSlots": c_slots,
+                        "activeSlots": 0,
                         "realizedPnl": 0.0,
+                        "activePositions": [],
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     })
-                    bot.execute_manual_buy(c_amt, f"COPY_{c_type}", bot.live_price)
                     copy_pos = {
                         "id": sub_id,
                         "round": 0,
                         "subTrade": 0,
                         "label": f"COPY|{c_type}|{c_slots}",
                         "entryPrice": round(bot.live_price, 2),
-                        "solAmount": round((c_amt / bot.live_price), 4) if bot.live_price > 0 else 0.0,
+                        "solAmount": 0.0,
                         "invested": round(c_amt, 2),
                         "isMacro": False,
                         "targetPrice": 0.0
@@ -2109,38 +2178,44 @@ async def websocket_endpoint(websocket: WebSocket):
                         "order_id": sub_id,
                         "side": "COPY_START",
                         "price": round(bot.live_price, 2),
-                        "sol_amount": round((c_amt / bot.live_price), 4) if bot.live_price > 0 else 0.0,
+                        "sol_amount": 0.0,
                         "fee": 0.0,
                         "profit": 0.0,
                         "round": 0,
-                        "exec_type": f"COPY_{c_type}_SUBSCRIBED"
+                        "exec_type": f"COPY_{c_type}_RESERVED"
                     }))
+                    asyncio.create_task(bot.db_sync_state())
                 elif action == "CLOSE_COPY_TRADE":
                     s_id = str(msg.get("subId", ""))
                     if hasattr(bot, "copy_subscribers"):
                         for sub in list(bot.copy_subscribers):
                             if sub.get("id") == s_id:
-                                orig_amt = float(sub.get("amount", 0.0))
-                                buy_p = float(sub.get("entryPrice", bot.live_price))
-                                sol_q = orig_amt / buy_p if buy_p > 0 else 0.0
-                                cur_val = sol_q * bot.live_price
-                                net_profit = cur_val - orig_amt
-                                bot.manual_test_balance += max(0.0, cur_val)
-                                bot.manual_realized_pnl += net_profit
+                                reserve = float(sub.get("availableReserve", 0.0))
+                                positions = sub.get("activePositions", [])
+                                active_sol = sum(float(p.get("solAmount", 0.0)) for p in positions)
+                                active_invested = sum(float(p.get("invested", 0.0)) for p in positions)
+                                gross_sold = active_sol * bot.live_price
+                                fee = gross_sold * bot.taker_fee_pct
+                                net_sold = gross_sold - fee
+                                pos_pnl = net_sold - active_invested if active_sol > 0 else 0.0
+                                total_refund = round(reserve + net_sold, 2)
+                                bot.manual_test_balance = round(bot.manual_test_balance + total_refund, 2)
+                                bot.manual_realized_pnl = round(bot.manual_realized_pnl + pos_pnl, 4)
                                 bot.copy_subscribers.remove(sub)
                                 t_rec = {
-                                    "orderId": s_id + "_EXIT",
+                                    "orderId": s_id + "_CLOSED",
                                     "side": "SELL",
                                     "price": round(bot.live_price, 2),
-                                    "solAmount": round(sol_q, 4),
-                                    "fee": round(cur_val * bot.taker_fee_pct, 4),
-                                    "profit": round(net_profit, 4),
-                                    "realizedPnl": round(net_profit, 4),
-                                    "execType": "COPY_BOT_CLOSED",
+                                    "solAmount": round(active_sol, 4),
+                                    "fee": round(fee, 4),
+                                    "profit": round(pos_pnl, 4),
+                                    "realizedPnl": round(pos_pnl, 4),
+                                    "execType": "COPY_BOT_UNSUBSCRIBED",
                                     "timestamp": datetime.now(timezone.utc).isoformat()
                                 }
                                 bot.manual_trades_history.insert(0, t_rec)
                                 asyncio.create_task(bot.db_save_sell_individual(s_id, t_rec))
+                                asyncio.create_task(bot.db_sync_state())
                                 break
                 await manager.broadcast(json.dumps(bot.get_state()))
             except Exception:
