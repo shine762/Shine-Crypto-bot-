@@ -766,6 +766,7 @@ class UltraQuantSpotBot:
         self.manual_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
     def trigger_copy_buy(self, bot_type, buy_price):
         if not hasattr(self, "copy_subscribers") or not self.copy_subscribers or buy_price <= 0:
@@ -891,29 +892,28 @@ class UltraQuantSpotBot:
         self.manual_realized_pnl += user_net_profit
 
         if pos_id:
-            for p in list(self.wallet_active_positions):
-                if p.get("id") == pos_id:
-                    self.wallet_active_positions.remove(p)
+            self.wallet_active_positions = [p for p in self.wallet_active_positions if p.get("id") != pos_id]
         elif sold_sol >= total_sol:
             self.wallet_active_positions.clear()
         else:
-            rem_sol = total_sol - sold_sol
-            rem_inv = total_invested - cost_basis
+            rem_sol = round(total_sol - sold_sol, 4)
+            rem_inv = round(total_invested - cost_basis, 2)
             self.wallet_active_positions.clear()
-            self.wallet_active_positions.append({
-                "id": "MAN_" + str(uuid.uuid4())[:6],
-                "round": 0,
-                "subTrade": 0,
-                "label": "WALLET REMAINING HOLDING",
-                "side": "BUY",
-                "entryPrice": round(rem_inv / rem_sol, 2) if rem_sol > 0 else round(self.live_price, 2),
-                "solAmount": round(rem_sol, 4),
-                "invested": round(rem_inv, 2),
-                "orderType": "MARKET",
-                "isManualWallet": True,
-                "status": "FILLED",
-                "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
-            })
+            if rem_sol > 0:
+                self.wallet_active_positions.append({
+                    "id": "MAN_" + str(uuid.uuid4())[:6],
+                    "round": 0,
+                    "subTrade": 0,
+                    "label": "WALLET REMAINING HOLDING",
+                    "side": "BUY",
+                    "entryPrice": round(rem_inv / rem_sol, 2) if rem_sol > 0 else round(self.live_price, 2),
+                    "solAmount": rem_sol,
+                    "invested": rem_inv,
+                    "orderType": "MARKET",
+                    "isManualWallet": True,
+                    "status": "FILLED",
+                    "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                })
 
         t_record = {
             "orderId": "MAN_S_" + (str(pos_id) if pos_id else str(uuid.uuid4())[:6]),
@@ -933,6 +933,7 @@ class UltraQuantSpotBot:
             for p in target_positions:
                 asyncio.create_task(self.db_save_sell_individual(p.get("id"), t_record))
         asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
     def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
