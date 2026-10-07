@@ -509,15 +509,17 @@ class UltraQuantSpotBot:
                     "status": "HOLDING",
                     "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
                 })
+            is_buy_stage = "BUY" in str(atl.get("stage", ""))
+            disp_price = round(atl.get("buyTrigger", 0.0), 2) if is_buy_stage else round(atl.get("sellTrigger", 0.0), 2)
             open_orders_list.insert(0, {
                 "id": atl.get("id"),
                 "orderId": atl.get("id"),
                 "orderType": "Auto Trailing Loop",
-                "side": "BUY" if "BUY" in str(atl.get("stage", "")) else "SELL",
+                "side": "BUY" if is_buy_stage else "SELL",
                 "amount": atl.get("usdtAmount", 0.0),
                 "solAmount": round(atl.get("solBought", 0.0), 4),
                 "invested": round(atl.get("usdtAmount", 0.0), 2),
-                "price": round(atl.get("buyExecutedPrice", 0.0) if atl.get("buyExecutedPrice", 0.0) > 0 else atl.get("buyTrigger", 0.0), 2),
+                "price": disp_price,
                 "entryPrice": round(atl.get("buyExecutedPrice", 0.0), 2),
                 "stopPrice": round(atl.get("buyTrigger", 0.0), 2),
                 "limitPrice": round(atl.get("sellTrigger", 0.0), 2),
@@ -1147,11 +1149,11 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_sync_state())
 
             elif stg == "WAITING_SELL_TRIGGER":
-                min_exit = max(float(ord["sellTrigger"]), float(ord.get("buyExecutedPrice", 0.0)) * 1.0025)
-                if self.live_price >= min_exit:
+                if self.live_price >= ord["sellTrigger"]:
                     ord["stage"] = "TRAILING_SELL"
                     ord["peakTracked"] = self.live_price
                     ord["status"] = f"TRAILING PROFIT (HIGH: ${round(self.live_price, 2)})"
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
             elif stg == "TRAILING_SELL":
                 if self.live_price > ord.get("peakTracked", self.live_price):
@@ -1159,9 +1161,8 @@ class UltraQuantSpotBot:
 
                 s_cb_pct = float(ord.get("sellCallbackPct", 0.01))
                 pullback_trigger = ord["peakTracked"] * (1.0 - (s_cb_pct / 100.0))
-                min_exit = max(float(ord["sellTrigger"]), float(ord.get("buyExecutedPrice", 0.0)) * 1.0025)
 
-                if self.live_price <= pullback_trigger and self.live_price >= min_exit:
+                if (self.live_price <= pullback_trigger or self.live_price <= ord["sellTrigger"]) and self.live_price >= ord["sellTrigger"]:
                     sold_sol = ord["solBought"]
                     gross = sold_sol * self.live_price
                     fee = gross * self.taker_fee_pct
