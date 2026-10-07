@@ -1066,13 +1066,15 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_save_buy(pos_record, {
             "order_id": loop_id,
             "side": "AUTO_LOOP_OPEN",
-            "price": float(buy_trigger),
+            "price": buy_trigger,
             "sol_amount": 0.0,
             "fee": 0.0,
             "profit": 0.0,
             "round": 0,
             "exec_type": "AUTO_TRAILING_LOOP"
         }))
+        asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
         asyncio.create_task(self.db_sync_state())
 
     def cancel_auto_loop_slot(self, slot_id):
@@ -1109,9 +1111,10 @@ class UltraQuantSpotBot:
                     ord["stage"] = "TRAILING_BUY"
                     ord["lowestTracked"] = self.live_price
                     ord["status"] = f"TRAILING DIP (LOW: ${round(self.live_price, 2)})"
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
             elif stg == "TRAILING_BUY":
-                if self.live_price < ord.get("lowestTracked", self.live_price):
+                if "lowestTracked" not in ord or ord["lowestTracked"] <= 0 or self.live_price < ord["lowestTracked"]:
                     ord["lowestTracked"] = self.live_price
                 cb_pct = float(ord.get("buyCallbackPct", 0.01))
                 cb_target = ord["lowestTracked"] * (1.0 + (cb_pct / 100.0))
