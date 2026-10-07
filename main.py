@@ -1187,8 +1187,10 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_save_engine_trade(t_rec))
 
                     if ord.get("autoRepeat", True):
-                        if round(self.manual_test_balance, 2) >= round(ord["usdtAmount"], 2):
-                            self.manual_test_balance = round(self.manual_test_balance - ord["usdtAmount"], 2)
+                        rearm_amt = min(float(ord["usdtAmount"]), float(self.manual_test_balance))
+                        if rearm_amt >= 5.0:
+                            ord["usdtAmount"] = round(rearm_amt, 2)
+                            self.manual_test_balance = round(self.manual_test_balance - rearm_amt, 2)
                             ord["stage"] = "WAITING_BUY_TRIGGER"
                             ord["solBought"] = 0.0
                             ord["buyExecutedPrice"] = 0.0
@@ -1207,14 +1209,17 @@ class UltraQuantSpotBot:
                                 "isMacro": False,
                                 "targetPrice": float(ord["sellTrigger"])
                             }, t_rec))
+                            asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                         else:
                             if ord in self.auto_loops:
                                 self.auto_loops.remove(ord)
                             asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
+                            asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                     else:
                         if ord in self.auto_loops:
                             self.auto_loops.remove(ord)
                         asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
+                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
                     asyncio.create_task(self.db_sync_state())
     def execute_macro_sell(self):
