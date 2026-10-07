@@ -968,8 +968,12 @@ class UltraQuantSpotBot:
                     return
             return
 
-        o_type = ord_data.get("orderType", "MARKET")
-        side = ord_data.get("side", "SELL" if "SELL" in str(action).upper() else "BUY")
+        o_type = str(ord_data.get("orderType", "MARKET")).upper()
+        side = str(ord_data.get("side", "BUY")).upper()
+        if "SELL" in str(action).upper():
+            side = "SELL"
+        elif "BUY" in str(action).upper():
+            side = "BUY"
         amt = float(ord_data.get("amount", 0.0))
         price = float(ord_data.get("price", self.live_price))
         if price <= 0:
@@ -977,10 +981,10 @@ class UltraQuantSpotBot:
         stop_p = float(ord_data.get("stopPrice", 0.0))
         limit_p = float(ord_data.get("limitPrice", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
-        o_id = "ORD_" + str(uuid.uuid4())[:6]
+        o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
 
-        if o_type.upper() == "MARKET":
-            if side.upper() == "BUY":
+        if o_type == "MARKET" or action in ["MANUAL_BUY", "MANUAL_SELL"]:
+            if side == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
                 self.execute_manual_sell(pos_id=None, sell_amount_sol=amt)
