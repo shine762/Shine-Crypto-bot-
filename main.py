@@ -1029,11 +1029,12 @@ class UltraQuantSpotBot:
                     loop["autoRepeat"] = bool(auto_repeat)
                     return
 
-        if self.manual_test_balance < usdt_amt:
+        if round(self.manual_test_balance, 2) < round(usdt_amt, 2):
             return
 
-        self.manual_test_balance -= usdt_amt
-        loop_id = "ATL_" + str(uuid.uuid4())[:6]
+        usdt_amt = round(min(self.manual_test_balance, usdt_amt), 2)
+        self.manual_test_balance = round(self.manual_test_balance - usdt_amt, 2)
+        loop_id = str(slot_id) if slot_id else ("ATL_" + str(uuid.uuid4())[:6])
         rep_val = "1" if auto_repeat else "0"
         lbl_meta = f"ATL|{buy_cb}|{sell_cb}|{rep_val}|WAITING_BUY_TRIGGER"
         new_loop = {
@@ -1116,9 +1117,14 @@ class UltraQuantSpotBot:
             elif stg == "TRAILING_BUY":
                 if "lowestTracked" not in ord or ord["lowestTracked"] <= 0 or self.live_price < ord["lowestTracked"]:
                     ord["lowestTracked"] = self.live_price
+                if self.live_price > ord["buyTrigger"]:
+                    ord["stage"] = "WAITING_BUY_TRIGGER"
+                    ord["lowestTracked"] = 0.0
+                    ord["status"] = f"ARMED (WAITING BUY @ ${round(ord['buyTrigger'], 2)})"
+                    continue
                 cb_pct = float(ord.get("buyCallbackPct", 0.01))
                 cb_target = ord["lowestTracked"] * (1.0 + (cb_pct / 100.0))
-                if self.live_price >= cb_target:
+                if self.live_price >= cb_target and self.live_price <= ord["buyTrigger"]:
                     invest_amt = float(ord["usdtAmount"])
                     fee = invest_amt * self.taker_fee_pct
                     sol_qty = (invest_amt - fee) / self.live_price
@@ -1141,7 +1147,8 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_sync_state())
 
             elif stg == "WAITING_SELL_TRIGGER":
-                if self.live_price >= ord["sellTrigger"]:
+                min_exit = max(float(ord["sellTrigger"]), float(ord.get("buyExecutedPrice", 0.0)) * 1.0025)
+                if self.live_price >= min_exit:
                     ord["stage"] = "TRAILING_SELL"
                     ord["peakTracked"] = self.live_price
                     ord["status"] = f"TRAILING PROFIT (HIGH: ${round(self.live_price, 2)})"
@@ -1152,8 +1159,9 @@ class UltraQuantSpotBot:
 
                 s_cb_pct = float(ord.get("sellCallbackPct", 0.01))
                 pullback_trigger = ord["peakTracked"] * (1.0 - (s_cb_pct / 100.0))
+                min_exit = max(float(ord["sellTrigger"]), float(ord.get("buyExecutedPrice", 0.0)) * 1.0025)
 
-                if self.live_price <= pullback_trigger:
+                if self.live_price <= pullback_trigger and self.live_price >= min_exit:
                     sold_sol = ord["solBought"]
                     gross = sold_sol * self.live_price
                     fee = gross * self.taker_fee_pct
@@ -1178,12 +1186,14 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_save_engine_trade(t_rec))
 
                     if ord.get("autoRepeat", True):
-                        if self.manual_test_balance >= ord["usdtAmount"]:
+                        if round(self.manual_test_balance, 2) >= round(ord["usdtAmount"], 2):
                             self.manual_test_balance = round(self.manual_test_balance - ord["usdtAmount"], 2)
                             ord["stage"] = "WAITING_BUY_TRIGGER"
                             ord["solBought"] = 0.0
                             ord["buyExecutedPrice"] = 0.0
-                            ord["status"] = "LOOP REARMED (WAITING BUY)"
+                            ord["lowestTracked"] = 0.0
+                            ord["peakTracked"] = 0.0
+                            ord["status"] = f"LOOP REARMED (WAITING BUY @ ${round(ord['buyTrigger'], 2)})"
                             asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
                             asyncio.create_task(self.db_save_buy({
                                 "id": ord["id"],
