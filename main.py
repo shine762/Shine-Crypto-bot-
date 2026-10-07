@@ -983,20 +983,21 @@ class UltraQuantSpotBot:
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
 
-        if o_type == "MARKET" or action in ["MANUAL_BUY", "MANUAL_SELL"]:
+        if o_type == "MARKET":
             if side == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
                 self.execute_manual_sell(pos_id=None, sell_amount_sol=amt)
             return
 
+        exact_order_price = round(price, 2)
         if side == "BUY":
             if self.manual_test_balance < amt:
                 return
             self.manual_test_balance -= amt
 
-        sol_qty = (amt / price) if (side == "BUY" and price > 0) else amt
-        inv_amt = amt if side == "BUY" else (amt * price)
+        sol_qty = (amt / exact_order_price) if (side == "BUY" and exact_order_price > 0) else amt
+        inv_amt = amt if side == "BUY" else (amt * exact_order_price)
         order_obj = {
             "id": o_id,
             "orderType": o_type,
@@ -1004,10 +1005,10 @@ class UltraQuantSpotBot:
             "amount": amt,
             "solAmount": round(sol_qty, 4),
             "invested": round(inv_amt, 2),
-            "entryPrice": round(price, 2),
-            "price": price,
-            "stopPrice": stop_p,
-            "limitPrice": limit_p if limit_p > 0 else price,
+            "entryPrice": exact_order_price,
+            "price": exact_order_price,
+            "stopPrice": stop_p if stop_p > 0 else exact_order_price,
+            "limitPrice": exact_order_price,
             "callbackPct": cb_pct,
             "peakTracked": self.live_price,
             "lowestTracked": self.live_price,
@@ -1923,15 +1924,36 @@ class UltraQuantSpotBot:
             target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
-            if o_type in ["LIMIT", "ADVANCED_LIMIT"]:
-                if side == "BUY" and self.live_price <= target_p:
+            if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
+                fixed_price = float(ord.get("price", target_p))
+                if side == "BUY" and self.live_price <= fixed_price:
                     self.manual_test_balance += amt
-                    self.execute_manual_buy(amt, o_type, target_p)
+                    self.execute_manual_buy(amt, "LIMIT", fixed_price)
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     asyncio.create_task(self.db_sync_state())
-                elif side == "SELL" and self.live_price >= target_p:
-                    self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
+                elif side == "SELL" and self.live_price >= fixed_price:
+                    sold_sol = float(ord.get("solAmount", amt))
+                    cost_basis = float(ord.get("invested", sold_sol * fixed_price))
+                    gross_value = sold_sol * fixed_price
+                    fee = gross_value * self.taker_fee_pct
+                    net_value = gross_value - fee
+                    user_net_profit = round(net_value - cost_basis, 4)
+                    self.manual_test_balance += net_value
+                    self.manual_realized_pnl += user_net_profit
+                    t_record = {
+                        "orderId": ord.get("id"),
+                        "side": "SELL",
+                        "price": fixed_price,
+                        "solAmount": round(sold_sol, 4),
+                        "fee": round(fee, 4),
+                        "profit": round(user_net_profit, 4),
+                        "realizedPnl": round(user_net_profit, 4),
+                        "execType": "LIMIT_SELL_FILLED",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_sell_individual(ord.get("id"), t_record))
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     asyncio.create_task(self.db_sync_state())
