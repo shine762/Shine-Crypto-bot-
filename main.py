@@ -954,7 +954,29 @@ class UltraQuantSpotBot:
                 if p.get("id") == pos_id:
                     if p.get("side") == "BUY":
                         self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
+                    else:
+                        r_sol = float(p.get("solAmount", 0.0))
+                        r_inv = float(p.get("invested", 0.0))
+                        if r_sol > 0:
+                            revert_pos = {
+                                "id": "MAN_" + str(uuid.uuid4())[:6],
+                                "round": 0,
+                                "subTrade": 0,
+                                "label": "WALLET REVERTED HOLDING",
+                                "side": "BUY",
+                                "entryPrice": round(r_inv / r_sol, 2) if r_sol > 0 else round(self.live_price, 2),
+                                "solAmount": r_sol,
+                                "invested": r_inv,
+                                "orderType": "MARKET",
+                                "isManualWallet": True,
+                                "status": "FILLED",
+                                "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            }
+                            self.wallet_active_positions.append(revert_pos)
+                            asyncio.create_task(self.db_save_buy(revert_pos, {"order_id": revert_pos["id"], "side": "BUY", "price": revert_pos["entryPrice"], "sol_amount": r_sol, "fee": 0.0, "profit": 0.0, "exec_type": "CANCEL_REVERT"}))
                     self.wallet_open_orders.remove(p)
+                    asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                     return
             return
 
@@ -996,9 +1018,32 @@ class UltraQuantSpotBot:
             if self.manual_test_balance < amt:
                 return
             self.manual_test_balance -= amt
+            sol_qty = amt / exact_order_price if exact_order_price > 0 else 0.0
+            inv_amt = amt
+        else:
+            sol_qty = float(ord_data.get("solQuantity", 0.0))
+            if sol_qty <= 0:
+                sol_qty = amt / exact_order_price if exact_order_price > 0 else amt
+            inv_amt = round(sol_qty * exact_order_price, 2)
+            total_avail_sol = sum(p.get("solAmount", 0.0) for p in self.wallet_active_positions)
+            if round(sol_qty, 4) > round(total_avail_sol, 4) or total_avail_sol <= 0:
+                return
+            rem_to_lock = sol_qty
+            for p in list(self.wallet_active_positions):
+                p_sol = float(p.get("solAmount", 0.0))
+                p_inv = float(p.get("invested", 0.0))
+                if p_sol <= rem_to_lock:
+                    rem_to_lock -= p_sol
+                    self.wallet_active_positions.remove(p)
+                    asyncio.create_task(self.db_save_sell_individual(p.get("id"), {"order_id": o_id, "side": "LOCK", "price": exact_order_price, "sol_amount": p_sol, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "LOCKED_FOR_SELL"}))
+                else:
+                    ratio = rem_to_lock / p_sol
+                    p["solAmount"] = round(p_sol - rem_to_lock, 4)
+                    p["invested"] = round(p_inv * (1.0 - ratio), 2)
+                    rem_to_lock = 0.0
+                if rem_to_lock <= 0:
+                    break
 
-        sol_qty = (amt / exact_order_price) if (side == "BUY" and exact_order_price > 0) else amt
-        inv_amt = amt if side == "BUY" else (amt * exact_order_price)
         order_obj = {
             "id": o_id,
             "orderType": o_type,
@@ -1020,6 +1065,8 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.wallet_open_orders.insert(0, order_obj)
+        asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb, auto_repeat=True, slot_id=None):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
@@ -1933,15 +1980,16 @@ class UltraQuantSpotBot:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side == "SELL" and self.live_price >= fixed_price:
-                    sold_sol = float(ord.get("solAmount", amt))
-                    cost_basis = float(ord.get("invested", sold_sol * fixed_price))
+                    sold_sol = float(ord.get("solAmount", 0.0))
+                    cost_basis = float(ord.get("invested", 0.0))
                     gross_value = sold_sol * fixed_price
                     fee = gross_value * self.taker_fee_pct
                     net_value = gross_value - fee
                     user_net_profit = round(net_value - cost_basis, 4)
-                    self.manual_test_balance += net_value
-                    self.manual_realized_pnl += user_net_profit
+                    self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
+                    self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "SELL",
@@ -1958,6 +2006,7 @@ class UltraQuantSpotBot:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
             elif o_type == "ICEBERG":
                 if (now_ts - ord.get("lastExecTime", 0.0)) >= 3.0:
