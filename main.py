@@ -1065,9 +1065,9 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-        if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
+        if o_type == "LIMIT":
             if side.upper() == "SELL" and self.live_price >= exact_order_price:
-                gross_value = sol_qty * self.live_price
+                gross_value = sol_qty * exact_order_price
                 fee = gross_value * self.taker_fee_pct
                 net_value = gross_value - fee
                 user_net_profit = round(net_value - inv_amt, 4)
@@ -1076,7 +1076,7 @@ class UltraQuantSpotBot:
                 t_record = {
                     "orderId": o_id,
                     "side": "SELL",
-                    "price": self.live_price,
+                    "price": exact_order_price,
                     "solAmount": round(sol_qty, 4),
                     "fee": round(fee, 4),
                     "profit": round(user_net_profit, 4),
@@ -1091,7 +1091,7 @@ class UltraQuantSpotBot:
                 return
             elif side.upper() == "BUY" and self.live_price <= exact_order_price:
                 self.manual_test_balance += amt
-                self.execute_manual_buy(amt, "LIMIT", self.live_price)
+                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
                 return
 
         self.wallet_open_orders.insert(0, order_obj)
@@ -2002,7 +2002,7 @@ class UltraQuantSpotBot:
             target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
-            if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
+            if o_type == "LIMIT":
                 fixed_price = float(ord.get("price", target_p))
                 side_str = str(side).upper()
                 if side_str == "BUY" and self.live_price <= fixed_price:
@@ -2017,7 +2017,7 @@ class UltraQuantSpotBot:
                         self.wallet_open_orders.remove(ord)
                     sold_sol = float(ord.get("solAmount", 0.0))
                     cost_basis = float(ord.get("invested", 0.0))
-                    gross_value = sold_sol * self.live_price
+                    gross_value = sold_sol * fixed_price
                     fee = gross_value * self.taker_fee_pct
                     net_value = gross_value - fee
                     user_net_profit = round(net_value - cost_basis, 4)
@@ -2026,7 +2026,7 @@ class UltraQuantSpotBot:
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "SELL",
-                        "price": round(self.live_price, 2),
+                        "price": round(fixed_price, 2),
                         "solAmount": round(sold_sol, 4),
                         "fee": round(fee, 4),
                         "profit": round(user_net_profit, 4),
