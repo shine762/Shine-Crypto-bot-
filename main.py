@@ -318,6 +318,45 @@ class UltraQuantSpotBot:
                             self.spot_realized_pnl = round(spot_closed_profit, 2)
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
+                            sold_ids = {str(t.get("order_id") or "") for t in t_data if t.get("side") == "SELL"}
+                            for t in reversed(t_data):
+                                if t.get("side") == "BUY":
+                                    ord_id = str(t.get("order_id") or "")
+                                    base_id = ord_id[:-2] if ord_id.endswith("_B") else ord_id
+                                    if ord_id not in sold_ids and base_id not in sold_ids and (base_id + "_S") not in sold_ids:
+                                        p_entry = float(t.get("price") or 0.0)
+                                        p_sol = float(t.get("sol_amount") or 0.0)
+                                        p_inv = round(p_entry * p_sol, 2) if p_entry > 0 and p_sol > 0 else 10.0
+                                        pos_item = {
+                                            "id": ord_id,
+                                            "round": int(t.get("round") or 1),
+                                            "subTrade": 1,
+                                            "label": ord_id,
+                                            "entryPrice": p_entry,
+                                            "solAmount": p_sol,
+                                            "invested": p_inv,
+                                            "isMacro": False,
+                                            "targetPrice": round(p_entry + 0.40, 2),
+                                            "ts_high": p_entry
+                                        }
+                                        if ord_id.startswith("M_"):
+                                            if not any(x["id"] == ord_id for x in self.micro_positions):
+                                                self.micro_positions.append(pos_item)
+                                        elif ord_id.startswith("K2_"):
+                                            if not any(x["id"] == ord_id for x in self.killer2_positions):
+                                                self.killer2_positions.append(pos_item)
+                                        elif ord_id.startswith("K3_"):
+                                            if not any(x["id"] == ord_id for x in self.killer3_positions):
+                                                self.killer3_positions.append(pos_item)
+                                        elif not ord_id.startswith("MAN_") and not ord_id.startswith("ATL_") and not ord_id.startswith("ORD_") and not ord_id.startswith("BOT_"):
+                                            if not any(x["id"] == ord_id for x in self.active_positions):
+                                                self.active_positions.append(pos_item)
+                            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
+                            if len(reg_pos) > 0:
+                                self.sol_balance = sum(p["solAmount"] for p in reg_pos)
+                                self.invested_amount = sum(p["invested"] for p in reg_pos)
+                                self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
+                                self.sub_trade_count = len(reg_pos)
         except Exception:
             pass
 
@@ -1027,26 +1066,30 @@ class UltraQuantSpotBot:
         else:
             sol_qty = float(ord_data.get("solQuantity", 0.0))
             if sol_qty <= 0:
-                sol_qty = amt / exact_order_price if exact_order_price > 0 else amt
-            inv_amt = round(sol_qty * exact_order_price, 2)
+                sol_qty = amt if amt > 0 else 0.0
             total_avail_sol = sum(p.get("solAmount", 0.0) for p in self.wallet_active_positions)
             if round(sol_qty, 4) > round(total_avail_sol, 4) or total_avail_sol <= 0:
                 return
             rem_to_lock = sol_qty
+            actual_cost_basis = 0.0
             for p in list(self.wallet_active_positions):
                 p_sol = float(p.get("solAmount", 0.0))
                 p_inv = float(p.get("invested", 0.0))
                 if p_sol <= rem_to_lock:
                     rem_to_lock -= p_sol
+                    actual_cost_basis += p_inv
                     self.wallet_active_positions.remove(p)
                     asyncio.create_task(self.db_save_sell_individual(p.get("id"), {"order_id": o_id, "side": "LOCK", "price": exact_order_price, "sol_amount": p_sol, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "LOCKED_FOR_SELL"}))
                 else:
                     ratio = rem_to_lock / p_sol
+                    part_inv = round(p_inv * ratio, 2)
+                    actual_cost_basis += part_inv
                     p["solAmount"] = round(p_sol - rem_to_lock, 4)
-                    p["invested"] = round(p_inv * (1.0 - ratio), 2)
+                    p["invested"] = round(p_inv - part_inv, 2)
                     rem_to_lock = 0.0
                 if rem_to_lock <= 0:
                     break
+            inv_amt = round(actual_cost_basis, 2)
 
         order_obj = {
             "id": o_id,
@@ -1070,8 +1113,8 @@ class UltraQuantSpotBot:
         }
 
         if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
-            if side.upper() == "SELL" and self.live_price >= exact_order_price:
-                gross_value = sol_qty * self.live_price
+            if side.upper() == "SELL" and self.live_price >= exact_order_price and exact_order_price <= (self.live_price * 0.999):
+                gross_value = sol_qty * exact_order_price
                 fee = gross_value * self.taker_fee_pct
                 net_value = gross_value - fee
                 user_net_profit = round(net_value - inv_amt, 4)
@@ -1080,7 +1123,7 @@ class UltraQuantSpotBot:
                 t_record = {
                     "orderId": o_id,
                     "side": "SELL",
-                    "price": self.live_price,
+                    "price": round(exact_order_price, 2),
                     "solAmount": round(sol_qty, 4),
                     "fee": round(fee, 4),
                     "profit": round(user_net_profit, 4),
@@ -1093,9 +1136,9 @@ class UltraQuantSpotBot:
                 asyncio.create_task(self.db_sync_state())
                 asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 return
-            elif side.upper() == "BUY" and self.live_price <= exact_order_price:
+            elif side.upper() == "BUY" and self.live_price <= exact_order_price and exact_order_price >= (self.live_price * 1.001):
                 self.manual_test_balance += amt
-                self.execute_manual_buy(amt, "LIMIT", self.live_price)
+                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
                 return
 
         self.wallet_open_orders.insert(0, order_obj)
@@ -2011,7 +2054,7 @@ class UltraQuantSpotBot:
                         self.wallet_open_orders.remove(ord)
                     sold_sol = float(ord.get("solAmount", 0.0))
                     cost_basis = float(ord.get("invested", 0.0))
-                    gross_value = sold_sol * self.live_price
+                    gross_value = sold_sol * fixed_price
                     fee = gross_value * self.taker_fee_pct
                     net_value = gross_value - fee
                     user_net_profit = round(net_value - cost_basis, 4)
@@ -2020,7 +2063,7 @@ class UltraQuantSpotBot:
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "SELL",
-                        "price": round(self.live_price, 2),
+                        "price": round(fixed_price, 2),
                         "solAmount": round(sold_sol, 4),
                         "fee": round(fee, 4),
                         "profit": round(user_net_profit, 4),
