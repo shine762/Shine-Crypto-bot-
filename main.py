@@ -147,15 +147,15 @@ class UltraQuantSpotBot:
                                 p_id = str(p.get("id", ""))
                                 pos_obj = {
                                     "id": p_id,
-                                    "round": p.get("round", 1),
-                                    "subTrade": p.get("sub_trade", 1),
-                                    "label": p.get("label", ""),
-                                    "entryPrice": float(p.get("entry_price", 0)),
-                                    "solAmount": float(p.get("sol_amount", 0)),
-                                    "invested": float(p.get("invested", 0)),
-                                    "isMacro": p.get("is_macro", False),
-                                    "targetPrice": float(p.get("target_price", 0)),
-                                    "ts_high": float(p.get("entry_price", 0))
+                                    "round": int(p.get("round") or 1),
+                                    "subTrade": int(p.get("sub_trade") or 1),
+                                    "label": str(p.get("label") or ""),
+                                    "entryPrice": float(p.get("entry_price") or 0.0),
+                                    "solAmount": float(p.get("sol_amount") or 0.0),
+                                    "invested": float(p.get("invested") or 0.0),
+                                    "isMacro": bool(p.get("is_macro") or False),
+                                    "targetPrice": float(p.get("target_price") or 0.0),
+                                    "ts_high": float(p.get("entry_price") or 0.0)
                                 }
 
                                 if p_id.startswith("M_"):
@@ -274,15 +274,15 @@ class UltraQuantSpotBot:
                                 p_val = float(t.get("profit", 0.0))
                                 formatted_t = {
                                     "orderId": ord_id,
-                                    "side": t.get("side"),
-                                    "price": float(t.get("price", 0)),
-                                    "solAmount": float(t.get("sol_amount", 0)),
-                                    "fee": float(t.get("fee", 0)),
-                                    "profit": p_val,
-                                    "realizedPnl": p_val,
-                                    "round": t.get("round"),
+                                    "side": t.get("side") or "BUY",
+                                    "price": float(t.get("price") or 0.0),
+                                    "solAmount": float(t.get("sol_amount") or 0.0),
+                                    "fee": float(t.get("fee") or 0.0),
+                                    "profit": float(t.get("profit") or 0.0),
+                                    "realizedPnl": float(t.get("profit") or 0.0),
+                                    "round": int(t.get("round") or 1),
                                     "execType": e_type,
-                                    "timestamp": t.get("created_at")
+                                    "timestamp": t.get("created_at") or datetime.now(timezone.utc).isoformat()
                                 }
                                 all_logs.append(formatted_t)
                                 if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or ord_id.startswith("COPY_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
@@ -1389,25 +1389,9 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_sync_state())
 
     def get_scavenged_idle_fund(self):
-        if self.usdt_balance <= 5.0:
+        if self.usdt_balance < 10.0:
             return 0.0
-        total_account = self.usdt_balance + ((self.sol_balance + self.macro_vault_sol) * self.live_price)
-        cur_alloc = total_account * self.round_allocations.get(self.active_round, 0.05)
-        cur_done = self.micro_round_trades_done.get(self.active_round, 0)
-        cur_unspent = max(0.0, cur_alloc * (1.0 - (cur_done / 10.0)))
-
-        if self.active_round < 5:
-            return max(0.0, min(self.usdt_balance, cur_unspent))
-
-        borrowed_pool = 0.0
-        for r in range(1, self.active_round):
-            r_alloc = total_account * self.round_allocations.get(r, 0.0)
-            r_done = self.round_trades_done.get(r, 0) + self.micro_round_trades_done.get(r, 0)
-            r_unspent = max(0.0, r_alloc * (1.0 - min(1.0, r_done / 10.0)))
-            borrowed_pool += r_unspent
-
-        total_avail = cur_unspent + borrowed_pool
-        return max(0.0, min(self.usdt_balance, total_avail))
+        return self.usdt_balance
 
     def get_micro_trade_size(self):
         if self.usdt_balance < 10.0:
@@ -1737,10 +1721,9 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
 
-                is_rebound = self.live_price >= (self.killer2_tb_lowest + 0.30)
-                is_whale_confirmed = (self.whale_orderflow_ratio >= 65.0) and (self.whale_sentiment != "BEARISH")
+                is_rebound = self.live_price >= (self.killer2_tb_lowest + 0.15)
 
-                if is_rebound and is_whale_confirmed:
+                if is_rebound:
                     self.killer2_tb_active = False
                     self.execute_killer2_buy()
         else:
@@ -1921,10 +1904,9 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer3_tb_lowest:
                     self.killer3_tb_lowest = self.live_price
 
-                is_rebound = self.live_price >= (self.killer3_tb_lowest + 0.35)
-                is_whale_confirmed = (self.whale_orderflow_ratio >= 65.0) and (self.whale_sentiment != "BEARISH")
+                is_rebound = self.live_price >= (self.killer3_tb_lowest + 0.20)
 
-                if is_rebound and is_whale_confirmed:
+                if is_rebound:
                     self.killer3_tb_active = False
                     self.execute_killer3_buy()
         else:
@@ -2165,7 +2147,7 @@ class UltraQuantSpotBot:
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
-            if self.whale_sentiment != "BEARISH" and self.round_trades_done.get(self.active_round, 0) < 10:
+            if self.usdt_balance >= 10.0:
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
 
