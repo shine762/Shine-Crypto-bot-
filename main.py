@@ -875,7 +875,7 @@ class UltraQuantSpotBot:
         total_sol = sum(p.get("solAmount", 0.0) for p in target_positions)
         total_invested = sum(p.get("invested", 0.0) for p in target_positions)
 
-        if sell_amount_sol > 0 and sell_amount_sol < total_sol:
+        if sell_amount_sol > 0 and sell_amount_sol < (total_sol - 0.0001):
             sold_sol = sell_amount_sol
             cost_basis = total_invested * (sold_sol / total_sol)
         else:
@@ -1025,25 +1025,27 @@ class UltraQuantSpotBot:
         else:
             sol_qty = float(ord_data.get("solQuantity", 0.0))
             if sol_qty <= 0:
-                sol_qty = amt / exact_order_price if exact_order_price > 0 else amt
-            inv_amt = round(sol_qty * exact_order_price, 2)
-            total_avail_sol = sum(p.get("solAmount", 0.0) for p in self.wallet_active_positions)
-            if round(sol_qty, 4) > round(total_avail_sol, 4) or total_avail_sol <= 0:
+                sol_qty = float(ord_data.get("amount", 0.0))
+            total_avail_sol = sum(float(p.get("solAmount", 0.0)) for p in self.wallet_active_positions)
+            if total_avail_sol <= 0:
                 return
+            if sol_qty > total_avail_sol:
+                sol_qty = total_avail_sol
+            inv_amt = round(sol_qty * exact_order_price, 2)
             rem_to_lock = sol_qty
             for p in list(self.wallet_active_positions):
                 p_sol = float(p.get("solAmount", 0.0))
                 p_inv = float(p.get("invested", 0.0))
-                if p_sol <= rem_to_lock:
-                    rem_to_lock -= p_sol
+                if p_sol <= (rem_to_lock + 0.0001):
+                    rem_to_lock = max(0.0, rem_to_lock - p_sol)
                     self.wallet_active_positions.remove(p)
                     asyncio.create_task(self.db_save_sell_individual(p.get("id"), {"order_id": o_id, "side": "LOCK", "price": exact_order_price, "sol_amount": p_sol, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "LOCKED_FOR_SELL"}))
                 else:
-                    ratio = rem_to_lock / p_sol
+                    ratio = rem_to_lock / p_sol if p_sol > 0 else 1.0
                     p["solAmount"] = round(p_sol - rem_to_lock, 4)
                     p["invested"] = round(p_inv * (1.0 - ratio), 2)
                     rem_to_lock = 0.0
-                if rem_to_lock <= 0:
+                if rem_to_lock <= 0.00001:
                     break
 
         order_obj = {
