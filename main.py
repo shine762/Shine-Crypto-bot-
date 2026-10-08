@@ -1094,9 +1094,7 @@ class UltraQuantSpotBot:
                 asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 return
             elif side.upper() == "BUY" and self.live_price <= exact_order_price:
-                self.manual_test_balance += amt
-                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
-                return
+                pass
 
         self.wallet_open_orders.insert(0, order_obj)
         asyncio.create_task(self.db_sync_state())
@@ -2012,8 +2010,38 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and self.live_price <= fixed_price:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    self.manual_test_balance += amt
-                    self.execute_manual_buy(amt, "LIMIT", fixed_price)
+                    fee = amt * self.taker_fee_pct
+                    net_invest = amt - fee
+                    sol_bought = net_invest / fixed_price
+                    pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                    manual_pos = {
+                        "id": pos_id,
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": "WALLET LIMIT BUY",
+                        "side": "BUY",
+                        "entryPrice": round(fixed_price, 2),
+                        "solAmount": round(sol_bought, 4),
+                        "invested": round(amt, 2),
+                        "orderType": "LIMIT",
+                        "isManualWallet": True,
+                        "status": "FILLED",
+                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    }
+                    self.wallet_active_positions.insert(0, manual_pos)
+                    t_record = {
+                        "orderId": pos_id,
+                        "side": "BUY",
+                        "price": round(fixed_price, 2),
+                        "solAmount": round(sol_bought, 4),
+                        "invested": round(amt, 2),
+                        "fee": round(fee, 4),
+                        "profit": 0.0,
+                        "execType": "LIMIT_BUY_FILLED",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "SELL" and self.live_price >= fixed_price:
