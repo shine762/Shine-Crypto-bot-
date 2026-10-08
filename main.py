@@ -1089,7 +1089,7 @@ class UltraQuantSpotBot:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 self.manual_trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_save_sell_individual(o_id, t_record))
+                asyncio.create_task(self.db_save_engine_trade(t_record))
                 asyncio.create_task(self.db_sync_state())
                 asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 return
@@ -2039,7 +2039,7 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_sell_individual(ord.get("id"), t_record))
+                    asyncio.create_task(self.db_save_engine_trade(t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
@@ -2332,6 +2332,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = True
                 elif action == "RESUME":
                     bot.is_paused = False
+                elif action == "PRICE_TICK":
+                    p_val = float(msg.get("price", 0.0))
+                    if p_val > 0:
+                        bot.update_price_tick(p_val)
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
                     bot.create_advanced_order(msg)
                 elif action in ["CANCEL_AUTO_LOOP", "STOP_AUTO_LOOP"]:
