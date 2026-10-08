@@ -996,11 +996,13 @@ class UltraQuantSpotBot:
         o_type = str(ord_data.get("orderType", "MARKET")).upper()
         side = str(ord_data.get("side", "BUY")).upper()
         amt = float(ord_data.get("amount", 0.0))
-        price = float(ord_data.get("price", 0.0))
+        price = float(ord_data.get("limitPrice", 0.0))
         if price <= 0:
-            price = float(ord_data.get("limitPrice", self.live_price))
+            price = float(ord_data.get("price", 0.0))
+        if price <= 0 and o_type == "MARKET":
+            price = self.live_price
         stop_p = float(ord_data.get("stopPrice", 0.0))
-        limit_p = float(ord_data.get("limitPrice", price))
+        limit_p = price
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
 
@@ -1977,9 +1979,9 @@ class UltraQuantSpotBot:
 
             now_ts = datetime.now(timezone.utc).timestamp()
             if o_type == "LIMIT":
-                fixed_price = float(ord.get("price", target_p))
+                fixed_price = float(ord.get("limitPrice") or ord.get("price") or target_p)
                 side_str = str(side).upper()
-                if side_str == "BUY" and self.live_price <= fixed_price:
+                if side_str == "BUY" and fixed_price > 0 and self.live_price <= fixed_price:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     fee = amt * self.taker_fee_pct
