@@ -995,20 +995,16 @@ class UltraQuantSpotBot:
 
         o_type = str(ord_data.get("orderType", "MARKET")).upper()
         side = str(ord_data.get("side", "BUY")).upper()
-        if "SELL" in str(action).upper():
-            side = "SELL"
-        elif "BUY" in str(action).upper():
-            side = "BUY"
         amt = float(ord_data.get("amount", 0.0))
-        price = float(ord_data.get("price", self.live_price))
+        price = float(ord_data.get("price", 0.0))
         if price <= 0:
-            price = self.live_price
+            price = float(ord_data.get("limitPrice", self.live_price))
         stop_p = float(ord_data.get("stopPrice", 0.0))
-        limit_p = float(ord_data.get("limitPrice", 0.0))
+        limit_p = float(ord_data.get("limitPrice", price))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
 
-        if o_type == "MARKET":
+        if o_type == "MARKET" or action in ["MANUAL_BUY", "MANUAL_SELL"]:
             if side == "BUY":
                 self.execute_manual_buy(amt, "MARKET", self.live_price)
             else:
@@ -1070,31 +1066,7 @@ class UltraQuantSpotBot:
         }
 
         if o_type == "LIMIT":
-            if side.upper() == "SELL" and self.live_price >= exact_order_price:
-                gross_value = sol_qty * exact_order_price
-                fee = gross_value * self.taker_fee_pct
-                net_value = gross_value - fee
-                user_net_profit = round(net_value - inv_amt, 4)
-                self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
-                t_record = {
-                    "orderId": o_id,
-                    "side": "SELL",
-                    "price": exact_order_price,
-                    "solAmount": round(sol_qty, 4),
-                    "fee": round(fee, 4),
-                    "profit": round(user_net_profit, 4),
-                    "realizedPnl": round(user_net_profit, 4),
-                    "execType": "LIMIT_SELL_FILLED",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.manual_trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_save_engine_trade(t_record))
-                asyncio.create_task(self.db_sync_state())
-                asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-                return
-            elif side.upper() == "BUY" and self.live_price <= exact_order_price:
-                pass
+            pass
 
         self.wallet_open_orders.insert(0, order_obj)
         asyncio.create_task(self.db_sync_state())
