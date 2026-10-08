@@ -1035,6 +1035,8 @@ class UltraQuantSpotBot:
             return
 
         o_type = str(ord_data.get("orderType", "MARKET")).upper()
+        if "ADVANCED" in o_type:
+            o_type = "LIMIT"
         side = str(ord_data.get("side", "BUY")).upper()
         if "SELL" in str(action).upper():
             side = "SELL"
@@ -1045,7 +1047,6 @@ class UltraQuantSpotBot:
         if price <= 0:
             price = self.live_price
         stop_p = float(ord_data.get("stopPrice", 0.0))
-        limit_p = float(ord_data.get("limitPrice", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
 
@@ -1068,8 +1069,10 @@ class UltraQuantSpotBot:
             if sol_qty <= 0:
                 sol_qty = amt if amt > 0 else 0.0
             total_avail_sol = sum(p.get("solAmount", 0.0) for p in self.wallet_active_positions)
-            if round(sol_qty, 4) > round(total_avail_sol, 4) or total_avail_sol <= 0:
+            if sol_qty <= 0:
                 return
+            if total_avail_sol > 0 and round(sol_qty, 4) > round(total_avail_sol, 4):
+                sol_qty = round(total_avail_sol, 4)
             rem_to_lock = sol_qty
             actual_cost_basis = 0.0
             for p in list(self.wallet_active_positions):
@@ -1089,6 +1092,8 @@ class UltraQuantSpotBot:
                     rem_to_lock = 0.0
                 if rem_to_lock <= 0:
                     break
+            if actual_cost_basis <= 0:
+                actual_cost_basis = round(sol_qty * (self.avg_entry_price if self.avg_entry_price > 0 else exact_order_price), 2)
             inv_amt = round(actual_cost_basis, 2)
 
         order_obj = {
@@ -1111,35 +1116,6 @@ class UltraQuantSpotBot:
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-
-        if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
-            if side.upper() == "SELL" and self.live_price >= exact_order_price and exact_order_price <= (self.live_price * 0.999):
-                gross_value = sol_qty * exact_order_price
-                fee = gross_value * self.taker_fee_pct
-                net_value = gross_value - fee
-                user_net_profit = round(net_value - inv_amt, 4)
-                self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
-                t_record = {
-                    "orderId": o_id,
-                    "side": "SELL",
-                    "price": round(exact_order_price, 2),
-                    "solAmount": round(sol_qty, 4),
-                    "fee": round(fee, 4),
-                    "profit": round(user_net_profit, 4),
-                    "realizedPnl": round(user_net_profit, 4),
-                    "execType": "LIMIT_SELL_FILLED",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.manual_trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_save_sell_individual(o_id, t_record))
-                asyncio.create_task(self.db_sync_state())
-                asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-                return
-            elif side.upper() == "BUY" and self.live_price <= exact_order_price and exact_order_price >= (self.live_price * 1.001):
-                self.manual_test_balance += amt
-                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
-                return
 
         self.wallet_open_orders.insert(0, order_obj)
         asyncio.create_task(self.db_sync_state())
@@ -2039,7 +2015,7 @@ class UltraQuantSpotBot:
             target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
-            if o_type in ["LIMIT", "ADVANCED_LIMIT", "ADVANCED LIMIT"]:
+            if o_type == "LIMIT":
                 fixed_price = float(ord.get("price", target_p))
                 side_str = str(side).upper()
                 if side_str == "BUY" and self.live_price <= fixed_price:
