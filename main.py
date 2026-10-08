@@ -1064,6 +1064,10 @@ class UltraQuantSpotBot:
             self.manual_test_balance -= amt
             sol_qty = amt / exact_order_price if exact_order_price > 0 else 0.0
             inv_amt = amt
+            if o_type == "LIMIT" and self.live_price > 0 and exact_order_price >= self.live_price:
+                self.manual_test_balance += amt
+                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
+                return
         else:
             sol_qty = float(ord_data.get("solQuantity", 0.0))
             if sol_qty <= 0:
@@ -1095,10 +1099,33 @@ class UltraQuantSpotBot:
             if actual_cost_basis <= 0:
                 actual_cost_basis = round(sol_qty * (self.avg_entry_price if self.avg_entry_price > 0 else exact_order_price), 2)
             inv_amt = round(actual_cost_basis, 2)
+            if o_type == "LIMIT" and self.live_price > 0 and exact_order_price <= self.live_price:
+                gross_value = sol_qty * exact_order_price
+                fee = gross_value * self.taker_fee_pct
+                net_value = gross_value - fee
+                user_net_profit = round(net_value - inv_amt, 4)
+                self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
+                self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
+                t_record = {
+                    "orderId": o_id,
+                    "side": "SELL",
+                    "price": exact_order_price,
+                    "solAmount": round(sol_qty, 4),
+                    "fee": round(fee, 4),
+                    "profit": round(user_net_profit, 4),
+                    "realizedPnl": round(user_net_profit, 4),
+                    "execType": "LIMIT_SELL_FILLED",
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                self.manual_trades_history.insert(0, t_record)
+                asyncio.create_task(self.db_save_sell_individual(o_id, t_record))
+                asyncio.create_task(self.db_sync_state())
+                asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+                return
 
         order_obj = {
             "id": o_id,
-            "orderType": o_type,
+            "orderType": "LIMIT" if "LIMIT" in o_type else o_type,
             "side": side.upper(),
             "amount": float(amt),
             "solAmount": round(float(sol_qty), 4),
@@ -2015,17 +2042,17 @@ class UltraQuantSpotBot:
             target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
-            if o_type == "LIMIT":
+            if "LIMIT" in str(o_type).upper():
                 fixed_price = float(ord.get("price", target_p))
                 side_str = str(side).upper()
-                if side_str == "BUY" and self.live_price <= fixed_price:
+                if side_str == "BUY" and self.live_price > 0 and self.live_price <= fixed_price:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     self.manual_test_balance += amt
                     self.execute_manual_buy(amt, "LIMIT", fixed_price)
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-                elif side_str == "SELL" and self.live_price >= fixed_price:
+                elif side_str == "SELL" and self.live_price > 0 and self.live_price >= fixed_price:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     sold_sol = float(ord.get("solAmount", 0.0))
@@ -2285,21 +2312,22 @@ async def binance_ws_worker():
 async def price_feed_fallback_worker():
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
+            timeout_cfg = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
                 try:
-                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", timeout=3) as resp:
+                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT") as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             p = float(data.get("price", 0.0))
                             if p > 0:
                                 bot.update_price_tick(p)
                                 await manager.broadcast(json.dumps(bot.get_state()))
-                                await asyncio.sleep(2)
+                                await asyncio.sleep(1)
                                 continue
                 except Exception:
                     pass
                 try:
-                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot", timeout=3) as resp:
+                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot") as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             p = float(data.get("data", {}).get("amount", 0.0))
@@ -2310,7 +2338,7 @@ async def price_feed_fallback_worker():
                     pass
         except Exception:
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
 @app.on_event("startup")
 async def startup_event():
@@ -2342,7 +2370,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "RESUME":
                     bot.is_paused = False
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
+                    in_p = float(msg.get("price", 0.0))
+                    if in_p > 0 and bot.live_price <= 0:
+                        bot.update_price_tick(in_p)
                     bot.create_advanced_order(msg)
+                elif action == "CLIENT_PRICE_TICK":
+                    c_p = float(msg.get("price", 0.0))
+                    if c_p > 0:
+                        bot.update_price_tick(c_p)
                 elif action in ["CANCEL_AUTO_LOOP", "STOP_AUTO_LOOP"]:
                     s_id = msg.get("slotId", "ALL")
                     bot.cancel_auto_loop_slot(s_id)
