@@ -104,6 +104,7 @@ class UltraQuantSpotBot:
         self.wallet_open_orders = []
         self.manual_trades_history = []
         self.auto_loops = []
+        self.spot_realized_pnl = 0.0
 
     async def load_from_database(self):
         try:
@@ -314,6 +315,7 @@ class UltraQuantSpotBot:
                             self.killer2_total_trades = k2_count
                             self.killer3_realized_pnl = round(k3_pnl, 4)
                             self.killer3_total_trades = k3_count
+                            self.spot_realized_pnl = round(spot_closed_profit, 2)
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
         except Exception:
@@ -573,6 +575,7 @@ class UltraQuantSpotBot:
             "activePhase": self.active_phase,
             "activeRound": self.active_round,
             "allocationPct": str(alloc_pct),
+            "spotRealizedPnl": round(self.spot_realized_pnl, 2),
             "realizedPnl": round(self.realized_pnl, 2),
             "cooldownRemaining": self.cooldown_remaining,
             "macroVaultSol": round(self.macro_vault_sol, 4),
@@ -703,6 +706,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.spot_trades_history.insert(0, t_record)
         self.latest_signal = {
             "action": "BUY",
             "price": round(self.live_price, 2),
@@ -1347,6 +1351,7 @@ class UltraQuantSpotBot:
             return
         self.usdt_balance += net_return
         self.realized_pnl += profit
+        self.spot_realized_pnl += profit
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
@@ -1368,6 +1373,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.spot_trades_history.insert(0, trade_record)
         p_pct = (profit / invested) * 100.0 if invested > 0 else 0.0
         self.distribute_copy_profit("VELOCITY_DCA", p_pct, self.live_price)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
@@ -1452,6 +1458,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id + "_B",
             "side": "BUY",
@@ -1497,6 +1504,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
             "side": "SELL",
@@ -1625,6 +1633,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id + "_B",
             "side": "BUY",
@@ -1670,6 +1679,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
             "side": "SELL",
@@ -1807,6 +1817,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, {
             "order_id": pos_id + "_B",
             "side": "BUY",
@@ -1852,6 +1863,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
             "side": "SELL",
