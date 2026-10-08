@@ -116,8 +116,10 @@ class UltraQuantSpotBot:
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
                             if "usdt_balance" in row and row.get("usdt_balance") is not None:
                                 self.usdt_balance = float(row.get("usdt_balance"))
-                            if "wallet_balance" in row and row.get("wallet_balance") is not None:
+                            if "wallet_balance" in row and row.get("wallet_balance") is not None and float(row.get("wallet_balance")) > 0:
                                 self.manual_test_balance = float(row.get("wallet_balance"))
+                            else:
+                                self.manual_test_balance = 100.0
                             if "sol_balance" in row and row.get("sol_balance") is not None:
                                 self.sol_balance = float(row.get("sol_balance"))
                             if "invested_amount" in row and row.get("invested_amount") is not None:
