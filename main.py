@@ -1004,19 +1004,12 @@ class UltraQuantSpotBot:
                     return
             return
 
-        raw_type = str(ord_data.get("orderType", "MARKET")).strip().upper().replace(" ", "_")
-        side = str(ord_data.get("side", "BUY")).strip().upper()
+        o_type = str(ord_data.get("orderType", "MARKET")).upper().replace(" ", "_")
+        side = str(ord_data.get("side", "BUY")).upper()
         amt = float(ord_data.get("amount", 0.0))
         price = float(ord_data.get("price", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
-
-        if "LIMIT" in raw_type:
-            o_type = "LIMIT"
-        elif "MARKET" in raw_type and "TRAILING" not in raw_type:
-            o_type = "MARKET"
-        else:
-            o_type = raw_type
 
         if o_type == "MARKET":
             if side == "BUY":
@@ -1025,13 +1018,13 @@ class UltraQuantSpotBot:
                 self.execute_manual_sell(pos_id=None, sell_amount_sol=amt)
             return
 
-        exact_order_price = round(float(price), 2)
+        exact_order_price = round(price, 2)
         if side == "BUY":
-            if round(self.manual_test_balance, 2) < round(amt, 2) or amt <= 0 or exact_order_price <= 0:
+            if self.manual_test_balance < amt or amt <= 0 or exact_order_price <= 0:
                 return
             self.manual_test_balance = round(self.manual_test_balance - amt, 2)
-            sol_qty = round(amt / exact_order_price, 6)
-            inv_amt = round(amt, 2)
+            sol_qty = round(amt / exact_order_price, 4)
+            inv_amt = amt
         else:
             sol_qty = float(ord_data.get("solQuantity", 0.0))
             if sol_qty <= 0:
@@ -1971,75 +1964,74 @@ class UltraQuantSpotBot:
             o_type = ord.get("orderType", "")
             side = ord.get("side", "BUY")
             amt = ord.get("amount", 0.0)
-            fixed_price = float(ord.get("price", 0.0))
-            if fixed_price <= 0:
-                continue
+            target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
             norm_type = str(o_type).upper().replace(" ", "_")
+            fixed_price = float(ord.get("price", target_p))
             side_str = str(side).upper()
 
             cur_p = round(self.live_price, 2)
             lim_p = round(fixed_price, 2)
-            if norm_type == "LIMIT":
-                if side_str == "BUY":
-                    if cur_p > 0 and cur_p <= lim_p:
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-                        invested_usdt = round(float(ord.get("invested", amt)), 2)
-                        fee = round(invested_usdt * self.taker_fee_pct, 4)
-                        net_invest = invested_usdt - fee
-                        sol_bought = round(net_invest / lim_p, 4)
-                        pos_id = "MAN_" + str(uuid.uuid4())[:6]
-                        manual_pos = {
-                            "id": pos_id,
-                            "round": 0,
-                            "subTrade": 0,
-                            "label": "WALLET LIMIT BUY",
-                            "side": "BUY",
-                            "entryPrice": lim_p,
-                            "solAmount": sol_bought,
-                            "invested": invested_usdt,
-                            "orderType": "LIMIT",
-                            "isManualWallet": True,
-                            "status": "FILLED",
-                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                        }
-                        self.wallet_active_positions.insert(0, manual_pos)
-                        t_record = {
-                            "orderId": str(ord.get("id")),
-                            "side": "BUY",
-                            "price": lim_p,
-                            "solAmount": sol_bought,
-                            "invested": invested_usdt,
-                            "fee": fee,
-                            "profit": 0.0,
-                            "execType": "LIMIT_BUY_FILLED",
-                            "timestamp": datetime.now(timezone.utc).isoformat()
-                        }
-                        self.manual_trades_history.insert(0, t_record)
-                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
-                        asyncio.create_task(self.db_sync_state())
-                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+            if "LIMIT" in norm_type:
+                if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
+                    exec_fill_price = lim_p
+                    fee = round(amt * self.taker_fee_pct, 4)
+                    net_invest = amt - fee
+                    sol_bought = round(net_invest / exec_fill_price, 4)
+                    pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                    manual_pos = {
+                        "id": pos_id,
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": "WALLET LIMIT BUY",
+                        "side": "BUY",
+                        "entryPrice": exec_fill_price,
+                        "solAmount": sol_bought,
+                        "invested": round(amt, 2),
+                        "orderType": "LIMIT",
+                        "isManualWallet": True,
+                        "status": "FILLED",
+                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    }
+                    self.wallet_active_positions.insert(0, manual_pos)
+                    t_record = {
+                        "orderId": ord.get("id"),
+                        "side": "BUY",
+                        "price": exec_fill_price,
+                        "solAmount": sol_bought,
+                        "invested": round(amt, 2),
+                        "fee": fee,
+                        "profit": 0.0,
+                        "execType": "LIMIT_BUY_FILLED",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+                    asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "SELL" and cur_p > 0 and cur_p >= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
-                    cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                    gross_value = round(sold_sol * lim_p, 4)
+                    exec_fill_price = lim_p
+                    sold_sol = float(ord.get("solAmount", 0.0))
+                    cost_basis = float(ord.get("invested", 0.0))
+                    gross_value = round(sold_sol * exec_fill_price, 4)
                     fee = round(gross_value * self.taker_fee_pct, 4)
-                    net_value = round(gross_value - fee, 4)
+                    net_value = gross_value - fee
                     user_net_profit = round(net_value - cost_basis, 4)
                     self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
                     self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
                     t_record = {
-                        "orderId": str(ord.get("id")),
+                        "orderId": ord.get("id"),
                         "side": "SELL",
-                        "price": lim_p,
-                        "solAmount": sold_sol,
+                        "price": exec_fill_price,
+                        "solAmount": round(sold_sol, 4),
                         "fee": fee,
-                        "profit": user_net_profit,
-                        "realizedPnl": user_net_profit,
+                        "profit": round(user_net_profit, 4),
+                        "realizedPnl": round(user_net_profit, 4),
                         "execType": "LIMIT_SELL_FILLED",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
