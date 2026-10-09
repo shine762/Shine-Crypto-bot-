@@ -1064,10 +1064,7 @@ class UltraQuantSpotBot:
             self.manual_test_balance -= amt
             sol_qty = amt / exact_order_price if exact_order_price > 0 else 0.0
             inv_amt = amt
-            if o_type == "LIMIT" and self.live_price > 0 and exact_order_price >= self.live_price:
-                self.manual_test_balance += amt
-                self.execute_manual_buy(amt, "LIMIT", exact_order_price)
-                return
+            
         else:
             sol_qty = float(ord_data.get("solQuantity", 0.0))
             if sol_qty <= 0:
@@ -1099,29 +1096,7 @@ class UltraQuantSpotBot:
             if actual_cost_basis <= 0:
                 actual_cost_basis = round(sol_qty * (self.avg_entry_price if self.avg_entry_price > 0 else exact_order_price), 2)
             inv_amt = round(actual_cost_basis, 2)
-            if o_type == "LIMIT" and self.live_price > 0 and exact_order_price <= self.live_price:
-                gross_value = sol_qty * exact_order_price
-                fee = gross_value * self.taker_fee_pct
-                net_value = gross_value - fee
-                user_net_profit = round(net_value - inv_amt, 4)
-                self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
-                t_record = {
-                    "orderId": o_id,
-                    "side": "SELL",
-                    "price": exact_order_price,
-                    "solAmount": round(sol_qty, 4),
-                    "fee": round(fee, 4),
-                    "profit": round(user_net_profit, 4),
-                    "realizedPnl": round(user_net_profit, 4),
-                    "execType": "LIMIT_SELL_FILLED",
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                self.manual_trades_history.insert(0, t_record)
-                asyncio.create_task(self.db_save_sell_individual(o_id, t_record))
-                asyncio.create_task(self.db_sync_state())
-                asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-                return
+            
 
         order_obj = {
             "id": o_id,
@@ -1396,8 +1371,8 @@ class UltraQuantSpotBot:
         if profit < self.min_net_profit_usdt:
             return
         self.usdt_balance += net_return
-        self.realized_pnl += profit
-        self.spot_realized_pnl += profit
+        self.realized_pnl = round(self.realized_pnl + profit, 4)
+        self.spot_realized_pnl = round(self.spot_realized_pnl + profit, 4)
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
@@ -1407,7 +1382,7 @@ class UltraQuantSpotBot:
         self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False) and p["id"] != pos_id])
         self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
         trade_record = {
-            "orderId": pos_id,
+            "orderId": pos_id + "_S",
             "side": "SELL",
             "price": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
@@ -1415,7 +1390,7 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
             "round": r_num,
-            "execType": "INDIVIDUAL_PROFIT_EXIT",
+            "execType": "SPOT_DCA_EXIT",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
