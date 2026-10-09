@@ -117,8 +117,10 @@ class UltraQuantSpotBot:
                             self.realized_pnl = float(row.get("realized_pnl", 0.0))
                             if "usdt_balance" in row and row.get("usdt_balance") is not None:
                                 self.usdt_balance = float(row.get("usdt_balance"))
-                            if "wallet_balance" in row and row.get("wallet_balance") is not None:
+                            if "wallet_balance" in row and row.get("wallet_balance") is not None and float(row.get("wallet_balance")) > 0:
                                 self.manual_test_balance = float(row.get("wallet_balance"))
+                            else:
+                                self.manual_test_balance = 100.0
                             if "manual_realized_pnl" in row and row.get("manual_realized_pnl") is not None:
                                 self.manual_realized_pnl = float(row.get("manual_realized_pnl"))
                             if "sol_balance" in row and row.get("sol_balance") is not None:
@@ -332,8 +334,8 @@ class UltraQuantSpotBot:
 
     async def db_sync_state(self):
         try:
-            if self.usdt_balance <= 0 and self.invested_amount <= 0 and self.sol_balance <= 0:
-                return
+            if self.manual_test_balance <= 0 and len(self.wallet_active_positions) == 0 and len(self.wallet_open_orders) == 0:
+                self.manual_test_balance = 100.0
             payload = {
                 "usdt_balance": round(self.usdt_balance, 2),
                 "wallet_balance": round(self.manual_test_balance, 2),
