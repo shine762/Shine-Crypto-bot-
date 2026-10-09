@@ -961,23 +961,7 @@ class UltraQuantSpotBot:
                         refund_amt = float(p.get("invested") or p.get("amount") or 0.0)
                         self.manual_test_balance = round(self.manual_test_balance + refund_amt, 2)
                     else:
-                        r_sol = float(p.get("solAmount", 0.0))
-                        r_inv = float(p.get("invested", 0.0))
-                        if r_sol > 0:
-                            self.wallet_active_positions.append({
-                                "id": "MAN_" + str(uuid.uuid4())[:6],
-                                "round": 0,
-                                "subTrade": 0,
-                                "label": "WALLET REVERTED HOLDING",
-                                "side": "BUY",
-                                "entryPrice": round(r_inv / r_sol, 2) if r_sol > 0 else round(self.live_price, 2),
-                                "solAmount": round(r_sol, 4),
-                                "invested": round(r_inv, 2),
-                                "orderType": "MARKET",
-                                "isManualWallet": True,
-                                "status": "FILLED",
-                                "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                            })
+                        pass
                 self.wallet_open_orders.clear()
                 asyncio.create_task(self.db_sync_state())
                 asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -1057,26 +1041,8 @@ class UltraQuantSpotBot:
                 return
             if round(sol_qty, 4) > round(total_avail_sol, 4):
                 sol_qty = round(total_avail_sol, 4)
-            rem_to_lock = sol_qty
-            actual_cost_basis = 0.0
-            for p in list(self.wallet_active_positions):
-                p_sol = float(p.get("solAmount", 0.0))
-                p_inv = float(p.get("invested", 0.0))
-                if p_sol <= rem_to_lock:
-                    rem_to_lock -= p_sol
-                    actual_cost_basis += p_inv
-                    self.wallet_active_positions.remove(p)
-                    asyncio.create_task(self.db_save_sell_individual(p.get("id"), {"order_id": o_id, "side": "LOCK", "price": exact_order_price, "sol_amount": p_sol, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "LOCKED_FOR_SELL"}))
-                else:
-                    ratio = rem_to_lock / p_sol
-                    part_inv = round(p_inv * ratio, 2)
-                    actual_cost_basis += part_inv
-                    p["solAmount"] = round(p_sol - rem_to_lock, 4)
-                    p["invested"] = round(p_inv - part_inv, 2)
-                    rem_to_lock = 0.0
-                if rem_to_lock <= 0:
-                    break
-            inv_amt = round(actual_cost_basis, 2)
+            total_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions)
+            inv_amt = round(total_inv * (sol_qty / total_avail_sol), 2) if total_avail_sol > 0 else round(sol_qty * exact_order_price, 2)
 
         order_obj = {
             "id": o_id,
@@ -2039,28 +2005,7 @@ class UltraQuantSpotBot:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                     sold_sol = float(ord.get("solAmount", 0.0))
-                    cost_basis = float(ord.get("invested", 0.0))
-                    gross_value = sold_sol * lim_p
-                    fee = gross_value * self.taker_fee_pct
-                    net_value = gross_value - fee
-                    user_net_profit = round(net_value - cost_basis, 4)
-                    self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                    self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
-                    t_record = {
-                        "orderId": ord.get("id"),
-                        "side": "SELL",
-                        "price": lim_p,
-                        "solAmount": round(sold_sol, 4),
-                        "fee": round(fee, 4),
-                        "profit": round(user_net_profit, 4),
-                        "realizedPnl": round(user_net_profit, 4),
-                        "execType": "LIMIT_SELL_FILLED",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.manual_trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_sell_individual(ord.get("id"), t_record))
-                    asyncio.create_task(self.db_sync_state())
-                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+                    self.execute_manual_sell(pos_id=None, sell_amount_sol=sold_sol)
             elif norm_type == "TRAILING_STOP":
                 cb = float(ord.get("callbackPct", 1.0))
                 if side_str == "SELL":
