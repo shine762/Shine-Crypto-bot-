@@ -1004,12 +1004,19 @@ class UltraQuantSpotBot:
                     return
             return
 
-        o_type = str(ord_data.get("orderType", "MARKET")).upper().replace(" ", "_")
-        side = str(ord_data.get("side", "BUY")).upper()
+        raw_type = str(ord_data.get("orderType", "MARKET")).strip().upper().replace(" ", "_")
+        side = str(ord_data.get("side", "BUY")).strip().upper()
         amt = float(ord_data.get("amount", 0.0))
         price = float(ord_data.get("price", 0.0))
         cb_pct = float(ord_data.get("callbackPct", 1.0))
         o_id = ord_data.get("orderId") or ("ORD_" + str(uuid.uuid4())[:6])
+
+        if "LIMIT" in raw_type:
+            o_type = "LIMIT"
+        elif "MARKET" in raw_type and "TRAILING" not in raw_type:
+            o_type = "MARKET"
+        else:
+            o_type = raw_type
 
         if o_type == "MARKET":
             if side == "BUY":
