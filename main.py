@@ -1981,45 +1981,46 @@ class UltraQuantSpotBot:
 
             cur_p = round(self.live_price, 2)
             lim_p = round(fixed_price, 2)
-            if "LIMIT" in norm_type:
-                if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
-                    if ord in self.wallet_open_orders:
-                        self.wallet_open_orders.remove(ord)
-                    invested_usdt = float(ord.get("invested", amt))
-                    fee = invested_usdt * self.taker_fee_pct
-                    net_invest = invested_usdt - fee
-                    sol_bought = round(net_invest / lim_p, 4)
-                    pos_id = "MAN_" + str(uuid.uuid4())[:6]
-                    manual_pos = {
-                        "id": pos_id,
-                        "round": 0,
-                        "subTrade": 0,
-                        "label": "WALLET LIMIT BUY",
-                        "side": "BUY",
-                        "entryPrice": lim_p,
-                        "solAmount": sol_bought,
-                        "invested": round(invested_usdt, 2),
-                        "orderType": "LIMIT",
-                        "isManualWallet": True,
-                        "status": "FILLED",
-                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                    }
-                    self.wallet_active_positions.insert(0, manual_pos)
-                    t_record = {
-                        "orderId": ord.get("id"),
-                        "side": "BUY",
-                        "price": lim_p,
-                        "solAmount": sol_bought,
-                        "invested": round(invested_usdt, 2),
-                        "fee": round(fee, 4),
-                        "profit": 0.0,
-                        "execType": "LIMIT_BUY_FILLED",
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    }
-                    self.manual_trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_buy(manual_pos, t_record))
-                    asyncio.create_task(self.db_sync_state())
-                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+            if norm_type == "LIMIT":
+                if side_str == "BUY":
+                    if cur_p > 0 and cur_p <= lim_p:
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                        invested_usdt = float(ord.get("invested", amt))
+                        fee = invested_usdt * self.taker_fee_pct
+                        net_invest = invested_usdt - fee
+                        sol_bought = round(net_invest / lim_p, 4)
+                        pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                        manual_pos = {
+                            "id": pos_id,
+                            "round": 0,
+                            "subTrade": 0,
+                            "label": "WALLET LIMIT BUY",
+                            "side": "BUY",
+                            "entryPrice": lim_p,
+                            "solAmount": sol_bought,
+                            "invested": round(invested_usdt, 2),
+                            "orderType": "LIMIT",
+                            "isManualWallet": True,
+                            "status": "FILLED",
+                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        }
+                        self.wallet_active_positions.insert(0, manual_pos)
+                        t_record = {
+                            "orderId": ord.get("id"),
+                            "side": "BUY",
+                            "price": lim_p,
+                            "solAmount": sol_bought,
+                            "invested": round(invested_usdt, 2),
+                            "fee": round(fee, 4),
+                            "profit": 0.0,
+                            "execType": "LIMIT_BUY_FILLED",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+                        asyncio.create_task(self.db_sync_state())
+                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "SELL" and cur_p > 0 and cur_p >= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
