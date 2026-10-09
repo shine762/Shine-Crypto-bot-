@@ -953,40 +953,63 @@ class UltraQuantSpotBot:
         action = ord_data.get("action", "")
 
         if action == "CANCEL_ORDER" or ord_data.get("cancel"):
-            if pos_id and str(pos_id).startswith("ATL_"):
-                self.cancel_auto_loop_slot(pos_id)
-                return
             if pos_id == "ALL":
-                self.cancel_auto_loop_slot("ALL")
-                for p in self.wallet_open_orders:
-                    if p.get("side") == "BUY":
-                        self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
-                self.wallet_open_orders.clear()
-                return
-            for p in list(self.wallet_open_orders):
-                if p.get("id") == pos_id:
-                    if p.get("side") == "BUY":
-                        self.manual_test_balance += p.get("invested", p.get("amount", 0.0))
+                for loop in list(self.auto_loops):
+                    self.cancel_auto_loop_slot(loop.get("id"))
+                for p in list(self.wallet_open_orders):
+                    if str(p.get("side", "")).upper() == "BUY":
+                        refund_amt = float(p.get("invested") or p.get("amount") or 0.0)
+                        self.manual_test_balance = round(self.manual_test_balance + refund_amt, 2)
                     else:
                         r_sol = float(p.get("solAmount", 0.0))
                         r_inv = float(p.get("invested", 0.0))
                         if r_sol > 0:
-                            revert_pos = {
+                            self.wallet_active_positions.append({
                                 "id": "MAN_" + str(uuid.uuid4())[:6],
                                 "round": 0,
                                 "subTrade": 0,
                                 "label": "WALLET REVERTED HOLDING",
                                 "side": "BUY",
                                 "entryPrice": round(r_inv / r_sol, 2) if r_sol > 0 else round(self.live_price, 2),
-                                "solAmount": r_sol,
-                                "invested": r_inv,
+                                "solAmount": round(r_sol, 4),
+                                "invested": round(r_inv, 2),
                                 "orderType": "MARKET",
                                 "isManualWallet": True,
                                 "status": "FILLED",
                                 "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
-                            }
-                            self.wallet_active_positions.append(revert_pos)
-                            asyncio.create_task(self.db_save_buy(revert_pos, {"order_id": revert_pos["id"], "side": "BUY", "price": revert_pos["entryPrice"], "sol_amount": r_sol, "fee": 0.0, "profit": 0.0, "exec_type": "CANCEL_REVERT"}))
+                            })
+                self.wallet_open_orders.clear()
+                asyncio.create_task(self.db_sync_state())
+                asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+                return
+
+            if pos_id and str(pos_id).startswith("ATL_"):
+                self.cancel_auto_loop_slot(pos_id)
+                return
+
+            for p in list(self.wallet_open_orders):
+                if p.get("id") == pos_id:
+                    if str(p.get("side", "")).upper() == "BUY":
+                        refund_amt = float(p.get("invested") or p.get("amount") or 0.0)
+                        self.manual_test_balance = round(self.manual_test_balance + refund_amt, 2)
+                    else:
+                        r_sol = float(p.get("solAmount", 0.0))
+                        r_inv = float(p.get("invested", 0.0))
+                        if r_sol > 0:
+                            self.wallet_active_positions.append({
+                                "id": "MAN_" + str(uuid.uuid4())[:6],
+                                "round": 0,
+                                "subTrade": 0,
+                                "label": "WALLET REVERTED HOLDING",
+                                "side": "BUY",
+                                "entryPrice": round(r_inv / r_sol, 2) if r_sol > 0 else round(self.live_price, 2),
+                                "solAmount": round(r_sol, 4),
+                                "invested": round(r_inv, 2),
+                                "orderType": "MARKET",
+                                "isManualWallet": True,
+                                "status": "FILLED",
+                                "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                            })
                     self.wallet_open_orders.remove(p)
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -1977,9 +2000,10 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    fee = amt * self.taker_fee_pct
-                    net_invest = amt - fee
-                    sol_bought = round(net_invest / lim_p, 4)
+                    exec_price = lim_p
+                    invest_amt = float(ord.get("invested") or ord.get("amount") or amt)
+                    fee = invest_amt * self.taker_fee_pct
+                    sol_bought = round((invest_amt - fee) / exec_price, 4)
                     pos_id = "MAN_" + str(uuid.uuid4())[:6]
                     manual_pos = {
                         "id": pos_id,
@@ -1987,9 +2011,9 @@ class UltraQuantSpotBot:
                         "subTrade": 0,
                         "label": "WALLET LIMIT BUY",
                         "side": "BUY",
-                        "entryPrice": lim_p,
+                        "entryPrice": exec_price,
                         "solAmount": sol_bought,
-                        "invested": round(amt, 2),
+                        "invested": round(invest_amt, 2),
                         "orderType": "LIMIT",
                         "isManualWallet": True,
                         "status": "FILLED",
@@ -1999,9 +2023,9 @@ class UltraQuantSpotBot:
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "BUY",
-                        "price": lim_p,
+                        "price": exec_price,
                         "solAmount": sol_bought,
-                        "invested": round(amt, 2),
+                        "invested": round(invest_amt, 2),
                         "fee": round(fee, 4),
                         "profit": 0.0,
                         "execType": "LIMIT_BUY_FILLED",
