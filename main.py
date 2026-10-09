@@ -1964,11 +1964,12 @@ class UltraQuantSpotBot:
             o_type = ord.get("orderType", "")
             side = ord.get("side", "BUY")
             amt = ord.get("amount", 0.0)
-            target_p = ord.get("price", self.live_price)
+            fixed_price = float(ord.get("price", 0.0))
+            if fixed_price <= 0:
+                continue
 
             now_ts = datetime.now(timezone.utc).timestamp()
             norm_type = str(o_type).upper().replace(" ", "_")
-            fixed_price = float(ord.get("price", target_p))
             side_str = str(side).upper()
 
             cur_p = round(self.live_price, 2)
@@ -1977,8 +1978,9 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    fee = amt * self.taker_fee_pct
-                    net_invest = amt - fee
+                    invested_usdt = float(ord.get("invested", amt))
+                    fee = invested_usdt * self.taker_fee_pct
+                    net_invest = invested_usdt - fee
                     sol_bought = round(net_invest / lim_p, 4)
                     pos_id = "MAN_" + str(uuid.uuid4())[:6]
                     manual_pos = {
@@ -1989,7 +1991,7 @@ class UltraQuantSpotBot:
                         "side": "BUY",
                         "entryPrice": lim_p,
                         "solAmount": sol_bought,
-                        "invested": round(amt, 2),
+                        "invested": round(invested_usdt, 2),
                         "orderType": "LIMIT",
                         "isManualWallet": True,
                         "status": "FILLED",
@@ -2001,7 +2003,7 @@ class UltraQuantSpotBot:
                         "side": "BUY",
                         "price": lim_p,
                         "solAmount": sol_bought,
-                        "invested": round(amt, 2),
+                        "invested": round(invested_usdt, 2),
                         "fee": round(fee, 4),
                         "profit": 0.0,
                         "execType": "LIMIT_BUY_FILLED",
