@@ -119,6 +119,8 @@ class UltraQuantSpotBot:
                                 self.usdt_balance = float(row.get("usdt_balance"))
                             if "wallet_balance" in row and row.get("wallet_balance") is not None:
                                 self.manual_test_balance = float(row.get("wallet_balance"))
+                            if "manual_realized_pnl" in row and row.get("manual_realized_pnl") is not None:
+                                self.manual_realized_pnl = float(row.get("manual_realized_pnl"))
                             if "sol_balance" in row and row.get("sol_balance") is not None:
                                 self.sol_balance = float(row.get("sol_balance"))
                             if "invested_amount" in row and row.get("invested_amount") is not None:
@@ -318,39 +320,7 @@ class UltraQuantSpotBot:
                             self.spot_realized_pnl = round(spot_closed_profit, 2)
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
-                            sold_ids = {str(t.get("order_id") or "") for t in t_data if t.get("side") == "SELL"}
-                            for t in reversed(t_data):
-                                if t.get("side") == "BUY":
-                                    ord_id = str(t.get("order_id") or "")
-                                    base_id = ord_id[:-2] if ord_id.endswith("_B") else ord_id
-                                    if ord_id not in sold_ids and base_id not in sold_ids and (base_id + "_S") not in sold_ids:
-                                        p_entry = float(t.get("price") or 0.0)
-                                        p_sol = float(t.get("sol_amount") or 0.0)
-                                        p_inv = round(p_entry * p_sol, 2) if p_entry > 0 and p_sol > 0 else 10.0
-                                        pos_item = {
-                                            "id": ord_id,
-                                            "round": int(t.get("round") or 1),
-                                            "subTrade": 1,
-                                            "label": ord_id,
-                                            "entryPrice": p_entry,
-                                            "solAmount": p_sol,
-                                            "invested": p_inv,
-                                            "isMacro": False,
-                                            "targetPrice": round(p_entry + 0.40, 2),
-                                            "ts_high": p_entry
-                                        }
-                                        if ord_id.startswith("M_"):
-                                            if not any(x["id"] == ord_id for x in self.micro_positions):
-                                                self.micro_positions.append(pos_item)
-                                        elif ord_id.startswith("K2_"):
-                                            if not any(x["id"] == ord_id for x in self.killer2_positions):
-                                                self.killer2_positions.append(pos_item)
-                                        elif ord_id.startswith("K3_"):
-                                            if not any(x["id"] == ord_id for x in self.killer3_positions):
-                                                self.killer3_positions.append(pos_item)
-                                        elif not ord_id.startswith("MAN_") and not ord_id.startswith("ATL_") and not ord_id.startswith("ORD_") and not ord_id.startswith("BOT_"):
-                                            if not any(x["id"] == ord_id for x in self.active_positions):
-                                                self.active_positions.append(pos_item)
+                            pass
                             reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
                             if len(reg_pos) > 0:
                                 self.sol_balance = sum(p["solAmount"] for p in reg_pos)
