@@ -1977,10 +1977,9 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    exec_fill_price = lim_p
-                    fee = round(amt * self.taker_fee_pct, 4)
+                    fee = amt * self.taker_fee_pct
                     net_invest = amt - fee
-                    sol_bought = round(net_invest / exec_fill_price, 4)
+                    sol_bought = round(net_invest / lim_p, 4)
                     pos_id = "MAN_" + str(uuid.uuid4())[:6]
                     manual_pos = {
                         "id": pos_id,
@@ -1988,7 +1987,7 @@ class UltraQuantSpotBot:
                         "subTrade": 0,
                         "label": "WALLET LIMIT BUY",
                         "side": "BUY",
-                        "entryPrice": exec_fill_price,
+                        "entryPrice": lim_p,
                         "solAmount": sol_bought,
                         "invested": round(amt, 2),
                         "orderType": "LIMIT",
@@ -2000,10 +1999,10 @@ class UltraQuantSpotBot:
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "BUY",
-                        "price": exec_fill_price,
+                        "price": lim_p,
                         "solAmount": sol_bought,
                         "invested": round(amt, 2),
-                        "fee": fee,
+                        "fee": round(fee, 4),
                         "profit": 0.0,
                         "execType": "LIMIT_BUY_FILLED",
                         "timestamp": datetime.now(timezone.utc).isoformat()
@@ -2015,11 +2014,10 @@ class UltraQuantSpotBot:
                 elif side_str == "SELL" and cur_p > 0 and cur_p >= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    exec_fill_price = lim_p
                     sold_sol = float(ord.get("solAmount", 0.0))
                     cost_basis = float(ord.get("invested", 0.0))
-                    gross_value = round(sold_sol * exec_fill_price, 4)
-                    fee = round(gross_value * self.taker_fee_pct, 4)
+                    gross_value = sold_sol * lim_p
+                    fee = gross_value * self.taker_fee_pct
                     net_value = gross_value - fee
                     user_net_profit = round(net_value - cost_basis, 4)
                     self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
@@ -2027,9 +2025,9 @@ class UltraQuantSpotBot:
                     t_record = {
                         "orderId": ord.get("id"),
                         "side": "SELL",
-                        "price": exec_fill_price,
+                        "price": lim_p,
                         "solAmount": round(sold_sol, 4),
-                        "fee": fee,
+                        "fee": round(fee, 4),
                         "profit": round(user_net_profit, 4),
                         "realizedPnl": round(user_net_profit, 4),
                         "execType": "LIMIT_SELL_FILLED",
