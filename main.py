@@ -1034,16 +1034,14 @@ class UltraQuantSpotBot:
                     return
             return
 
+        raw_action = str(ord_data.get("action", "")).upper()
         o_type = str(ord_data.get("orderType", "MARKET")).upper()
-        if "ADVANCED" in o_type:
-            o_type = "LIMIT"
+        if raw_action == "CREATE_ORDER" and ord_data.get("orderType"):
+            o_type = str(ord_data.get("orderType")).upper()
+
         side = str(ord_data.get("side", "BUY")).upper()
-        if "SELL" in str(action).upper():
-            side = "SELL"
-        elif "BUY" in str(action).upper():
-            side = "BUY"
         amt = float(ord_data.get("amount", 0.0))
-        price = float(ord_data.get("price", self.live_price))
+        price = float(ord_data.get("price", 0.0))
         if price <= 0:
             price = self.live_price
         stop_p = float(ord_data.get("stopPrice", 0.0))
@@ -2017,7 +2015,7 @@ class UltraQuantSpotBot:
             target_p = ord.get("price", self.live_price)
 
             now_ts = datetime.now(timezone.utc).timestamp()
-            if "LIMIT" in str(o_type).upper():
+            if str(o_type).upper() == "LIMIT":
                 fixed_price = float(ord.get("price", target_p))
                 side_str = str(side).upper()
                 if side_str == "BUY" and self.live_price > 0 and self.live_price <= fixed_price:
@@ -2345,9 +2343,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "RESUME":
                     bot.is_paused = False
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
-                    in_p = float(msg.get("price", 0.0))
-                    if in_p > 0 and bot.live_price <= 0:
-                        bot.update_price_tick(in_p)
                     bot.create_advanced_order(msg)
                 elif action == "CLIENT_PRICE_TICK":
                     c_p = float(msg.get("price", 0.0))
