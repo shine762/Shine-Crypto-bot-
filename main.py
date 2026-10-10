@@ -2333,10 +2333,12 @@ manager = ConnectionManager()
 
 async def binance_ws_worker():
     ws_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
+    last_broadcast_time = 0.0
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url) as ws:
+            timeout_cfg = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                async with session.ws_connect(ws_url, heartbeat=15.0) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
@@ -2344,11 +2346,14 @@ async def binance_ws_worker():
                             if price > 0:
                                 bot.process_market_trades([data])
                                 bot.update_price_tick(price)
-                                await manager.broadcast(json.dumps(bot.get_state()))
+                                now_loop = asyncio.get_event_loop().time()
+                                if now_loop - last_broadcast_time >= 0.1:
+                                    last_broadcast_time = now_loop
+                                    await manager.broadcast(json.dumps(bot.get_state()))
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
 async def price_feed_fallback_worker():
     while True:
