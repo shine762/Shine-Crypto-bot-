@@ -105,6 +105,7 @@ class UltraQuantSpotBot:
         self.manual_trades_history = []
         self.auto_loops = []
         self.spot_realized_pnl = 0.0
+        self.db_loaded = False
 
     async def load_from_database(self):
         try:
@@ -327,16 +328,18 @@ class UltraQuantSpotBot:
                                 self.invested_amount = sum(p["invested"] for p in reg_pos)
                                 self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
                                 self.sub_trade_count = len(reg_pos)
+                            self.db_loaded = True
         except Exception:
-            pass
+            self.db_loaded = True
 
     async def db_sync_state(self):
+        if not getattr(self, "db_loaded", False):
+            return
         try:
-            if self.usdt_balance <= 0 and self.invested_amount <= 0 and self.sol_balance <= 0:
-                return
             payload = {
                 "usdt_balance": round(self.usdt_balance, 2),
                 "wallet_balance": round(self.manual_test_balance, 2),
+                "manual_realized_pnl": round(self.manual_realized_pnl, 4),
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
                 "avg_entry_price": round(self.avg_entry_price, 2),
@@ -1063,8 +1066,11 @@ class UltraQuantSpotBot:
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
             "price": exact_order_price,
+            "stopPrice": float(ord_data.get("stopPrice", 0.0)),
+            "limitPrice": float(ord_data.get("limitPrice", 0.0)),
             "callbackPct": cb_pct,
             "peakTracked": self.live_price,
+            "lowestTracked": self.live_price,
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -1220,7 +1226,7 @@ class UltraQuantSpotBot:
                 s_cb_pct = float(ord.get("sellCallbackPct", 0.01))
                 pullback_trigger = ord["peakTracked"] * (1.0 - (s_cb_pct / 100.0))
 
-                if (self.live_price <= pullback_trigger or self.live_price <= ord["sellTrigger"]) and self.live_price >= ord["sellTrigger"]:
+                if self.live_price <= pullback_trigger:
                     sold_sol = ord["solBought"]
                     gross = sold_sol * self.live_price
                     fee = gross * self.taker_fee_pct
@@ -2347,13 +2353,13 @@ async def binance_ws_worker():
                                 bot.process_market_trades([data])
                                 bot.update_price_tick(price)
                                 now_loop = asyncio.get_event_loop().time()
-                                if now_loop - last_broadcast_time >= 0.1:
+                                if now_loop - last_broadcast_time >= 0.05:
                                     last_broadcast_time = now_loop
                                     await manager.broadcast(json.dumps(bot.get_state()))
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
 
 async def price_feed_fallback_worker():
     while True:
