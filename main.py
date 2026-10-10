@@ -1058,6 +1058,11 @@ class UltraQuantSpotBot:
                     break
             inv_amt = round(actual_cost_basis, 2)
 
+        initial_cur_p = round(self.live_price, 2)
+        trig_target_p = float(ord_data.get("stopPrice", 0.0))
+        exec_limit_p = float(ord_data.get("limitPrice", exact_order_price))
+        trig_dir = "BELOW" if trig_target_p <= initial_cur_p else "ABOVE"
+
         order_obj = {
             "id": o_id,
             "orderType": o_type,
@@ -1065,11 +1070,12 @@ class UltraQuantSpotBot:
             "amount": float(amt),
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
-            "price": exact_order_price,
+            "price": exec_limit_p if o_type == "TRIGGER" else exact_order_price,
             "activationPrice": exact_order_price,
             "isActivated": False,
-            "stopPrice": float(ord_data.get("stopPrice", 0.0)),
-            "limitPrice": float(ord_data.get("limitPrice", 0.0)),
+            "stopPrice": trig_target_p,
+            "limitPrice": exec_limit_p,
+            "triggerDirection": trig_dir,
             "callbackPct": cb_pct,
             "peakTracked": 0.0,
             "lowestTracked": 0.0,
@@ -2145,10 +2151,11 @@ class UltraQuantSpotBot:
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
             elif norm_type == "TRIGGER":
                 trig_p = round(float(ord.get("stopPrice", 0.0) or ord.get("price", 0.0)), 2)
+                t_dir = ord.get("triggerDirection", "BELOW" if trig_p <= float(ord.get("activationPrice", cur_p)) else "ABOVE")
                 should_exec = False
-                if side_str == "SELL" and cur_p <= trig_p:
+                if t_dir == "BELOW" and cur_p <= trig_p and trig_p > 0:
                     should_exec = True
-                elif side_str == "BUY" and cur_p >= trig_p:
+                elif t_dir == "ABOVE" and cur_p >= trig_p and trig_p > 0:
                     should_exec = True
 
                 if should_exec:
