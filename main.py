@@ -2042,8 +2042,7 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_save_engine_trade(t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-            
-   elif norm_type == "TRAILING_STOP":
+            elif norm_type == "TRAILING_STOP":
                 cb = float(ord.get("callbackPct", 1.0))
                 if side_str == "SELL":
                     current_peak = float(ord.get("peakTracked", cur_p))
