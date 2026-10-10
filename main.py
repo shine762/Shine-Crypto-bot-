@@ -2339,58 +2339,32 @@ manager = ConnectionManager()
 
 async def binance_ws_worker():
     ws_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
-    last_broadcast_time = 0.0
     while True:
         try:
-            timeout_cfg = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
-            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                async with session.ws_connect(ws_url, heartbeat=15.0) as ws:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(ws_url, heartbeat=10.0) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
                             price = float(data.get("p", 0.0))
                             if price > 0:
+                                bot.live_price = price
                                 bot.process_market_trades([data])
                                 bot.update_price_tick(price)
-                                now_loop = asyncio.get_event_loop().time()
-                                if now_loop - last_broadcast_time >= 0.05:
-                                    last_broadcast_time = now_loop
-                                    await manager.broadcast(json.dumps(bot.get_state()))
+                                payload = json.dumps(bot.get_state())
+                                for connection in manager.active_connections:
+                                    try:
+                                        await connection.send_text(payload)
+                                    except Exception:
+                                        pass
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
 async def price_feed_fallback_worker():
     while True:
-        try:
-            timeout_cfg = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                try:
-                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT") as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            p = float(data.get("price", 0.0))
-                            if p > 0:
-                                bot.update_price_tick(p)
-                                await manager.broadcast(json.dumps(bot.get_state()))
-                                await asyncio.sleep(1)
-                                continue
-                except Exception:
-                    pass
-                try:
-                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot") as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            p = float(data.get("data", {}).get("amount", 0.0))
-                            if p > 0:
-                                bot.update_price_tick(p)
-                                await manager.broadcast(json.dumps(bot.get_state()))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(3600)
 
 @app.on_event("startup")
 async def startup_event():
