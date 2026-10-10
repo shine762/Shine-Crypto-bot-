@@ -1066,11 +1066,13 @@ class UltraQuantSpotBot:
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
             "price": exact_order_price,
+            "activationPrice": exact_order_price,
+            "isActivated": False,
             "stopPrice": float(ord_data.get("stopPrice", 0.0)),
             "limitPrice": float(ord_data.get("limitPrice", 0.0)),
             "callbackPct": cb_pct,
-            "peakTracked": self.live_price,
-            "lowestTracked": self.live_price,
+            "peakTracked": 0.0,
+            "lowestTracked": 0.0,
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -2050,12 +2052,10 @@ class UltraQuantSpotBot:
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
             elif norm_type == "TRAILING_STOP":
                 cb = float(ord.get("callbackPct", 1.0))
-                act_price = float(ord.get("price", 0.0))
-                is_activated = ord.get("isActivated", False)
-
+                act_p = float(ord.get("activationPrice", 0.0))
                 if side_str == "SELL":
-                    if not is_activated:
-                        if cur_p >= act_price and act_price > 0:
+                    if not ord.get("isActivated", False):
+                        if cur_p >= act_p and act_p > 0:
                             ord["isActivated"] = True
                             ord["peakTracked"] = cur_p
                     else:
@@ -2093,8 +2093,8 @@ class UltraQuantSpotBot:
                             asyncio.create_task(self.db_sync_state())
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "BUY":
-                    if not is_activated:
-                        if cur_p <= act_price and act_price > 0:
+                    if not ord.get("isActivated", False):
+                        if cur_p <= act_p and act_p > 0:
                             ord["isActivated"] = True
                             ord["lowestTracked"] = cur_p
                     else:
@@ -2143,33 +2143,21 @@ class UltraQuantSpotBot:
                             asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                             asyncio.create_task(self.db_sync_state())
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-            elif norm_type in ["TP_SL", "TP/SL", "OCO", "TRIGGER"]:
-                tp_p = round(float(ord.get("limitPrice", 0.0)), 2)
-                sl_p = round(float(ord.get("stopPrice", 0.0)), 2)
-                if norm_type == "TRIGGER":
-                    sl_p = round(float(ord.get("stopPrice", fixed_price)), 2)
-                    tp_p = 0.0
-
+            elif norm_type == "TRIGGER":
+                trig_p = round(float(ord.get("stopPrice", 0.0) or ord.get("price", 0.0)), 2)
                 should_exec = False
-                exec_p = cur_p
-                exec_label = "TP_FILLED"
+                if side_str == "SELL" and cur_p <= trig_p:
+                    should_exec = True
+                elif side_str == "BUY" and cur_p >= trig_p:
+                    should_exec = True
 
-                if side_str == "SELL":
-                    if tp_p > 0 and cur_p >= tp_p:
-                        should_exec = True
-                        exec_p = tp_p
-                        exec_label = "TP_FILLED"
-                    elif sl_p > 0 and cur_p <= sl_p:
-                        should_exec = True
-                        exec_p = sl_p
-                        exec_label = "SL_FILLED"
-
-                    if should_exec:
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
+                if should_exec:
+                    if ord in self.wallet_open_orders:
+                        self.wallet_open_orders.remove(ord)
+                    if side_str == "SELL":
                         sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
                         cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                        gross_val = round(sold_sol * exec_p, 2)
+                        gross_val = round(sold_sol * cur_p, 2)
                         fee = round(gross_val * self.taker_fee_pct, 4)
                         net_val = round(gross_val - fee, 2)
                         net_profit = round(net_val - cost_basis, 4)
@@ -2178,14 +2166,92 @@ class UltraQuantSpotBot:
                         t_record = {
                             "orderId": str(ord.get("id")),
                             "side": "SELL",
-                            "price": exec_p,
+                            "price": cur_p,
                             "solAmount": sold_sol,
                             "invested": cost_basis,
                             "fee": fee,
                             "profit": net_profit,
                             "realizedPnl": net_profit,
                             "round": 0,
-                            "execType": f"{norm_type}_{exec_label}",
+                            "execType": "TRIGGER_SELL_FILLED",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_engine_trade(t_record))
+                    else:
+                        exact_invest = round(float(amt), 2)
+                        fee = round(exact_invest * self.taker_fee_pct, 4)
+                        net_invest = exact_invest - fee
+                        sol_bought = round(net_invest / cur_p, 4)
+                        pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                        manual_pos = {
+                            "id": pos_id,
+                            "round": 0,
+                            "subTrade": 0,
+                            "label": "WALLET TRIGGER BUY",
+                            "side": "BUY",
+                            "entryPrice": cur_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "orderType": "TRIGGER",
+                            "isManualWallet": True,
+                            "status": "FILLED",
+                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        }
+                        self.wallet_active_positions.insert(0, manual_pos)
+                        t_record = {
+                            "orderId": str(ord.get("id")),
+                            "side": "BUY",
+                            "price": cur_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "fee": fee,
+                            "profit": 0.0,
+                            "realizedPnl": 0.0,
+                            "round": 0,
+                            "execType": "TRIGGER_BUY_FILLED",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+                    asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+            elif norm_type in ["TP_SL", "TP/SL", "OCO"]:
+                tp_p = round(float(ord.get("limitPrice", 0.0)), 2)
+                sl_p = round(float(ord.get("stopPrice", 0.0)), 2)
+                should_exec = False
+                exec_label = "TP_FILLED"
+
+                if side_str == "SELL":
+                    if tp_p > 0 and cur_p >= tp_p:
+                        should_exec = True
+                        exec_label = "TP_FILLED"
+                    elif sl_p > 0 and cur_p <= sl_p:
+                        should_exec = True
+                        exec_label = "SL_FILLED"
+
+                    if should_exec:
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                        sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
+                        cost_basis = round(float(ord.get("invested", 0.0)), 2)
+                        gross_val = round(sold_sol * cur_p, 2)
+                        fee = round(gross_val * self.taker_fee_pct, 4)
+                        net_val = round(gross_val - fee, 2)
+                        net_profit = round(net_val - cost_basis, 4)
+                        self.manual_test_balance = round(self.manual_test_balance + net_val, 2)
+                        self.manual_realized_pnl = round(self.manual_realized_pnl + net_profit, 4)
+                        t_record = {
+                            "orderId": str(ord.get("id")),
+                            "side": "SELL",
+                            "price": cur_p,
+                            "solAmount": sold_sol,
+                            "invested": cost_basis,
+                            "fee": fee,
+                            "profit": net_profit,
+                            "realizedPnl": net_profit,
+                            "round": 0,
+                            "execType": f"OCO_{exec_label}",
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
@@ -2195,10 +2261,10 @@ class UltraQuantSpotBot:
                 elif side_str == "BUY":
                     if tp_p > 0 and cur_p <= tp_p:
                         should_exec = True
-                        exec_p = tp_p
+                        exec_label = "TP_BUY_FILLED"
                     elif sl_p > 0 and cur_p >= sl_p:
                         should_exec = True
-                        exec_p = sl_p
+                        exec_label = "SL_BUY_FILLED"
 
                     if should_exec:
                         if ord in self.wallet_open_orders:
@@ -2206,18 +2272,18 @@ class UltraQuantSpotBot:
                         exact_invest = round(float(amt), 2)
                         fee = round(exact_invest * self.taker_fee_pct, 4)
                         net_invest = exact_invest - fee
-                        sol_bought = round(net_invest / exec_p, 4)
+                        sol_bought = round(net_invest / cur_p, 4)
                         pos_id = "MAN_" + str(uuid.uuid4())[:6]
                         manual_pos = {
                             "id": pos_id,
                             "round": 0,
                             "subTrade": 0,
-                            "label": f"WALLET {norm_type} BUY",
+                            "label": "WALLET OCO BUY",
                             "side": "BUY",
-                            "entryPrice": exec_p,
+                            "entryPrice": cur_p,
                             "solAmount": sol_bought,
                             "invested": exact_invest,
-                            "orderType": norm_type,
+                            "orderType": "OCO",
                             "isManualWallet": True,
                             "status": "FILLED",
                             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -2226,14 +2292,14 @@ class UltraQuantSpotBot:
                         t_record = {
                             "orderId": str(ord.get("id")),
                             "side": "BUY",
-                            "price": exec_p,
+                            "price": cur_p,
                             "solAmount": sol_bought,
                             "invested": exact_invest,
                             "fee": fee,
                             "profit": 0.0,
                             "realizedPnl": 0.0,
                             "round": 0,
-                            "execType": f"{norm_type}_BUY_FILLED",
+                            "execType": f"OCO_{exec_label}",
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
