@@ -595,10 +595,10 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.trades_history if self.trades_history else self.spot_trades_history,
-            "spotTradesHistory": self.spot_trades_history,
-            "scalpTradesHistory": self.scalp_trades_history,
-            "manualTradesHistory": self.manual_trades_history,
+            "tradesHistory": self.trades_history[:25],
+            "spotTradesHistory": self.spot_trades_history[:20],
+            "scalpTradesHistory": self.scalp_trades_history[:20],
+            "manualTradesHistory": self.manual_trades_history[:20],
             "latestSignal": self.latest_signal,
             "botThought": ai_thoughts,
             "microPositions": self.micro_positions,
@@ -2334,11 +2334,12 @@ manager = ConnectionManager()
 async def binance_ws_worker():
     ws_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
     last_broadcast_time = 0.0
+    last_sent_price = 0.0
     while True:
         try:
-            timeout_cfg = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
+            timeout_cfg = aiohttp.ClientTimeout(total=None, sock_connect=5, sock_read=None)
             async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                async with session.ws_connect(ws_url, heartbeat=15.0) as ws:
+                async with session.ws_connect(ws_url, heartbeat=10.0) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
@@ -2347,8 +2348,11 @@ async def binance_ws_worker():
                                 bot.process_market_trades([data])
                                 bot.update_price_tick(price)
                                 now_loop = asyncio.get_event_loop().time()
-                                if now_loop - last_broadcast_time >= 0.1:
+                                price_diff = abs(price - last_sent_price)
+                                time_diff = now_loop - last_broadcast_time
+                                if (price_diff >= 0.01 and time_diff >= 0.08) or time_diff >= 0.4:
                                     last_broadcast_time = now_loop
+                                    last_sent_price = price
                                     await manager.broadcast(json.dumps(bot.get_state()))
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
@@ -2357,34 +2361,7 @@ async def binance_ws_worker():
 
 async def price_feed_fallback_worker():
     while True:
-        try:
-            timeout_cfg = aiohttp.ClientTimeout(total=5)
-            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                try:
-                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT") as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            p = float(data.get("price", 0.0))
-                            if p > 0:
-                                bot.update_price_tick(p)
-                                await manager.broadcast(json.dumps(bot.get_state()))
-                                await asyncio.sleep(1)
-                                continue
-                except Exception:
-                    pass
-                try:
-                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot") as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            p = float(data.get("data", {}).get("amount", 0.0))
-                            if p > 0:
-                                bot.update_price_tick(p)
-                                await manager.broadcast(json.dumps(bot.get_state()))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        await asyncio.sleep(1)
+        await asyncio.sleep(60)
 
 @app.on_event("startup")
 async def startup_event():
