@@ -1971,176 +1971,259 @@ class UltraQuantSpotBot:
             fixed_price = float(ord.get("price", target_p))
             side_str = str(side).upper()
 
+            cur_p = round(self.live_price, 2)
+            lim_p = round(fixed_price, 2)
             if norm_type == "LIMIT":
-                if side_str == "BUY" and self.live_price > 0 and self.live_price <= fixed_price:
+                if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    self.manual_test_balance = round(self.manual_test_balance + amt, 2)
-                    self.execute_manual_buy(amt, "LIMIT", fixed_price)
+                    exact_invest = round(float(amt), 2)
+                    fee = round(exact_invest * self.taker_fee_pct, 4)
+                    net_invest = exact_invest - fee
+                    sol_bought = round(net_invest / lim_p, 4)
+                    pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                    manual_pos = {
+                        "id": pos_id,
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": "WALLET LIMIT BUY",
+                        "side": "BUY",
+                        "entryPrice": lim_p,
+                        "solAmount": sol_bought,
+                        "invested": exact_invest,
+                        "orderType": "LIMIT",
+                        "isManualWallet": True,
+                        "status": "FILLED",
+                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                    }
+                    self.wallet_active_positions.insert(0, manual_pos)
+                    t_record = {
+                        "orderId": str(ord.get("id")),
+                        "side": "BUY",
+                        "price": lim_p,
+                        "solAmount": sol_bought,
+                        "invested": exact_invest,
+                        "fee": fee,
+                        "profit": 0.0,
+                        "realizedPnl": 0.0,
+                        "round": 0,
+                        "execType": "LIMIT_BUY_FILLED",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }
+                    self.manual_trades_history.insert(0, t_record)
+                    asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-                elif side_str == "SELL" and self.live_price > 0 and self.live_price >= fixed_price:
+                elif side_str == "SELL" and cur_p > 0 and cur_p >= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    sold_sol = float(ord.get("solAmount", 0.0))
-                    cost_basis = float(ord.get("invested", 0.0))
-                    gross_value = sold_sol * fixed_price
-                    fee = gross_value * self.taker_fee_pct
-                    net_value = gross_value - fee
-                    user_net_profit = round(net_value - cost_basis, 4)
-                    self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                    self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
+                    sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
+                    cost_basis = round(float(ord.get("invested", 0.0)), 2)
+                    gross_val = round(sold_sol * lim_p, 2)
+                    fee = round(gross_val * self.taker_fee_pct, 4)
+                    net_val = round(gross_val - fee, 2)
+                    net_profit = round(net_val - cost_basis, 4)
+                    self.manual_test_balance = round(self.manual_test_balance + net_val, 2)
+                    self.manual_realized_pnl = round(self.manual_realized_pnl + net_profit, 4)
                     t_record = {
-                        "orderId": ord.get("id"),
+                        "orderId": str(ord.get("id")),
                         "side": "SELL",
-                        "price": round(fixed_price, 2),
-                        "solAmount": round(sold_sol, 4),
-                        "fee": round(fee, 4),
-                        "profit": round(user_net_profit, 4),
-                        "realizedPnl": round(user_net_profit, 4),
+                        "price": lim_p,
+                        "solAmount": sold_sol,
+                        "invested": cost_basis,
+                        "fee": fee,
+                        "profit": net_profit,
+                        "realizedPnl": net_profit,
+                        "round": 0,
                         "execType": "LIMIT_SELL_FILLED",
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_sell_individual(ord.get("id"), t_record))
+                    asyncio.create_task(self.db_save_engine_trade(t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-            elif norm_type == "TRAILING_STOP":
+            
+   elif norm_type == "TRAILING_STOP":
                 cb = float(ord.get("callbackPct", 1.0))
                 if side_str == "SELL":
-                    if self.live_price > ord.get("peakTracked", self.live_price):
-                        ord["peakTracked"] = self.live_price
-                    floor_trigger = ord["peakTracked"] * (1.0 - (cb / 100.0))
-                    if self.live_price <= floor_trigger:
+                    current_peak = float(ord.get("peakTracked", cur_p))
+                    if cur_p > current_peak:
+                        ord["peakTracked"] = cur_p
+                        current_peak = cur_p
+                    floor_trigger = round(current_peak * (1.0 - (cb / 100.0)), 2)
+                    if cur_p <= floor_trigger:
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
-                        sold_sol = float(ord.get("solAmount", 0.0))
-                        cost_basis = float(ord.get("invested", 0.0))
-                        gross_value = sold_sol * self.live_price
-                        fee = gross_value * self.taker_fee_pct
-                        net_value = gross_value - fee
-                        user_net_profit = round(net_value - cost_basis, 4)
-                        self.manual_test_balance = round(self.manual_test_balance + net_value, 2)
-                        self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
+                        sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
+                        cost_basis = round(float(ord.get("invested", 0.0)), 2)
+                        gross_val = round(sold_sol * cur_p, 2)
+                        fee = round(gross_val * self.taker_fee_pct, 4)
+                        net_val = round(gross_val - fee, 2)
+                        net_profit = round(net_val - cost_basis, 4)
+                        self.manual_test_balance = round(self.manual_test_balance + net_val, 2)
+                        self.manual_realized_pnl = round(self.manual_realized_pnl + net_profit, 4)
                         t_record = {
-                            "orderId": ord.get("id"),
+                            "orderId": str(ord.get("id")),
                             "side": "SELL",
-                            "price": round(self.live_price, 2),
-                            "solAmount": round(sold_sol, 4),
-                            "fee": round(fee, 4),
-                            "profit": round(user_net_profit, 4),
-                            "realizedPnl": round(user_net_profit, 4),
+                            "price": cur_p,
+                            "solAmount": sold_sol,
+                            "invested": cost_basis,
+                            "fee": fee,
+                            "profit": net_profit,
+                            "realizedPnl": net_profit,
+                            "round": 0,
                             "execType": "TRAILING_SELL_FILLED",
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
-                        asyncio.create_task(self.db_save_sell_individual(ord.get("id"), t_record))
+                        asyncio.create_task(self.db_save_engine_trade(t_record))
+                        asyncio.create_task(self.db_sync_state())
+                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+                elif side_str == "BUY":
+                    current_low = float(ord.get("lowestTracked", cur_p))
+                    if cur_p < current_low:
+                        ord["lowestTracked"] = cur_p
+                        current_low = cur_p
+                    ceil_trigger = round(current_low * (1.0 + (cb / 100.0)), 2)
+                    if cur_p >= ceil_trigger:
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                        exact_invest = round(float(amt), 2)
+                        fee = round(exact_invest * self.taker_fee_pct, 4)
+                        net_invest = exact_invest - fee
+                        sol_bought = round(net_invest / cur_p, 4)
+                        pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                        manual_pos = {
+                            "id": pos_id,
+                            "round": 0,
+                            "subTrade": 0,
+                            "label": "WALLET TRAILING BUY",
+                            "side": "BUY",
+                            "entryPrice": cur_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "orderType": "TRAILING_STOP",
+                            "isManualWallet": True,
+                            "status": "FILLED",
+                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        }
+                        self.wallet_active_positions.insert(0, manual_pos)
+                        t_record = {
+                            "orderId": str(ord.get("id")),
+                            "side": "BUY",
+                            "price": cur_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "fee": fee,
+                            "profit": 0.0,
+                            "realizedPnl": 0.0,
+                            "round": 0,
+                            "execType": "TRAILING_BUY_FILLED",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+                        asyncio.create_task(self.db_sync_state())
+                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+            elif norm_type in ["TP_SL", "TP/SL", "OCO", "TRIGGER"]:
+                tp_p = round(float(ord.get("limitPrice", 0.0)), 2)
+                sl_p = round(float(ord.get("stopPrice", 0.0)), 2)
+                if norm_type == "TRIGGER":
+                    sl_p = round(float(ord.get("stopPrice", fixed_price)), 2)
+                    tp_p = 0.0
+
+                should_exec = False
+                exec_p = cur_p
+                exec_label = "TP_FILLED"
+
+                if side_str == "SELL":
+                    if tp_p > 0 and cur_p >= tp_p:
+                        should_exec = True
+                        exec_p = tp_p
+                        exec_label = "TP_FILLED"
+                    elif sl_p > 0 and cur_p <= sl_p:
+                        should_exec = True
+                        exec_p = sl_p
+                        exec_label = "SL_FILLED"
+
+                    if should_exec:
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                        sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
+                        cost_basis = round(float(ord.get("invested", 0.0)), 2)
+                        gross_val = round(sold_sol * exec_p, 2)
+                        fee = round(gross_val * self.taker_fee_pct, 4)
+                        net_val = round(gross_val - fee, 2)
+                        net_profit = round(net_val - cost_basis, 4)
+                        self.manual_test_balance = round(self.manual_test_balance + net_val, 2)
+                        self.manual_realized_pnl = round(self.manual_realized_pnl + net_profit, 4)
+                        t_record = {
+                            "orderId": str(ord.get("id")),
+                            "side": "SELL",
+                            "price": exec_p,
+                            "solAmount": sold_sol,
+                            "invested": cost_basis,
+                            "fee": fee,
+                            "profit": net_profit,
+                            "realizedPnl": net_profit,
+                            "round": 0,
+                            "execType": f"{norm_type}_{exec_label}",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_engine_trade(t_record))
+                        asyncio.create_task(self.db_sync_state())
+                        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+                elif side_str == "BUY":
+                    if tp_p > 0 and cur_p <= tp_p:
+                        should_exec = True
+                        exec_p = tp_p
+                    elif sl_p > 0 and cur_p >= sl_p:
+                        should_exec = True
+                        exec_p = sl_p
+
+                    if should_exec:
+                        if ord in self.wallet_open_orders:
+                            self.wallet_open_orders.remove(ord)
+                        exact_invest = round(float(amt), 2)
+                        fee = round(exact_invest * self.taker_fee_pct, 4)
+                        net_invest = exact_invest - fee
+                        sol_bought = round(net_invest / exec_p, 4)
+                        pos_id = "MAN_" + str(uuid.uuid4())[:6]
+                        manual_pos = {
+                            "id": pos_id,
+                            "round": 0,
+                            "subTrade": 0,
+                            "label": f"WALLET {norm_type} BUY",
+                            "side": "BUY",
+                            "entryPrice": exec_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "orderType": norm_type,
+                            "isManualWallet": True,
+                            "status": "FILLED",
+                            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+                        }
+                        self.wallet_active_positions.insert(0, manual_pos)
+                        t_record = {
+                            "orderId": str(ord.get("id")),
+                            "side": "BUY",
+                            "price": exec_p,
+                            "solAmount": sol_bought,
+                            "invested": exact_invest,
+                            "fee": fee,
+                            "profit": 0.0,
+                            "realizedPnl": 0.0,
+                            "round": 0,
+                            "execType": f"{norm_type}_BUY_FILLED",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                         asyncio.create_task(self.db_sync_state())
                         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
-            elif o_type == "ICEBERG":
-                if (now_ts - ord.get("lastExecTime", 0.0)) >= 3.0:
-                    s_left = ord.get("slicesLeft", 5)
-                    if side == "BUY" and self.live_price <= target_p and s_left > 0:
-                        slice_amt = round(ord.get("amount", amt) / s_left, 2)
-                        self.manual_test_balance += slice_amt
-                        self.execute_manual_buy(slice_amt, "ICEBERG_SLICE", self.live_price)
-                        ord["amount"] = round(max(0.0, ord.get("amount", amt) - slice_amt), 2)
-                        ord["slicesLeft"] = s_left - 1
-                        ord["lastExecTime"] = now_ts
-                        if ord["slicesLeft"] <= 0 or ord["amount"] <= 1.0:
-                            if ord in self.wallet_open_orders:
-                                self.wallet_open_orders.remove(ord)
-                    elif side == "SELL" and self.live_price >= target_p and s_left > 0:
-                        total_sol = ord.get("solAmount", amt)
-                        slice_sol = round(total_sol / s_left, 4)
-                        self.execute_manual_sell(sell_amount_sol=slice_sol)
-                        ord["solAmount"] = round(max(0.0, total_sol - slice_sol), 4)
-                        ord["slicesLeft"] = s_left - 1
-                        ord["lastExecTime"] = now_ts
-                        if ord["slicesLeft"] <= 0 or ord["solAmount"] <= 0.001:
-                            if ord in self.wallet_open_orders:
-                                self.wallet_open_orders.remove(ord)
-
-            elif o_type == "TWAP":
-                if (now_ts - ord.get("lastExecTime", 0.0)) >= 4.0:
-                    s_left = ord.get("slicesLeft", 5)
-                    if side == "BUY" and self.live_price <= (target_p * 1.01) and s_left > 0:
-                        slice_amt = round(ord.get("amount", amt) / s_left, 2)
-                        self.manual_test_balance += slice_amt
-                        self.execute_manual_buy(slice_amt, "TWAP_SLICE", self.live_price)
-                        ord["amount"] = round(max(0.0, ord.get("amount", amt) - slice_amt), 2)
-                        ord["slicesLeft"] = s_left - 1
-                        ord["lastExecTime"] = now_ts
-                        if ord["slicesLeft"] <= 0 or ord["amount"] <= 1.0:
-                            if ord in self.wallet_open_orders:
-                                self.wallet_open_orders.remove(ord)
-                    elif side == "SELL" and self.live_price >= (target_p * 0.99) and s_left > 0:
-                        total_sol = ord.get("solAmount", amt)
-                        slice_sol = round(total_sol / s_left, 4)
-                        self.execute_manual_sell(sell_amount_sol=slice_sol)
-                        ord["solAmount"] = round(max(0.0, total_sol - slice_sol), 4)
-                        ord["slicesLeft"] = s_left - 1
-                        ord["lastExecTime"] = now_ts
-                        if ord["slicesLeft"] <= 0 or ord["solAmount"] <= 0.001:
-                            if ord in self.wallet_open_orders:
-                                self.wallet_open_orders.remove(ord)
-
-            elif o_type in ["TP_SL", "TP/SL", "OCO"]:
-                tp_p = ord.get("limitPrice", 0.0)
-                sl_p = ord.get("stopPrice", 0.0)
-                if side == "SELL":
-                    if tp_p > 0 and self.live_price >= tp_p:
-                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-                    elif sl_p > 0 and self.live_price <= sl_p:
-                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-                else:
-                    if tp_p > 0 and self.live_price <= tp_p:
-                        self.manual_test_balance += amt
-                        self.execute_manual_buy(amt, "TP_BUY", self.live_price)
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-                    elif sl_p > 0 and self.live_price >= sl_p:
-                        self.manual_test_balance += amt
-                        self.execute_manual_buy(amt, "STOP_BUY", self.live_price)
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-
-            elif o_type == "TRIGGER":
-                trig_p = ord.get("stopPrice", target_p)
-                if side == "BUY" and self.live_price >= trig_p:
-                    self.manual_test_balance += amt
-                    self.execute_manual_buy(amt, "TRIGGER", self.live_price)
-                    if ord in self.wallet_open_orders:
-                        self.wallet_open_orders.remove(ord)
-                elif side == "SELL" and self.live_price >= trig_p:
-                    self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
-                    if ord in self.wallet_open_orders:
-                        self.wallet_open_orders.remove(ord)
-
-            elif o_type in ["TRAILING_STOP", "TRAILING STOP"]:
-                cb = ord.get("callbackPct", 1.0)
-                if side == "SELL":
-                    if self.live_price > ord.get("peakTracked", self.live_price):
-                        ord["peakTracked"] = self.live_price
-                    floor = ord["peakTracked"] * (1.0 - (cb / 100.0))
-                    if self.live_price <= floor:
-                        self.execute_manual_sell(sell_amount_sol=ord.get("solAmount", amt))
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
-                elif side == "BUY":
-                    if "lowestTracked" not in ord or self.live_price < ord["lowestTracked"]:
-                        ord["lowestTracked"] = self.live_price
-                    ceil = ord["lowestTracked"] * (1.0 + (cb / 100.0))
-                    if self.live_price >= ceil:
-                        self.manual_test_balance += amt
-                        self.execute_manual_buy(amt, "TRAILING_BUY", self.live_price)
-                        if ord in self.wallet_open_orders:
-                            self.wallet_open_orders.remove(ord)
+            
 
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
