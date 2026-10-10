@@ -595,10 +595,10 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.trades_history[:25],
-            "spotTradesHistory": self.spot_trades_history[:20],
-            "scalpTradesHistory": self.scalp_trades_history[:20],
-            "manualTradesHistory": self.manual_trades_history[:20],
+            "tradesHistory": self.trades_history if self.trades_history else self.spot_trades_history,
+            "spotTradesHistory": self.spot_trades_history,
+            "scalpTradesHistory": self.scalp_trades_history,
+            "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
             "botThought": ai_thoughts,
             "microPositions": self.micro_positions,
@@ -2336,8 +2336,9 @@ async def binance_ws_worker():
     last_broadcast_time = 0.0
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url) as ws:
+            timeout_cfg = aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=None)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                async with session.ws_connect(ws_url, heartbeat=15.0) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
@@ -2345,7 +2346,6 @@ async def binance_ws_worker():
                             if price > 0:
                                 bot.process_market_trades([data])
                                 bot.update_price_tick(price)
-                                bot.last_tick_time = asyncio.get_event_loop().time()
                                 now_loop = asyncio.get_event_loop().time()
                                 if now_loop - last_broadcast_time >= 0.1:
                                     last_broadcast_time = now_loop
@@ -2358,28 +2358,30 @@ async def binance_ws_worker():
 async def price_feed_fallback_worker():
     while True:
         try:
-            now_loop = asyncio.get_event_loop().time()
-            if (now_loop - getattr(bot, "last_tick_time", 0.0)) >= 1.5:
-                timeout_cfg = aiohttp.ClientTimeout(total=3)
-                async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-                    try:
-                        async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT") as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                p = float(data.get("price", 0.0))
-                                if p > 0:
-                                    bot.update_price_tick(p)
-                                    bot.last_tick_time = asyncio.get_event_loop().time()
-                                    await manager.broadcast(json.dumps(bot.get_state()))
-                    except Exception:
-                        async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot") as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                p = float(data.get("data", {}).get("amount", 0.0))
-                                if p > 0:
-                                    bot.update_price_tick(p)
-                                    bot.last_tick_time = asyncio.get_event_loop().time()
-                                    await manager.broadcast(json.dumps(bot.get_state()))
+            timeout_cfg = aiohttp.ClientTimeout(total=5)
+            async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
+                try:
+                    async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT") as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            p = float(data.get("price", 0.0))
+                            if p > 0:
+                                bot.update_price_tick(p)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                                await asyncio.sleep(1)
+                                continue
+                except Exception:
+                    pass
+                try:
+                    async with session.get("https://api.coinbase.com/v2/prices/SOL-USD/spot") as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            p = float(data.get("data", {}).get("amount", 0.0))
+                            if p > 0:
+                                bot.update_price_tick(p)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                except Exception:
+                    pass
         except Exception:
             pass
         await asyncio.sleep(1)
