@@ -2161,10 +2161,11 @@ class UltraQuantSpotBot:
                 if should_exec:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
+                    exec_fill_p = round(float(ord.get("limitPrice") or ord.get("price") or cur_p), 2)
                     if side_str == "SELL":
                         sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
                         cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                        gross_val = round(sold_sol * cur_p, 2)
+                        gross_val = round(sold_sol * exec_fill_p, 2)
                         fee = round(gross_val * self.taker_fee_pct, 4)
                         net_val = round(gross_val - fee, 2)
                         net_profit = round(net_val - cost_basis, 4)
@@ -2173,7 +2174,7 @@ class UltraQuantSpotBot:
                         t_record = {
                             "orderId": str(ord.get("id")),
                             "side": "SELL",
-                            "price": cur_p,
+                            "price": exec_fill_p,
                             "solAmount": sold_sol,
                             "invested": cost_basis,
                             "fee": fee,
@@ -2189,7 +2190,7 @@ class UltraQuantSpotBot:
                         exact_invest = round(float(amt), 2)
                         fee = round(exact_invest * self.taker_fee_pct, 4)
                         net_invest = exact_invest - fee
-                        sol_bought = round(net_invest / cur_p, 4)
+                        sol_bought = round(net_invest / exec_fill_p, 4)
                         pos_id = "MAN_" + str(uuid.uuid4())[:6]
                         manual_pos = {
                             "id": pos_id,
@@ -2197,7 +2198,7 @@ class UltraQuantSpotBot:
                             "subTrade": 0,
                             "label": "WALLET TRIGGER BUY",
                             "side": "BUY",
-                            "entryPrice": cur_p,
+                            "entryPrice": exec_fill_p,
                             "solAmount": sol_bought,
                             "invested": exact_invest,
                             "orderType": "TRIGGER",
@@ -2209,7 +2210,7 @@ class UltraQuantSpotBot:
                         t_record = {
                             "orderId": str(ord.get("id")),
                             "side": "BUY",
-                            "price": cur_p,
+                            "price": exec_fill_p,
                             "solAmount": sol_bought,
                             "invested": exact_invest,
                             "fee": fee,
