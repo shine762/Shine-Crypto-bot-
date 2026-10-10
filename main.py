@@ -2337,20 +2337,9 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-async def binance_ws_worker():
-    while True:
-        await asyncio.sleep(3600)
-
-async def price_feed_fallback_worker():
-    while True:
-        await asyncio.sleep(3600)
-
 @app.on_event("startup")
 async def startup_event():
     await bot.load_from_database()
-    await asyncio.sleep(0.5)
-    asyncio.create_task(binance_ws_worker())
-    asyncio.create_task(price_feed_fallback_worker())
 
 @app.get("/")
 def home():
