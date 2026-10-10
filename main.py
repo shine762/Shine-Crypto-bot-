@@ -2338,29 +2338,8 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 async def binance_ws_worker():
-    ws_url = "wss://stream.binance.com:9443/ws/solusdt@trade"
     while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.ws_connect(ws_url, heartbeat=10.0) as ws:
-                    async for msg in ws:
-                        if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            price = float(data.get("p", 0.0))
-                            if price > 0:
-                                bot.live_price = price
-                                bot.process_market_trades([data])
-                                bot.update_price_tick(price)
-                                payload = json.dumps(bot.get_state())
-                                for connection in manager.active_connections:
-                                    try:
-                                        await connection.send_text(payload)
-                                    except Exception:
-                                        pass
-                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            break
-        except Exception:
-            await asyncio.sleep(0.2)
+        await asyncio.sleep(3600)
 
 async def price_feed_fallback_worker():
     while True:
