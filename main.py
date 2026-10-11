@@ -237,25 +237,33 @@ class UltraQuantSpotBot:
                                                 sub["activeSlots"] = len(sub["activePositions"])
                                                 sub["availableReserve"] = max(0.0, float(sub.get("availableReserve", 0.0)) - c_inv)
                                 elif p_id.startswith("ATL_"):
-                                    lbl_parts = str(pos_obj.get("label", "")).split("|")
+                                    lbl_parts = str(p.get("label", "")).split("|")
                                     b_cb = float(lbl_parts[1]) if len(lbl_parts) > 1 else 0.01
                                     s_cb = float(lbl_parts[2]) if len(lbl_parts) > 2 else 0.01
                                     a_rep = (lbl_parts[3] == "1") if len(lbl_parts) > 3 else True
-                                    stg = lbl_parts[4] if len(lbl_parts) > 4 else "WAITING_BUY_TRIGGER"
+                                    stg = lbl_parts[4] if len(lbl_parts) > 4 else ("WAITING_SELL_TRIGGER" if float(p.get("sol_amount", 0.0)) > 0 else "WAITING_BUY_TRIGGER")
+                                    b_trig = float(lbl_parts[5]) if len(lbl_parts) > 5 else float(p.get("entry_price", 0.0))
+                                    s_trig = float(p.get("target_price", 0.0))
+                                    cur_peak = float(lbl_parts[6]) if len(lbl_parts) > 6 else s_trig
+                                    cur_low = float(lbl_parts[7]) if len(lbl_parts) > 7 else 0.0
+                                    sol_qty = float(p.get("sol_amount", 0.0))
+                                    inv_amt = float(p.get("invested", 10.0))
+                                    exec_p = float(p.get("entry_price", 0.0)) if sol_qty > 0 else 0.0
                                     loop_obj = {
                                         "id": p_id,
-                                        "usdtAmount": float(pos_obj.get("invested", 10.0)),
-                                        "buyTrigger": float(pos_obj.get("entryPrice", 0.0)),
+                                        "usdtAmount": inv_amt,
+                                        "buyTrigger": b_trig,
                                         "buyCallbackPct": b_cb,
-                                        "sellTrigger": float(pos_obj.get("targetPrice", 0.0)),
+                                        "sellTrigger": s_trig,
                                         "sellCallbackPct": s_cb,
                                         "autoRepeat": a_rep,
                                         "stage": stg,
-                                        "solBought": float(pos_obj.get("solAmount", 0.0)),
-                                        "buyExecutedPrice": float(pos_obj.get("entryPrice", 0.0)) if stg != "WAITING_BUY_TRIGGER" else 0.0,
-                                        "peakTracked": float(pos_obj.get("targetPrice", 0.0)),
+                                        "solBought": sol_qty,
+                                        "buyExecutedPrice": exec_p,
+                                        "lowestTracked": cur_low,
+                                        "peakTracked": cur_peak,
                                         "profitRealized": 0.0,
-                                        "status": "RESTORED (LOOP ACTIVE)"
+                                        "status": f"ARMED (TARGET ${s_trig})" if sol_qty > 0 else f"WAITING BUY (${b_trig})"
                                     }
                                     self.auto_loops.append(loop_obj)
                                 else:
@@ -1161,7 +1169,7 @@ class UltraQuantSpotBot:
         self.manual_test_balance = round(self.manual_test_balance - usdt_amt, 2)
         loop_id = str(slot_id) if slot_id else ("ATL_" + str(uuid.uuid4())[:6])
         rep_val = "1" if auto_repeat else "0"
-        lbl_meta = f"ATL|{buy_cb}|{sell_cb}|{rep_val}|WAITING_BUY_TRIGGER"
+        lbl_meta = f"ATL|{buy_cb}|{sell_cb}|{rep_val}|WAITING_BUY_TRIGGER|{buy_trigger}|{sell_trigger}|0.0"
         new_loop = {
             "id": loop_id,
             "usdtAmount": float(usdt_amt),
@@ -1173,6 +1181,7 @@ class UltraQuantSpotBot:
             "stage": "WAITING_BUY_TRIGGER",
             "solBought": 0.0,
             "buyExecutedPrice": 0.0,
+            "lowestTracked": 0.0,
             "peakTracked": float(sell_trigger),
             "profitRealized": 0.0,
             "status": "ARMED (WAITING BUY)"
@@ -1230,7 +1239,7 @@ class UltraQuantSpotBot:
             return
 
         for ord in list(self.auto_loops):
-            stg = ord["stage"]
+            stg = ord.get("stage", "WAITING_BUY_TRIGGER")
 
             if stg == "WAITING_BUY_TRIGGER":
                 if self.live_price <= ord["buyTrigger"]:
@@ -1256,7 +1265,10 @@ class UltraQuantSpotBot:
                     ord["solBought"] = sol_qty
                     ord["buyExecutedPrice"] = self.live_price
                     ord["stage"] = "WAITING_SELL_TRIGGER"
+                    ord["peakTracked"] = float(ord["sellTrigger"])
                     ord["status"] = f"BOUGHT @ ${round(self.live_price, 2)} - TARGET ${round(ord['sellTrigger'], 2)}"
+                    rep_flag = "1" if ord.get("autoRepeat", True) else "0"
+                    upd_label = f"ATL|{ord['buyCallbackPct']}|{ord['sellCallbackPct']}|{rep_flag}|WAITING_SELL_TRIGGER|{ord['buyTrigger']}|{ord['sellTrigger']}|0.0"
                     t_rec = {
                         "orderId": ord["id"] + "_B",
                         "side": "AUTO_LOOP_BUY",
@@ -1268,14 +1280,40 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_rec)
-                    asyncio.create_task(self.db_save_engine_trade(t_rec))
+                    asyncio.create_task(self.db_save_sell_individual(ord["id"], {"order_id": ord["id"] + "_STAGE_UPGRADE", "side": "BUY", "price": round(self.live_price, 2), "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "UPGRADE"}))
+                    asyncio.create_task(self.db_save_buy({
+                        "id": ord["id"],
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": upd_label,
+                        "entryPrice": round(self.live_price, 2),
+                        "solAmount": round(sol_qty, 4),
+                        "invested": round(invest_amt, 2),
+                        "isMacro": False,
+                        "targetPrice": float(ord["sellTrigger"])
+                    }, t_rec))
                     asyncio.create_task(self.db_sync_state())
+                    asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
             elif stg == "WAITING_SELL_TRIGGER":
                 if self.live_price >= ord["sellTrigger"]:
                     ord["stage"] = "TRAILING_SELL"
                     ord["peakTracked"] = self.live_price
                     ord["status"] = f"TRAILING PROFIT (HIGH: ${round(self.live_price, 2)})"
+                    rep_flag = "1" if ord.get("autoRepeat", True) else "0"
+                    upd_label = f"ATL|{ord['buyCallbackPct']}|{ord['sellCallbackPct']}|{rep_flag}|TRAILING_SELL|{ord['buyTrigger']}|{ord['sellTrigger']}|{self.live_price}"
+                    asyncio.create_task(self.db_save_sell_individual(ord["id"], {"order_id": ord["id"] + "_STAGE_TRL", "side": "TRAIL", "price": round(self.live_price, 2), "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRAIL"}))
+                    asyncio.create_task(self.db_save_buy({
+                        "id": ord["id"],
+                        "round": 0,
+                        "subTrade": 0,
+                        "label": upd_label,
+                        "entryPrice": float(ord.get("buyExecutedPrice", ord["sellTrigger"])),
+                        "solAmount": float(ord.get("solBought", 0.0)),
+                        "invested": float(ord.get("usdtAmount", 0.0)),
+                        "isMacro": False,
+                        "targetPrice": float(ord["sellTrigger"])
+                    }, {"order_id": ord["id"] + "_TRL", "side": "TRAIL", "price": round(self.live_price, 2), "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRAIL"}))
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
             elif stg == "TRAILING_SELL":
@@ -1285,8 +1323,10 @@ class UltraQuantSpotBot:
                 s_cb_pct = float(ord.get("sellCallbackPct", 0.01))
                 pullback_trigger = ord["peakTracked"] * (1.0 - (s_cb_pct / 100.0))
 
-                if self.live_price <= pullback_trigger:
-                    sold_sol = ord["solBought"]
+                if self.live_price <= pullback_trigger and self.live_price >= (ord["sellTrigger"] * 0.998):
+                    sold_sol = float(ord["solBought"])
+                    if sold_sol <= 0:
+                        continue
                     gross = sold_sol * self.live_price
                     fee = gross * self.taker_fee_pct
                     net_ret = gross - fee
@@ -1307,7 +1347,7 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_rec)
-                    asyncio.create_task(self.db_save_engine_trade(t_rec))
+                    asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
 
                     if ord.get("autoRepeat", True):
                         rearm_amt = min(float(ord["usdtAmount"]), float(self.manual_test_balance))
@@ -1318,14 +1358,15 @@ class UltraQuantSpotBot:
                             ord["solBought"] = 0.0
                             ord["buyExecutedPrice"] = 0.0
                             ord["lowestTracked"] = 0.0
-                            ord["peakTracked"] = 0.0
+                            ord["peakTracked"] = float(ord["sellTrigger"])
                             ord["status"] = f"LOOP REARMED (WAITING BUY @ ${round(ord['buyTrigger'], 2)})"
-                            asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
+                            rep_flag = "1"
+                            upd_label = f"ATL|{ord['buyCallbackPct']}|{ord['sellCallbackPct']}|{rep_flag}|WAITING_BUY_TRIGGER|{ord['buyTrigger']}|{ord['sellTrigger']}|0.0"
                             asyncio.create_task(self.db_save_buy({
                                 "id": ord["id"],
                                 "round": 0,
                                 "subTrade": 0,
-                                "label": f"ATL|{ord['buyCallbackPct']}|{ord['sellCallbackPct']}|1|WAITING_BUY_TRIGGER",
+                                "label": upd_label,
                                 "entryPrice": float(ord["buyTrigger"]),
                                 "solAmount": 0.0,
                                 "invested": float(ord["usdtAmount"]),
@@ -1336,12 +1377,10 @@ class UltraQuantSpotBot:
                         else:
                             if ord in self.auto_loops:
                                 self.auto_loops.remove(ord)
-                            asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                     else:
                         if ord in self.auto_loops:
                             self.auto_loops.remove(ord)
-                        asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
                         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
                     asyncio.create_task(self.db_sync_state())
