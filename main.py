@@ -139,6 +139,8 @@ class UltraQuantSpotBot:
                     if resp.status == 200:
                         pos_data = await resp.json()
                         if isinstance(pos_data, list):
+                            if not pos_data:
+                                return
                             loaded_positions = []
                             self.micro_positions = []
                             self.killer2_positions = []
@@ -362,11 +364,12 @@ class UltraQuantSpotBot:
                             pass
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
-        except Exception:
-            self.db_loaded = True
+        except Exception as e:
+            print(f"DATABASE LOAD ERROR: {e}")
+            return
 
     async def db_sync_state(self):
-        if not getattr(self, "db_loaded", False):
+        if not getattr(self, "db_loaded", False) or self.live_price <= 0:
             return
         try:
             payload = {
