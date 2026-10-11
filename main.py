@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -298,11 +298,14 @@ class UltraQuantSpotBot:
                                 e_type = str(t.get("exec_type", ""))
                                 ord_id = str(t.get("order_id", ""))
                                 p_val = float(t.get("profit", 0.0))
+                                s_qty_val = float(t.get("sol_amount") or 0.0)
+                                if s_qty_val <= 0 and ("OPEN_" in e_type or "CANCEL" in e_type or ord_id.startswith("ATL_") or ord_id.startswith("ORD_")):
+                                    continue
                                 formatted_t = {
                                     "orderId": ord_id,
                                     "side": t.get("side") or "BUY",
                                     "price": float(t.get("price") or 0.0),
-                                    "solAmount": float(t.get("sol_amount") or 0.0),
+                                    "solAmount": s_qty_val,
                                     "fee": float(t.get("fee") or 0.0),
                                     "profit": float(t.get("profit") or 0.0),
                                     "realizedPnl": float(t.get("profit") or 0.0),
@@ -1194,7 +1197,7 @@ class UltraQuantSpotBot:
             "fee": 0.0,
             "profit": 0.0,
             "round": 0,
-            "exec_type": "AUTO_TRAILING_LOOP"
+            "exec_type": "OPEN_LOOP_PENDING"
         }))
         asyncio.create_task(self.db_sync_state())
         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
