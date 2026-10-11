@@ -1,4 +1,4 @@
-import asyncio
+ import asyncio
 import json
 import uuid
 import os
@@ -175,6 +175,29 @@ class UltraQuantSpotBot:
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
                                 elif p_id.startswith("MAN_"):
                                     self.wallet_active_positions.append(pos_obj)
+                                elif p_id.startswith("ORD_"):
+                                    lbl_meta = str(p.get("label", "")).split("|")
+                                    o_type = lbl_meta[1] if len(lbl_meta) > 1 else "LIMIT"
+                                    o_side = lbl_meta[2] if len(lbl_meta) > 2 else "BUY"
+                                    self.wallet_open_orders.append({
+                                        "id": p_id,
+                                        "orderType": o_type,
+                                        "side": o_side,
+                                        "amount": float(p.get("invested", 0.0)),
+                                        "solAmount": float(p.get("sol_amount", 0.0)),
+                                        "invested": float(p.get("invested", 0.0)),
+                                        "price": float(p.get("entry_price", 0.0)),
+                                        "activationPrice": float(p.get("entry_price", 0.0)),
+                                        "isActivated": False,
+                                        "stopPrice": float(p.get("target_price", 0.0)),
+                                        "limitPrice": float(p.get("entry_price", 0.0)),
+                                        "triggerDirection": "BELOW" if float(p.get("target_price", 0.0)) <= float(p.get("entry_price", 0.0)) else "ABOVE",
+                                        "callbackPct": 1.0,
+                                        "peakTracked": 0.0,
+                                        "lowestTracked": 0.0,
+                                        "status": "OPEN",
+                                        "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
+                                    })
                                 elif p_id.startswith("BOT_"):
                                     if not hasattr(self, "copy_subscribers"):
                                         self.copy_subscribers = []
@@ -309,8 +332,8 @@ class UltraQuantSpotBot:
                                         spot_closed_profit += p_val
 
                             self.trades_history = all_logs
-                            self.spot_trades_history = bot_logs
-                            self.scalp_trades_history = scalp_logs
+                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_")) and "SCALP" not in str(t.get("execType",""))]
+                            self.scalp_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType",""))]
                             self.manual_trades_history = wallet_logs
                             self.micro_realized_pnl = round(m_pnl, 4)
                             self.micro_total_trades = m_count
@@ -867,7 +890,10 @@ class UltraQuantSpotBot:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 self.manual_trades_history.insert(0, t_rec)
-                asyncio.create_task(self.db_save_engine_trade(t_rec))
+                if pos_to_close.get("posId"):
+                    asyncio.create_task(self.db_save_sell_individual(pos_to_close.get("posId"), t_rec))
+                else:
+                    asyncio.create_task(self.db_save_engine_trade(t_rec))
                 asyncio.create_task(self.db_sync_state())
 
     def execute_manual_sell(self, pos_id=None, sell_amount_sol=0.0):
@@ -991,6 +1017,7 @@ class UltraQuantSpotBot:
                             self.wallet_active_positions.append(revert_pos)
                             asyncio.create_task(self.db_save_buy(revert_pos, {"order_id": revert_pos["id"], "side": "BUY", "price": revert_pos["entryPrice"], "sol_amount": r_sol, "fee": 0.0, "profit": 0.0, "exec_type": "CANCEL_REVERT"}))
                     self.wallet_open_orders.remove(p)
+                    asyncio.create_task(self.db_save_sell_individual(pos_id, {"order_id": pos_id + "_CANCEL", "side": "CANCEL", "price": 0.0, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "CANCELLED"}))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                     return
@@ -1084,6 +1111,27 @@ class UltraQuantSpotBot:
         }
 
         self.wallet_open_orders.insert(0, order_obj)
+        pos_ord_record = {
+            "id": o_id,
+            "round": 0,
+            "subTrade": 0,
+            "label": f"ORD|{o_type}|{side}",
+            "entryPrice": exact_order_price,
+            "solAmount": float(sol_qty),
+            "invested": float(inv_amt),
+            "isMacro": False,
+            "targetPrice": float(ord_data.get("stopPrice", 0.0))
+        }
+        asyncio.create_task(self.db_save_buy(pos_ord_record, {
+            "order_id": o_id,
+            "side": f"OPEN_{side}",
+            "price": exact_order_price,
+            "sol_amount": float(sol_qty),
+            "fee": 0.0,
+            "profit": 0.0,
+            "round": 0,
+            "exec_type": f"OPEN_{o_type}"
+        }))
         asyncio.create_task(self.db_sync_state())
         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
@@ -1991,6 +2039,7 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
+                        asyncio.create_task(self.db_save_sell_individual(ord.get("id"), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": 0.0, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "FILLED_CLOSED"}))
                     exact_invest = round(float(amt), 2)
                     fee = round(exact_invest * self.taker_fee_pct, 4)
                     net_invest = exact_invest - fee
@@ -2536,6 +2585,9 @@ async def websocket_endpoint(websocket: WebSocket):
                                 bot.manual_test_balance = round(bot.manual_test_balance + total_refund, 2)
                                 bot.manual_realized_pnl = round(bot.manual_realized_pnl + pos_pnl, 4)
                                 bot.copy_subscribers.remove(sub)
+                                for p_item in positions:
+                                    if p_item.get("posId"):
+                                        asyncio.create_task(self.db_save_sell_individual(p_item.get("posId"), {"order_id": p_item.get("posId") + "_SUB_CLOSED", "side": "SELL", "price": round(bot.live_price, 2), "sol_amount": float(p_item.get("solAmount", 0.0)), "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "COPY_SUB_CLOSED"}))
                                 t_rec = {
                                     "orderId": s_id + "_CLOSED",
                                     "side": "SELL",
