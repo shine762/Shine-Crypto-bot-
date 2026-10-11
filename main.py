@@ -194,7 +194,7 @@ class UltraQuantSpotBot:
                                         "invested": o_invested,
                                         "price": o_price,
                                         "activationPrice": o_price,
-                                        "isActivated": True if o_side == "SELL" else False,
+                                        "isActivated": False,
                                         "stopPrice": o_target,
                                         "limitPrice": o_price,
                                         "triggerDirection": "BELOW" if o_target <= o_price else "ABOVE",
@@ -2066,6 +2066,9 @@ class UltraQuantSpotBot:
         self.run_killer3_scalper_tick()
         self.run_auto_trailing_loop_tick()
 
+        if self.live_price <= 0:
+            return
+
         for ord in list(self.wallet_open_orders):
             o_type = ord.get("orderType", "")
             side = ord.get("side", "BUY")
@@ -2080,7 +2083,7 @@ class UltraQuantSpotBot:
             cur_p = round(self.live_price, 2)
             lim_p = round(fixed_price, 2)
             if norm_type == "LIMIT":
-                if side_str == "BUY" and cur_p > 0 and cur_p <= lim_p:
+                if side_str == "BUY" and cur_p > 1.0 and lim_p > 1.0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
                         asyncio.create_task(self.db_save_sell_individual(ord.get("id"), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": 0.0, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "FILLED_CLOSED"}))
@@ -2192,8 +2195,10 @@ class UltraQuantSpotBot:
                             asyncio.create_task(self.db_sync_state())
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "BUY":
+                    if cur_p <= 1.0 or act_p <= 1.0:
+                        continue
                     if not ord.get("isActivated", False):
-                        if cur_p <= act_p and act_p > 0:
+                        if cur_p <= act_p:
                             ord["isActivated"] = True
                             ord["lowestTracked"] = cur_p
                     else:
@@ -2246,10 +2251,11 @@ class UltraQuantSpotBot:
                 trig_p = round(float(ord.get("stopPrice", 0.0) or ord.get("price", 0.0)), 2)
                 t_dir = ord.get("triggerDirection", "BELOW" if trig_p <= float(ord.get("activationPrice", cur_p)) else "ABOVE")
                 should_exec = False
-                if t_dir == "BELOW" and cur_p <= trig_p and trig_p > 0:
-                    should_exec = True
-                elif t_dir == "ABOVE" and cur_p >= trig_p and trig_p > 0:
-                    should_exec = True
+                if cur_p > 1.0 and trig_p > 1.0:
+                    if t_dir == "BELOW" and cur_p <= trig_p:
+                        should_exec = True
+                    elif t_dir == "ABOVE" and cur_p >= trig_p:
+                        should_exec = True
 
                 if should_exec:
                     if ord in self.wallet_open_orders:
