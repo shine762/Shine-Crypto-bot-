@@ -407,7 +407,7 @@ class UltraQuantSpotBot:
                     "is_macro": pos.get("isMacro", False),
                     "target_price": pos.get("targetPrice", 0.0)
                 }
-                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions", json=pos_row)
+                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=pos_row)
                 await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
             await self.db_sync_state()
         except Exception:
@@ -1346,7 +1346,10 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_rec)
-                    asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
+                    if not ord.get("autoRepeat", True):
+                        asyncio.create_task(self.db_save_sell_individual(ord["id"], t_rec))
+                    else:
+                        asyncio.create_task(self.db_save_engine_trade(t_rec))
 
                     if ord.get("autoRepeat", True):
                         rearm_amt = min(float(ord["usdtAmount"]), float(self.manual_test_balance))
@@ -1371,7 +1374,16 @@ class UltraQuantSpotBot:
                                 "invested": float(ord["usdtAmount"]),
                                 "isMacro": False,
                                 "targetPrice": float(ord["sellTrigger"])
-                            }, t_rec))
+                            }, {
+                                "order_id": ord["id"] + "_REARM",
+                                "side": "REARM",
+                                "price": float(ord["buyTrigger"]),
+                                "sol_amount": 0.0,
+                                "fee": 0.0,
+                                "profit": 0.0,
+                                "round": 0,
+                                "exec_type": "LOOP_REARMED"
+                            }))
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                         else:
                             if ord in self.auto_loops:
