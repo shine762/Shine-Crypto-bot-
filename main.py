@@ -1071,7 +1071,7 @@ class UltraQuantSpotBot:
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
             "price": exec_limit_p if o_type == "TRIGGER" else exact_order_price,
-            "activationPrice": exact_order_price,
+            "activationPrice": initial_cur_p,
             "isActivated": False,
             "stopPrice": trig_target_p,
             "limitPrice": exec_limit_p,
@@ -2271,11 +2271,11 @@ class UltraQuantSpotBot:
                         asyncio.create_task(self.db_sync_state())
                         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "BUY":
-                    if tp_p > 0 and cur_p <= tp_p and init_p > tp_p:
+                    if tp_p > 0 and cur_p <= tp_p:
                         should_exec = True
                         exec_label = "TP_BUY_FILLED"
                         fill_target_p = tp_p
-                    elif sl_p > 0 and cur_p >= sl_p and init_p < sl_p:
+                    elif sl_p > 0 and cur_p >= sl_p:
                         should_exec = True
                         exec_label = "SL_BUY_FILLED"
                         fill_target_p = sl_p
