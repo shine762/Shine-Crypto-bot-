@@ -22,7 +22,8 @@ SUPABASE_KEY = "sb_publishable_PgY6nJ0OeM4OIoJS3GVG8A_MZb--nVp"
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "Prefer": "resolution=merge-duplicates"
 }
 
 class UltraQuantSpotBot:
@@ -139,8 +140,6 @@ class UltraQuantSpotBot:
                     if resp.status == 200:
                         pos_data = await resp.json()
                         if isinstance(pos_data, list):
-                            if not pos_data:
-                                return
                             loaded_positions = []
                             self.micro_positions = []
                             self.killer2_positions = []
@@ -1282,7 +1281,6 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_rec)
-                    asyncio.create_task(self.db_save_sell_individual(ord["id"], {"order_id": ord["id"] + "_STAGE_UPGRADE", "side": "BUY", "price": round(self.live_price, 2), "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "UPGRADE"}))
                     asyncio.create_task(self.db_save_buy({
                         "id": ord["id"],
                         "round": 0,
@@ -1304,7 +1302,6 @@ class UltraQuantSpotBot:
                     ord["status"] = f"TRAILING PROFIT (HIGH: ${round(self.live_price, 2)})"
                     rep_flag = "1" if ord.get("autoRepeat", True) else "0"
                     upd_label = f"ATL|{ord['buyCallbackPct']}|{ord['sellCallbackPct']}|{rep_flag}|TRAILING_SELL|{ord['buyTrigger']}|{ord['sellTrigger']}|{self.live_price}"
-                    asyncio.create_task(self.db_save_sell_individual(ord["id"], {"order_id": ord["id"] + "_STAGE_TRL", "side": "TRAIL", "price": round(self.live_price, 2), "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRAIL"}))
                     asyncio.create_task(self.db_save_buy({
                         "id": ord["id"],
                         "round": 0,
