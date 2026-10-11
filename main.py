@@ -407,8 +407,19 @@ class UltraQuantSpotBot:
                     "is_macro": pos.get("isMacro", False),
                     "target_price": pos.get("targetPrice", 0.0)
                 }
+                db_trade_row = {
+                    "order_id": str(trade_data.get("order_id") or trade_data.get("orderId")),
+                    "side": str(trade_data.get("side", "BUY")),
+                    "price": float(trade_data.get("price", 0.0)),
+                    "sol_amount": float(trade_data.get("sol_amount") or trade_data.get("solAmount", 0.0)),
+                    "fee": float(trade_data.get("fee", 0.0)),
+                    "profit": float(trade_data.get("profit", 0.0)),
+                    "round": int(trade_data.get("round", 0)),
+                    "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "BUY")),
+                    "created_at": trade_data.get("created_at") or trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+                }
                 await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=pos_row)
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=trade_data)
+                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_trade_row)
             await self.db_sync_state()
         except Exception:
             pass
