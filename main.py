@@ -179,22 +179,26 @@ class UltraQuantSpotBot:
                                     lbl_meta = str(p.get("label", "")).split("|")
                                     o_type = lbl_meta[1] if len(lbl_meta) > 1 else "LIMIT"
                                     o_side = lbl_meta[2] if len(lbl_meta) > 2 else "BUY"
+                                    o_invested = float(p.get("invested", 0.0))
+                                    o_sol = float(p.get("sol_amount", 0.0))
+                                    o_price = float(p.get("entry_price", 0.0))
+                                    o_target = float(p.get("target_price", 0.0))
                                     self.wallet_open_orders.append({
                                         "id": p_id,
                                         "orderType": o_type,
                                         "side": o_side,
-                                        "amount": float(p.get("invested", 0.0)),
-                                        "solAmount": float(p.get("sol_amount", 0.0)),
-                                        "invested": float(p.get("invested", 0.0)),
-                                        "price": float(p.get("entry_price", 0.0)),
-                                        "activationPrice": float(p.get("entry_price", 0.0)),
-                                        "isActivated": False,
-                                        "stopPrice": float(p.get("target_price", 0.0)),
-                                        "limitPrice": float(p.get("entry_price", 0.0)),
-                                        "triggerDirection": "BELOW" if float(p.get("target_price", 0.0)) <= float(p.get("entry_price", 0.0)) else "ABOVE",
+                                        "amount": o_invested if o_side == "BUY" else o_sol,
+                                        "solAmount": o_sol,
+                                        "invested": o_invested,
+                                        "price": o_price,
+                                        "activationPrice": o_price,
+                                        "isActivated": True if o_side == "SELL" else False,
+                                        "stopPrice": o_target,
+                                        "limitPrice": o_price,
+                                        "triggerDirection": "BELOW" if o_target <= o_price else "ABOVE",
                                         "callbackPct": 1.0,
-                                        "peakTracked": 0.0,
-                                        "lowestTracked": 0.0,
+                                        "peakTracked": o_price,
+                                        "lowestTracked": o_price,
                                         "status": "OPEN",
                                         "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
                                     })
@@ -356,13 +360,8 @@ class UltraQuantSpotBot:
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
                             pass
-                            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
-                            if len(reg_pos) > 0:
-                                self.sol_balance = sum(p["solAmount"] for p in reg_pos)
-                                self.invested_amount = sum(p["invested"] for p in reg_pos)
-                                self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
-                                self.sub_trade_count = len(reg_pos)
                             self.db_loaded = True
+                            asyncio.create_task(self.db_sync_state())
         except Exception:
             self.db_loaded = True
 
@@ -1126,16 +1125,16 @@ class UltraQuantSpotBot:
             "id": o_id,
             "round": 0,
             "subTrade": 0,
-            "label": f"ORD|{o_type}|{side}",
+            "label": f"ORD|{o_type}|{side}|{cb_pct}",
             "entryPrice": exact_order_price,
             "solAmount": float(sol_qty),
             "invested": float(inv_amt),
             "isMacro": False,
-            "targetPrice": float(ord_data.get("stopPrice", 0.0))
+            "targetPrice": float(ord_data.get("stopPrice", exact_order_price))
         }
         asyncio.create_task(self.db_save_buy(pos_ord_record, {
             "order_id": o_id,
-            "side": f"OPEN_{side}",
+            "side": side,
             "price": exact_order_price,
             "sol_amount": float(sol_qty),
             "fee": 0.0,
@@ -2166,7 +2165,7 @@ class UltraQuantSpotBot:
                                 self.wallet_open_orders.remove(ord)
                             sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
                             cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                            gross_val = round(sold_sol * fill_target_p, 2)
+                            gross_val = round(sold_sol * cur_p, 2)
                             fee = round(gross_val * self.taker_fee_pct, 4)
                             net_val = round(gross_val - fee, 2)
                             net_profit = round(net_val - cost_basis, 4)
@@ -2175,7 +2174,7 @@ class UltraQuantSpotBot:
                             t_record = {
                                 "orderId": str(ord.get("id")),
                                 "side": "SELL",
-                                "price": fill_target_p,
+                                "price": cur_p,
                                 "solAmount": sold_sol,
                                 "invested": cost_basis,
                                 "fee": fee,
