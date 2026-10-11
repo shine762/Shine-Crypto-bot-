@@ -816,9 +816,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.manual_trades_history.insert(0, t_record)
-        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": 0.0, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRIGGER_CONVERTED"}))
-                        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": 0.0, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "OCO_CONVERTED"}))
-                        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
+        asyncio.create_task(self.db_save_buy(manual_pos, t_record))
         asyncio.create_task(self.db_sync_state())
         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
