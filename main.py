@@ -2075,7 +2075,7 @@ class UltraQuantSpotBot:
                                 self.wallet_open_orders.remove(ord)
                             sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
                             cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                            gross_val = round(sold_sol * cur_p, 2)
+                            gross_val = round(sold_sol * fill_target_p, 2)
                             fee = round(gross_val * self.taker_fee_pct, 4)
                             net_val = round(gross_val - fee, 2)
                             net_profit = round(net_val - cost_basis, 4)
@@ -2084,7 +2084,7 @@ class UltraQuantSpotBot:
                             t_record = {
                                 "orderId": str(ord.get("id")),
                                 "side": "SELL",
-                                "price": cur_p,
+                                "price": fill_target_p,
                                 "solAmount": sold_sol,
                                 "invested": cost_basis,
                                 "fee": fee,
@@ -2135,7 +2135,7 @@ class UltraQuantSpotBot:
                             t_record = {
                                 "orderId": str(ord.get("id")),
                                 "side": "BUY",
-                                "price": cur_p,
+                                "price": fill_target_p,
                                 "solAmount": sol_bought,
                                 "invested": exact_invest,
                                 "fee": fee,
@@ -2227,16 +2227,20 @@ class UltraQuantSpotBot:
             elif norm_type in ["TP_SL", "TP/SL", "OCO"]:
                 tp_p = round(float(ord.get("limitPrice", 0.0)), 2)
                 sl_p = round(float(ord.get("stopPrice", 0.0)), 2)
+                init_p = round(float(ord.get("activationPrice", cur_p)), 2)
                 should_exec = False
                 exec_label = "TP_FILLED"
+                fill_target_p = cur_p
 
                 if side_str == "SELL":
-                    if tp_p > 0 and cur_p >= tp_p:
+                    if tp_p > 0 and cur_p >= tp_p and init_p < tp_p:
                         should_exec = True
                         exec_label = "TP_FILLED"
-                    elif sl_p > 0 and cur_p <= sl_p:
+                        fill_target_p = tp_p
+                    elif sl_p > 0 and cur_p <= sl_p and init_p > sl_p:
                         should_exec = True
                         exec_label = "SL_FILLED"
+                        fill_target_p = sl_p
 
                     if should_exec:
                         if ord in self.wallet_open_orders:
@@ -2267,12 +2271,14 @@ class UltraQuantSpotBot:
                         asyncio.create_task(self.db_sync_state())
                         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "BUY":
-                    if tp_p > 0 and cur_p <= tp_p:
+                    if tp_p > 0 and cur_p <= tp_p and init_p > tp_p:
                         should_exec = True
                         exec_label = "TP_BUY_FILLED"
-                    elif sl_p > 0 and cur_p >= sl_p:
+                        fill_target_p = tp_p
+                    elif sl_p > 0 and cur_p >= sl_p and init_p < sl_p:
                         should_exec = True
                         exec_label = "SL_BUY_FILLED"
+                        fill_target_p = sl_p
 
                     if should_exec:
                         if ord in self.wallet_open_orders:
@@ -2280,7 +2286,7 @@ class UltraQuantSpotBot:
                         exact_invest = round(float(amt), 2)
                         fee = round(exact_invest * self.taker_fee_pct, 4)
                         net_invest = exact_invest - fee
-                        sol_bought = round(net_invest / cur_p, 4)
+                        sol_bought = round(net_invest / fill_target_p, 4)
                         pos_id = "MAN_" + str(uuid.uuid4())[:6]
                         manual_pos = {
                             "id": pos_id,
@@ -2288,7 +2294,7 @@ class UltraQuantSpotBot:
                             "subTrade": 0,
                             "label": "WALLET OCO BUY",
                             "side": "BUY",
-                            "entryPrice": cur_p,
+                            "entryPrice": fill_target_p,
                             "solAmount": sol_bought,
                             "invested": exact_invest,
                             "orderType": "OCO",
