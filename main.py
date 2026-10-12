@@ -1097,6 +1097,47 @@ class UltraQuantSpotBot:
             return
 
         if pos_id:
+            if str(pos_id).startswith("ATL_"):
+                for loop in list(self.auto_loops):
+                    if loop.get("id") == pos_id:
+                        sold_sol = float(loop.get("solBought", 0.0))
+                        inv_amt = float(loop.get("usdtAmount", 0.0))
+                        if sold_sol > 0:
+                            gross = sold_sol * self.live_price
+                            fee = gross * self.taker_fee_pct
+                            net_ret = gross - fee
+                            pnl = round(net_ret - inv_amt, 4)
+                            self.manual_test_balance = round(self.manual_test_balance + net_ret, 2)
+                            self.manual_realized_pnl = round(self.manual_realized_pnl + pnl, 4)
+                            t_rec = {
+                                "orderId": str(pos_id) + "_MC",
+                                "side": "SELL",
+                                "price": round(self.live_price, 2),
+                                "solAmount": round(sold_sol, 4),
+                                "fee": round(fee, 4),
+                                "profit": pnl,
+                                "realizedPnl": pnl,
+                                "execType": "AUTO_LOOP_MARKET_CLOSE",
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            }
+                            self.manual_trades_history.insert(0, t_rec)
+                            asyncio.create_task(self.db_save_sell_individual(pos_id, t_rec))
+                        else:
+                            self.manual_test_balance = round(self.manual_test_balance + inv_amt, 2)
+                            asyncio.create_task(self.db_save_sell_individual(pos_id, {
+                                "order_id": str(pos_id) + "_CANCEL",
+                                "side": "CANCEL",
+                                "price": round(self.live_price, 2),
+                                "sol_amount": 0.0,
+                                "fee": 0.0,
+                                "profit": 0.0,
+                                "round": 0,
+                                "exec_type": "AUTO_LOOP_CANCELED"
+                            }))
+                        self.auto_loops.remove(loop)
+                        await self.db_sync_state()
+                        await manager.broadcast(json.dumps(self.get_state()))
+                        return
             for p in list(self.wallet_active_positions):
                 if p.get("id") == pos_id:
                     self.execute_manual_sell(pos_id=pos_id)
