@@ -184,9 +184,12 @@ class UltraQuantSpotBot:
                                     o_invested = float(p.get("invested", 0.0))
                                     o_price = float(p.get("entry_price", 0.0))
                                     o_sol = float(p.get("sol_amount", 0.0))
+                                    o_target = float(p.get("target_price", 0.0))
+                                    cb_val = float(lbl_meta[3]) if len(lbl_meta) > 3 else 1.0
+                                    act_p = float(lbl_meta[4]) if len(lbl_meta) > 4 else o_price
+                                    trig_p = float(lbl_meta[5]) if len(lbl_meta) > 5 else o_target
                                     if o_sol <= 0 and o_price > 0 and o_invested > 0:
                                         o_sol = round(o_invested / o_price, 4)
-                                    o_target = float(p.get("target_price", 0.0))
                                     self.wallet_open_orders.append({
                                         "id": p_id,
                                         "orderId": p_id,
@@ -196,14 +199,14 @@ class UltraQuantSpotBot:
                                         "solAmount": o_sol,
                                         "invested": o_invested,
                                         "price": o_price,
-                                        "activationPrice": o_price,
+                                        "activationPrice": act_p,
                                         "isActivated": False,
-                                        "stopPrice": o_target,
+                                        "stopPrice": trig_p,
                                         "limitPrice": o_price,
-                                        "triggerDirection": "BELOW" if o_target <= o_price else "ABOVE",
-                                        "callbackPct": 1.0,
-                                        "peakTracked": o_price,
-                                        "lowestTracked": o_price,
+                                        "triggerDirection": "BELOW" if trig_p <= act_p else "ABOVE",
+                                        "callbackPct": cb_val,
+                                        "peakTracked": act_p,
+                                        "lowestTracked": act_p,
                                         "status": "OPEN",
                                         "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
                                     })
@@ -1145,12 +1148,12 @@ class UltraQuantSpotBot:
             "id": o_id,
             "round": 0,
             "subTrade": 0,
-            "label": f"ORD|{o_type}|{side}|{exact_order_price}",
+            "label": f"ORD|{o_type}|{side}|{cb_pct}|{user_target_p}|{trig_target_p}",
             "entryPrice": exact_order_price,
             "solAmount": float(sol_qty),
             "invested": float(inv_amt),
             "isMacro": False,
-            "targetPrice": exact_order_price
+            "targetPrice": trig_target_p if trig_target_p > 0 else exact_order_price
         }
         asyncio.create_task(self.db_save_buy(pos_ord_record, {
             "order_id": o_id,
@@ -2157,8 +2160,6 @@ class UltraQuantSpotBot:
                         self.wallet_open_orders.remove(ord)
                     sold_sol = round(float(ord.get("solAmount", 0.0)), 4)
                     cost_basis = round(float(ord.get("invested", 0.0)), 2)
-                    gross_val = round(sold_sol * lim_p, 2)
-                    fee = round(gross_val * self.taker_fee_pct, 4)
                     gross_val = round(sold_sol * lim_p, 2)
                     fee = round(gross_val * self.taker_fee_pct, 4)
                     net_val = round(gross_val - fee, 2)
