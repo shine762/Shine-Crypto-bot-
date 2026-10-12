@@ -1120,23 +1120,24 @@ class UltraQuantSpotBot:
         order_obj = {
             "id": o_id,
             "orderId": o_id,
-            "orderType": "Limit" if o_type == "LIMIT" else o_type,
+            "orderType": "LIMIT" if o_type == "LIMIT" else o_type,
             "side": side,
-            "amount": float(amt),
+            "amount": float(inv_amt),
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
             "price": exact_order_price,
+            "entryPrice": exact_order_price,
             "activationPrice": user_target_p if o_type == "TRAILING_STOP" else exact_order_price,
             "isActivated": False,
             "stopPrice": trig_target_p,
-            "limitPrice": exact_order_price if o_type == "LIMIT" else exec_limit_p,
+            "limitPrice": exact_order_price,
             "triggerDirection": trig_dir,
             "callbackPct": cb_pct,
             "peakTracked": user_target_p,
             "lowestTracked": user_target_p,
             "status": "OPEN",
             "statusText": f"LIMIT {side} @ ${exact_order_price}",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         }
 
         self.wallet_open_orders.insert(0, order_obj)
