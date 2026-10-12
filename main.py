@@ -886,11 +886,11 @@ class UltraQuantSpotBot:
             return
         for sub in list(self.copy_subscribers):
             if sub.get("botType") == bot_type:
-                slot_size = float(sub.get("slotSize", 10.0))
+                slot_size = float(sub.get("slotSize", 0.0))
                 reserve = float(sub.get("availableReserve", 0.0))
                 positions = sub.get("activePositions", [])
                 max_slots = int(sub.get("slotsAllowed", 10))
-                if reserve >= slot_size and len(positions) < max_slots:
+                if slot_size >= 10.0 and reserve >= slot_size and len(positions) < max_slots:
                     fee = slot_size * self.taker_fee_pct
                     sol_qty = (slot_size - fee) / buy_price
                     pos_id = "CPOS_" + str(uuid.uuid4())[:6]
