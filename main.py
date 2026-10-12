@@ -1109,6 +1109,7 @@ class UltraQuantSpotBot:
             inv_amt = round(actual_cost_basis, 2)
 
         initial_cur_p = round(self.live_price, 2)
+        user_target_p = float(ord_data.get("price", exact_order_price))
         trig_target_p = float(ord_data.get("stopPrice", 0.0))
         exec_limit_p = float(ord_data.get("limitPrice", exact_order_price))
         trig_dir = "BELOW" if trig_target_p <= initial_cur_p else "ABOVE"
@@ -1120,15 +1121,15 @@ class UltraQuantSpotBot:
             "amount": float(amt),
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
-            "price": exec_limit_p if o_type == "TRIGGER" else exact_order_price,
-            "activationPrice": initial_cur_p,
+            "price": exact_order_price,
+            "activationPrice": user_target_p if o_type == "TRAILING_STOP" else exact_order_price,
             "isActivated": False,
             "stopPrice": trig_target_p,
             "limitPrice": exec_limit_p,
             "triggerDirection": trig_dir,
             "callbackPct": cb_pct,
-            "peakTracked": 0.0,
-            "lowestTracked": 0.0,
+            "peakTracked": user_target_p,
+            "lowestTracked": user_target_p,
             "status": "OPEN",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -2253,7 +2254,7 @@ class UltraQuantSpotBot:
                             t_record = {
                                 "orderId": str(ord.get("id")),
                                 "side": "BUY",
-                                "price": fill_target_p,
+                                "price": cur_p,
                                 "solAmount": sol_bought,
                                 "invested": exact_invest,
                                 "fee": fee,
@@ -2264,6 +2265,7 @@ class UltraQuantSpotBot:
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             }
                             self.manual_trades_history.insert(0, t_record)
+                            asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": cur_p, "sol_amount": sol_bought, "fee": fee, "profit": 0.0, "round": 0, "exec_type": "TRAILING_BUY_FILLED"}))
                             asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                             asyncio.create_task(self.db_sync_state())
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -2340,6 +2342,7 @@ class UltraQuantSpotBot:
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": exec_fill_p, "sol_amount": sol_bought, "fee": fee, "profit": 0.0, "round": 0, "exec_type": "TRIGGER_BUY_FILLED"}))
                         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
