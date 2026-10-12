@@ -176,6 +176,19 @@ class UltraQuantSpotBot:
                                     r_idx = pos_obj["round"]
                                     self.killer3_round_trades_done[r_idx] = self.killer3_round_trades_done.get(r_idx, 0) + 1
                                 elif p_id.startswith("MAN_"):
+                                    lbl_str = str(pos_obj.get("label", "")).upper()
+                                    if "TP_SL" in lbl_str or "TP/SL" in lbl_str or "OCO" in lbl_str:
+                                        pos_obj["orderType"] = "TP_SL"
+                                    elif "TRAILING" in lbl_str:
+                                        pos_obj["orderType"] = "TRAILING_STOP"
+                                    elif "LIMIT" in lbl_str:
+                                        pos_obj["orderType"] = "LIMIT"
+                                    elif "TRIGGER" in lbl_str:
+                                        pos_obj["orderType"] = "TRIGGER"
+                                    elif "AUTO_LOOP" in lbl_str or "LOOP" in lbl_str:
+                                        pos_obj["orderType"] = "AUTO_LOOP"
+                                    else:
+                                        pos_obj["orderType"] = "MARKET"
                                     self.wallet_active_positions.append(pos_obj)
                                 elif p_id.startswith("ORD_"):
                                     lbl_meta = str(p.get("label", "")).split("|")
@@ -370,6 +383,10 @@ class UltraQuantSpotBot:
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
                             pass
+                            w_pos_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions)
+                            w_ord_inv = sum(float(o.get("invested", o.get("amount", 0.0))) for o in self.wallet_open_orders if o.get("side") == "BUY")
+                            if (w_pos_inv + w_ord_inv) > 0 and self.manual_test_balance >= 90.0:
+                                self.manual_test_balance = max(0.0, round(self.manual_test_balance - (w_pos_inv + w_ord_inv), 2))
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
         except Exception as e:
