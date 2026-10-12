@@ -232,6 +232,7 @@ class UltraQuantSpotBot:
                                     b_type = lbl_parts[1] if len(lbl_parts) > 1 else "VELOCITY_DCA"
                                     s_allowed = int(lbl_parts[2]) if len(lbl_parts) > 2 else 1
                                     b_amt = float(pos_obj.get("invested", 10.0))
+                                    pnl_saved = float(lbl_parts[3]) if len(lbl_parts) > 3 else 0.0
                                     self.copy_subscribers.append({
                                         "id": p_id,
                                         "botType": b_type,
@@ -240,7 +241,7 @@ class UltraQuantSpotBot:
                                         "slotSize": round(b_amt / max(1, s_allowed), 2),
                                         "slotsAllowed": s_allowed,
                                         "activeSlots": 0,
-                                        "realizedPnl": 0.0,
+                                        "realizedPnl": pnl_saved,
                                         "activePositions": [],
                                         "entryPrice": float(pos_obj.get("entryPrice", self.live_price)),
                                         "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
@@ -981,6 +982,18 @@ class UltraQuantSpotBot:
                     "timestamp": datetime.now(timezone.utc).isoformat()
                 }
                 self.manual_trades_history.insert(0, t_rec)
+                upd_label = f"COPY|{bot_type}|{sub.get('slotsAllowed', 1)}|{sub['realizedPnl']}"
+                asyncio.create_task(self.db_save_buy({
+                    "id": sub.get("id"),
+                    "round": 0,
+                    "subTrade": 0,
+                    "label": upd_label,
+                    "entryPrice": float(sub.get("entryPrice", exit_price)),
+                    "solAmount": 0.0,
+                    "invested": float(sub.get("totalCapital", 10.0)),
+                    "isMacro": False,
+                    "targetPrice": 0.0
+                }, t_rec))
                 if pos_to_close.get("posId"):
                     asyncio.create_task(self.db_save_sell_individual(pos_to_close.get("posId"), t_rec))
                 else:
