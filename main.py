@@ -181,16 +181,15 @@ class UltraQuantSpotBot:
                                     lbl_meta = str(p.get("label", "")).split("|")
                                     o_type = lbl_meta[1] if len(lbl_meta) > 1 else "LIMIT"
                                     o_side = lbl_meta[2] if len(lbl_meta) > 2 else "BUY"
-                                    o_invested = float(p.get("invested", 0.0))
-                                    o_price = float(p.get("entry_price", 0.0))
-                                    o_sol = float(p.get("sol_amount", 0.0))
-                                    o_target = float(p.get("target_price", 0.0))
                                     cb_val = float(lbl_meta[3]) if len(lbl_meta) > 3 else 1.0
-                                    act_p = float(lbl_meta[4]) if len(lbl_meta) > 4 else o_price
-                                    trig_p = float(lbl_meta[5]) if len(lbl_meta) > 5 else o_target
+                                    act_p = float(lbl_meta[4]) if len(lbl_meta) > 4 else float(p.get("entry_price", 0.0))
+                                    trig_p = float(lbl_meta[5]) if len(lbl_meta) > 5 else float(p.get("target_price", 0.0))
+                                    o_price = float(p.get("entry_price", 0.0))
+                                    o_invested = float(p.get("invested", 0.0))
+                                    o_sol = float(p.get("sol_amount", 0.0))
                                     if o_sol <= 0 and o_price > 0 and o_invested > 0:
                                         o_sol = round(o_invested / o_price, 4)
-                                    self.wallet_open_orders.append({
+                                    ord_obj = {
                                         "id": p_id,
                                         "orderId": p_id,
                                         "orderType": o_type,
@@ -199,6 +198,7 @@ class UltraQuantSpotBot:
                                         "solAmount": o_sol,
                                         "invested": o_invested,
                                         "price": o_price,
+                                        "entryPrice": o_price,
                                         "activationPrice": act_p,
                                         "isActivated": False,
                                         "stopPrice": trig_p,
@@ -208,8 +208,10 @@ class UltraQuantSpotBot:
                                         "peakTracked": act_p,
                                         "lowestTracked": act_p,
                                         "status": "OPEN",
+                                        "statusText": f"{o_type} {o_side} @ ${round(o_price, 2)}",
                                         "timestamp": p.get("created_at", datetime.now(timezone.utc).isoformat())
-                                    })
+                                    }
+                                    self.wallet_open_orders.append(ord_obj)
                                 elif p_id.startswith("BOT_"):
                                     if not hasattr(self, "copy_subscribers"):
                                         self.copy_subscribers = []
@@ -1186,11 +1188,12 @@ class UltraQuantSpotBot:
         }
 
         self.wallet_open_orders.insert(0, order_obj)
+        lbl_meta = f"ORD|{o_type}|{side}|{cb_pct}|{user_target_p}|{trig_target_p}"
         pos_ord_record = {
             "id": o_id,
             "round": 0,
             "subTrade": 0,
-            "label": f"ORD|{o_type}|{side}|{cb_pct}|{user_target_p}|{trig_target_p}",
+            "label": lbl_meta,
             "entryPrice": exact_order_price,
             "solAmount": float(sol_qty),
             "invested": float(inv_amt),
@@ -1208,6 +1211,7 @@ class UltraQuantSpotBot:
             "exec_type": f"OPEN_{o_type}"
         }))
         asyncio.create_task(self.db_sync_state())
+        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
         await manager.broadcast(json.dumps(self.get_state()))
 
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb, auto_repeat=True, slot_id=None):
@@ -2192,7 +2196,7 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).isoformat()
                     }
                     self.manual_trades_history.insert(0, t_record)
-                    asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": lim_p, "sol_amount": sol_bought, "fee": fee, "profit": 0.0, "round": 0, "exec_type": "FILLED_CLOSED"}))
+                    asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_CLOSED", "side": "FILL", "price": lim_p, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "LIMIT_FILLED"}))
                     asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -2224,7 +2228,7 @@ class UltraQuantSpotBot:
                     asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
-            elif norm_type == "TRAILING_STOP":
+            elif norm_type in ["TRAILING_STOP", "TRAILING"]:
                 cb = float(ord.get("callbackPct", 1.0))
                 act_p = float(ord.get("activationPrice", 0.0))
                 if side_str == "SELL":
@@ -2282,7 +2286,7 @@ class UltraQuantSpotBot:
                         if cur_p >= ceil_trigger:
                             if ord in self.wallet_open_orders:
                                 self.wallet_open_orders.remove(ord)
-                            exact_invest = round(float(amt), 2)
+                            exact_invest = round(float(ord.get("invested", amt)), 2)
                             fee = round(exact_invest * self.taker_fee_pct, 4)
                             net_invest = exact_invest - fee
                             sol_bought = round(net_invest / cur_p, 4)
@@ -2316,7 +2320,7 @@ class UltraQuantSpotBot:
                                 "timestamp": datetime.now(timezone.utc).isoformat()
                             }
                             self.manual_trades_history.insert(0, t_record)
-                            asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": cur_p, "sol_amount": sol_bought, "fee": fee, "profit": 0.0, "round": 0, "exec_type": "TRAILING_BUY_FILLED"}))
+                            asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_CLOSED", "side": "FILL", "price": cur_p, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRAILING_FILLED"}))
                             asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                             asyncio.create_task(self.db_sync_state())
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -2359,7 +2363,7 @@ class UltraQuantSpotBot:
                         self.manual_trades_history.insert(0, t_record)
                         asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), t_record))
                     else:
-                        exact_invest = round(float(amt), 2)
+                        exact_invest = round(float(ord.get("invested", amt)), 2)
                         fee = round(exact_invest * self.taker_fee_pct, 4)
                         net_invest = exact_invest - fee
                         sol_bought = round(net_invest / exec_fill_p, 4)
@@ -2393,7 +2397,7 @@ class UltraQuantSpotBot:
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
-                        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_FILL", "side": "FILL", "price": exec_fill_p, "sol_amount": sol_bought, "fee": fee, "profit": 0.0, "round": 0, "exec_type": "TRIGGER_BUY_FILLED"}))
+                        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_CLOSED", "side": "FILL", "price": exec_fill_p, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "TRIGGER_FILLED"}))
                         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                     asyncio.create_task(self.db_sync_state())
                     asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
@@ -2456,7 +2460,7 @@ class UltraQuantSpotBot:
                     if should_exec:
                         if ord in self.wallet_open_orders:
                             self.wallet_open_orders.remove(ord)
-                        exact_invest = round(float(amt), 2)
+                        exact_invest = round(float(ord.get("invested", amt)), 2)
                         fee = round(exact_invest * self.taker_fee_pct, 4)
                         net_invest = exact_invest - fee
                         sol_bought = round(net_invest / fill_target_p, 4)
@@ -2490,6 +2494,7 @@ class UltraQuantSpotBot:
                             "timestamp": datetime.now(timezone.utc).isoformat()
                         }
                         self.manual_trades_history.insert(0, t_record)
+                        asyncio.create_task(self.db_save_sell_individual(str(ord.get("id")), {"order_id": str(ord.get("id")) + "_CLOSED", "side": "FILL", "price": fill_target_p, "sol_amount": 0.0, "fee": 0.0, "profit": 0.0, "round": 0, "exec_type": "OCO_FILLED"}))
                         asyncio.create_task(self.db_save_buy(manual_pos, t_record))
                         asyncio.create_task(self.db_sync_state())
                         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
