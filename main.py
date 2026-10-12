@@ -553,8 +553,50 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
-        positions_list = [p for p in getattr(self, "wallet_active_positions", [])]
-        open_orders_list = [o for o in getattr(self, "wallet_open_orders", [])]
+        positions_list = []
+        for p in self.wallet_active_positions:
+            p_sol = float(p.get("solAmount", 0.0))
+            p_inv = float(p.get("invested", 0.0))
+            p_ent = float(p.get("entryPrice", self.live_price))
+            positions_list.append({
+                "id": p.get("id"),
+                "orderId": p.get("id"),
+                "round": 0,
+                "subTrade": 0,
+                "label": p.get("label", "MANUAL POSITION"),
+                "side": p.get("side", "BUY"),
+                "entryPrice": round(p_ent, 2),
+                "solAmount": round(p_sol, 4),
+                "invested": round(p_inv, 2),
+                "orderType": p.get("orderType", "MARKET"),
+                "isManualWallet": True,
+                "status": "HOLDING",
+                "timestamp": p.get("timestamp", datetime.now(timezone.utc).strftime("%H:%M:%S"))
+            })
+
+        open_orders_list = []
+        for o in self.wallet_open_orders:
+            o_price = float(o.get("price", self.live_price))
+            o_sol = float(o.get("solAmount", 0.0))
+            o_inv = float(o.get("invested", o.get("amount", 0.0)))
+            o_type = o.get("orderType", "LIMIT")
+            open_orders_list.append({
+                "id": o.get("id"),
+                "orderId": o.get("id"),
+                "orderType": o_type,
+                "side": o.get("side", "BUY"),
+                "amount": round(o_inv, 2) if o.get("side") == "BUY" else round(o_sol, 4),
+                "solAmount": round(o_sol, 4),
+                "invested": round(o_inv, 2),
+                "price": round(o_price, 2),
+                "entryPrice": round(o_price, 2),
+                "stopPrice": round(float(o.get("stopPrice", 0.0)), 2),
+                "limitPrice": round(float(o.get("limitPrice", o_price)), 2),
+                "callbackPct": float(o.get("callbackPct", 1.0)),
+                "status": o.get("status", "OPEN"),
+                "statusText": o.get("statusText", f"{o_type} {o.get('side', 'BUY')} @ ${round(o_price, 2)}"),
+                "timestamp": o.get("timestamp", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+            })
         atl_sol_total = 0.0
         atl_inv_total = 0.0
         for atl in self.auto_loops:
@@ -1123,23 +1165,23 @@ class UltraQuantSpotBot:
         order_obj = {
             "id": o_id,
             "orderId": o_id,
-            "orderType": "LIMIT" if o_type == "LIMIT" else o_type,
+            "orderType": o_type,
             "side": side,
-            "amount": float(inv_amt),
+            "amount": float(inv_amt) if side == "BUY" else float(sol_qty),
             "solAmount": round(float(sol_qty), 4),
             "invested": round(float(inv_amt), 2),
             "price": exact_order_price,
             "entryPrice": exact_order_price,
-            "activationPrice": user_target_p if o_type == "TRAILING_STOP" else exact_order_price,
+            "activationPrice": user_target_p if o_type in ["TRAILING_STOP", "TRAILING"] else exact_order_price,
             "isActivated": False,
             "stopPrice": trig_target_p,
-            "limitPrice": exact_order_price,
+            "limitPrice": exec_limit_p,
             "triggerDirection": trig_dir,
             "callbackPct": cb_pct,
             "peakTracked": user_target_p,
             "lowestTracked": user_target_p,
             "status": "OPEN",
-            "statusText": f"LIMIT {side} @ ${exact_order_price}",
+            "statusText": f"{o_type} {side} @ ${exact_order_price}",
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         }
 
@@ -2116,7 +2158,7 @@ class UltraQuantSpotBot:
                 if side_str == "BUY" and cur_p > 0 and lim_p > 0 and cur_p <= lim_p:
                     if ord in self.wallet_open_orders:
                         self.wallet_open_orders.remove(ord)
-                    exact_invest = round(float(amt), 2)
+                    exact_invest = round(float(ord.get("invested", amt)), 2)
                     fee = round(exact_invest * self.taker_fee_pct, 4)
                     net_invest = exact_invest - fee
                     sol_bought = round(net_invest / lim_p, 4)
@@ -2136,7 +2178,6 @@ class UltraQuantSpotBot:
                         "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
                     }
                     self.wallet_active_positions.insert(0, manual_pos)
-                    self.sol_balance = round(getattr(self, "sol_balance", 0.0) + sol_bought, 4)
                     t_record = {
                         "orderId": str(ord.get("id")),
                         "side": "BUY",
