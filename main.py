@@ -182,11 +182,14 @@ class UltraQuantSpotBot:
                                     o_type = lbl_meta[1] if len(lbl_meta) > 1 else "LIMIT"
                                     o_side = lbl_meta[2] if len(lbl_meta) > 2 else "BUY"
                                     o_invested = float(p.get("invested", 0.0))
-                                    o_sol = float(p.get("sol_amount", 0.0))
                                     o_price = float(p.get("entry_price", 0.0))
+                                    o_sol = float(p.get("sol_amount", 0.0))
+                                    if o_sol <= 0 and o_price > 0 and o_invested > 0:
+                                        o_sol = round(o_invested / o_price, 4)
                                     o_target = float(p.get("target_price", 0.0))
                                     self.wallet_open_orders.append({
                                         "id": p_id,
+                                        "orderId": p_id,
                                         "orderType": o_type,
                                         "side": o_side,
                                         "amount": o_invested if o_side == "BUY" else o_sol,
