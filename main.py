@@ -1000,7 +1000,7 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_sync_state())
         asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
 
-    def create_advanced_order(self, ord_data):
+    async def create_advanced_order(self, ord_data):
         pos_id = ord_data.get("posId") or ord_data.get("id")
         action = ord_data.get("action", "")
 
@@ -1159,7 +1159,7 @@ class UltraQuantSpotBot:
             "exec_type": f"OPEN_{o_type}"
         }))
         asyncio.create_task(self.db_sync_state())
-        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+        await manager.broadcast(json.dumps(self.get_state()))
 
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb, auto_repeat=True, slot_id=None):
         if usdt_amt <= 0 or buy_trigger <= 0 or sell_trigger <= 0:
@@ -2154,6 +2154,8 @@ class UltraQuantSpotBot:
                     cost_basis = round(float(ord.get("invested", 0.0)), 2)
                     gross_val = round(sold_sol * lim_p, 2)
                     fee = round(gross_val * self.taker_fee_pct, 4)
+                    gross_val = round(sold_sol * lim_p, 2)
+                    fee = round(gross_val * self.taker_fee_pct, 4)
                     net_val = round(gross_val - fee, 2)
                     net_profit = round(net_val - cost_basis, 4)
                     self.manual_test_balance = round(self.manual_test_balance + net_val, 2)
@@ -2581,7 +2583,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "RESUME":
                     bot.is_paused = False
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
-                    bot.create_advanced_order(msg)
+                    await bot.create_advanced_order(msg)
                 elif action == "CLIENT_PRICE_TICK":
                     c_p = float(msg.get("price", 0.0))
                     if c_p > 0:
