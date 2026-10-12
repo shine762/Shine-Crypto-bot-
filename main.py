@@ -387,7 +387,8 @@ class UltraQuantSpotBot:
                 "sol_balance": round(self.sol_balance, 4),
                 "invested_amount": round(self.invested_amount, 2),
                 "avg_entry_price": round(self.avg_entry_price, 2),
-                "realized_pnl": round(self.realized_pnl, 2),
+                "realized_pnl": round(self.realized_pnl, 4),
+                "spot_realized_pnl": round(self.spot_realized_pnl, 4),
                 "micro_realized_pnl": round(self.micro_realized_pnl, 4),
                 "killer2_realized_pnl": round(self.killer2_realized_pnl, 4),
                 "killer3_realized_pnl": round(self.killer3_realized_pnl, 4),
@@ -1707,8 +1708,8 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(self.live_price, 2)
                 gain = pos["ts_high"] - entry_p
                 if gain >= 0.30:
-                    pullback = 0.04 if gain >= 0.45 else 0.02
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.25:
+                    pullback = 0.02 if gain >= 1.50 else (0.03 if gain >= 0.60 else 0.02)
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.20:
                         self.execute_micro_sell(pos)
                         return
 
@@ -1887,8 +1888,8 @@ class UltraQuantSpotBot:
 
                 gain = pos["ts_high"] - entry_p
                 if gain >= 0.45:
-                    pullback = 0.04 if gain >= 0.65 else 0.02
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.35:
+                    pullback = 0.03 if gain >= 2.00 else (0.04 if gain >= 0.90 else 0.03)
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.30:
                         self.execute_killer2_sell(pos)
                         return
 
@@ -2070,8 +2071,8 @@ class UltraQuantSpotBot:
 
                 gain = pos["ts_high"] - entry_p
                 if gain >= 0.60:
-                    pullback = 0.05 if gain >= 0.90 else 0.03
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.45:
+                    pullback = 0.04 if gain >= 2.50 else (0.05 if gain >= 1.20 else 0.04)
+                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.40:
                         self.execute_killer3_sell(pos)
                         return
 
@@ -2613,13 +2614,25 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(self.live_price, 2)
 
                 peak_gain = pos["ts_high"] - entry_p
+                gain_pct = (peak_gain / entry_p) * 100.0 if entry_p > 0 else 0.0
                 projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
 
                 if projected_p >= self.min_net_profit_usdt:
-                    trail_gap = 0.08 if peak_gain >= 0.40 else 0.04
-                    calc_stop = round(pos["ts_high"] - trail_gap, 2)
+                    if gain_pct >= 4.0 or self.whale_sentiment == "BEARISH":
+                        trail_pct = 0.0025
+                        self.ts_stage = "PEAK_SNIP"
+                    elif self.whale_sentiment == "BULLISH" and gain_pct < 2.0:
+                        trail_pct = 0.010
+                        self.ts_stage = "1.0%"
+                    else:
+                        trail_pct = 0.005
+                        self.ts_stage = "0.5%"
+
+                    calc_stop = round(pos["ts_high"] * (1.0 - trail_pct), 2)
                     if "ts_low" not in pos or calc_stop > pos["ts_low"]:
                         pos["ts_low"] = calc_stop
+                        self.ts_low = calc_stop
+                    self.ts_high = pos["ts_high"]
 
                     if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"]:
                         self.execute_sell_individual(pos)
