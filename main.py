@@ -550,8 +550,8 @@ class UltraQuantSpotBot:
             else:
                 ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
 
-        positions_list = list(getattr(self, "wallet_active_positions", []))
-        open_orders_list = list(getattr(self, "wallet_open_orders", []))
+        positions_list = [p for p in getattr(self, "wallet_active_positions", [])]
+        open_orders_list = [o for o in getattr(self, "wallet_open_orders", [])]
         atl_sol_total = 0.0
         atl_inv_total = 0.0
         for atl in self.auto_loops:
@@ -2121,17 +2121,18 @@ class UltraQuantSpotBot:
                         "id": pos_id,
                         "round": 0,
                         "subTrade": 0,
-                        "label": "WALLET LIMIT BUY",
+                        "label": f"WALLET LIMIT BUY ({pos_id})",
                         "side": "BUY",
                         "entryPrice": lim_p,
                         "solAmount": sol_bought,
                         "invested": exact_invest,
                         "orderType": "LIMIT",
                         "isManualWallet": True,
-                        "status": "FILLED",
+                        "status": "HOLDING",
                         "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
                     }
                     self.wallet_active_positions.insert(0, manual_pos)
+                    self.sol_balance = round(getattr(self, "sol_balance", 0.0) + sol_bought, 4)
                     t_record = {
                         "orderId": str(ord.get("id")),
                         "side": "BUY",
