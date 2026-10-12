@@ -1210,8 +1210,7 @@ class UltraQuantSpotBot:
             "round": 0,
             "exec_type": f"OPEN_{o_type}"
         }))
-        asyncio.create_task(self.db_sync_state())
-        asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
+        await self.db_sync_state()
         await manager.broadcast(json.dumps(self.get_state()))
 
     def create_auto_loop_order(self, usdt_amt, buy_trigger, buy_cb, sell_trigger, sell_cb, auto_repeat=True, slot_id=None):
