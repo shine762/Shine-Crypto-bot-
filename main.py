@@ -1633,19 +1633,18 @@ class UltraQuantSpotBot:
         return round(self.usdt_balance / 10.0, 2)
 
     def execute_micro_buy(self):
-        idle_fund = self.get_scavenged_idle_fund()
-        if idle_fund < 10.0 or self.live_price <= 0:
+        if self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         m_round = self.active_round
-        if self.micro_round_trades_done.get(m_round, 0) >= 10:
-            return
-        target_size = self.get_micro_trade_size()
-        if target_size < 10.0 or target_size > self.usdt_balance:
+        target_size = max(10.0, round(self.usdt_balance / 10.0, 2))
+        if target_size > self.usdt_balance:
+            target_size = self.usdt_balance
+        if target_size < 10.0:
             return
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
         sol_amt = net_invest / self.live_price
-        self.usdt_balance -= target_size
+        self.usdt_balance = round(self.usdt_balance - target_size, 2)
         self.micro_round_trades_done[m_round] = self.micro_round_trades_done.get(m_round, 0) + 1
         pos_id = "M_" + str(uuid.uuid4())[:6]
         pos = {
