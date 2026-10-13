@@ -312,10 +312,10 @@ class UltraQuantSpotBot:
                                 self.usdt_balance = max(0.0, round(100.0 + self.realized_pnl - total_active_cost, 2))
                             self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
                             self.sub_trade_count = len(regular_pos)
-                                self.round_trades_done = {r: 0 for r in range(1, 11)}
-                                for p in regular_pos:
-                                    r_idx = p.get("round", 1)
-                                    self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
+                            self.round_trades_done = {r: 0 for r in range(1, 11)}
+                            for p in regular_pos:
+                                r_idx = p.get("round", 1)
+                                self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=500") as resp:
                     if resp.status == 200:
