@@ -301,13 +301,17 @@ class UltraQuantSpotBot:
                             regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
                             macro_pos = [p for p in self.active_positions if p.get("isMacro", False)]
 
-                            if len(regular_pos) > 0 or len(macro_pos) > 0:
-                                self.sol_balance = sum(p["solAmount"] for p in regular_pos)
-                                self.invested_amount = sum(p["invested"] for p in regular_pos)
-                                self.macro_vault_sol = sum(p["solAmount"] for p in macro_pos)
-                                self.macro_vault_invested = sum(p["invested"] for p in macro_pos)
-                                self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
-                                self.sub_trade_count = len(regular_pos)
+                            all_scalp_sol = sum(p["solAmount"] for p in self.micro_positions) + sum(p["solAmount"] for p in self.killer2_positions) + sum(p["solAmount"] for p in self.killer3_positions)
+                            all_scalp_inv = sum(p["invested"] for p in self.micro_positions) + sum(p["invested"] for p in self.killer2_positions) + sum(p["invested"] for p in self.killer3_positions)
+                            self.sol_balance = sum(p["solAmount"] for p in regular_pos) + all_scalp_sol
+                            self.invested_amount = sum(p["invested"] for p in regular_pos) + all_scalp_inv
+                            self.macro_vault_sol = sum(p["solAmount"] for p in macro_pos)
+                            self.macro_vault_invested = sum(p["invested"] for p in macro_pos)
+                            total_active_cost = self.invested_amount + self.macro_vault_invested
+                            if total_active_cost > 0:
+                                self.usdt_balance = max(0.0, round(100.0 + self.realized_pnl - total_active_cost, 2))
+                            self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
+                            self.sub_trade_count = len(regular_pos)
                                 self.round_trades_done = {r: 0 for r in range(1, 11)}
                                 for p in regular_pos:
                                     r_idx = p.get("round", 1)
@@ -541,9 +545,13 @@ class UltraQuantSpotBot:
         self.sub_trade_count = self.round_trades_done.get(self.active_round, 0)
 
     def get_state(self):
-        all_sol = self.sol_balance + self.macro_vault_sol + self.harvester_vault_sol
-        all_invested = self.invested_amount + self.macro_vault_invested + self.harvester_vault_invested
-        total_cap = self.usdt_balance + (all_sol * self.live_price)
+        scalp_sol = sum(p.get("solAmount", 0.0) for p in self.micro_positions) + sum(p.get("solAmount", 0.0) for p in self.killer2_positions) + sum(p.get("solAmount", 0.0) for p in self.killer3_positions)
+        scalp_inv = sum(p.get("invested", 0.0) for p in self.micro_positions) + sum(p.get("invested", 0.0) for p in self.killer2_positions) + sum(p.get("invested", 0.0) for p in self.killer3_positions)
+        reg_sol = sum(p.get("solAmount", 0.0) for p in self.active_positions if not p.get("isMacro", False))
+        reg_inv = sum(p.get("invested", 0.0) for p in self.active_positions if not p.get("isMacro", False))
+        all_sol = reg_sol + scalp_sol + self.macro_vault_sol
+        all_invested = reg_inv + scalp_inv + self.macro_vault_invested
+        total_cap = self.usdt_balance + all_invested
         unrealized_pnl = 0.0
         pnl_pct = 0.0
 
