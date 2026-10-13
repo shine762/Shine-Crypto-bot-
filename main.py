@@ -1619,6 +1619,8 @@ class UltraQuantSpotBot:
             "exec_type": "INDIVIDUAL_PROFIT_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
+        if not self.is_paused and len(self.active_positions) == 0 and self.usdt_balance >= 10.0:
+            self.execute_buy(is_sub_trade=False)
 
     def get_scavenged_idle_fund(self):
         if self.usdt_balance < 10.0:
@@ -1732,11 +1734,17 @@ class UltraQuantSpotBot:
             "exec_type": "MICRO_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and len(self.micro_positions) == 0 and self.get_scavenged_idle_fund() >= 10.0:
+        if not self.is_paused and self.usdt_balance >= 10.0:
             self.execute_micro_buy()
 
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
+            return
+
+        idle_fund = self.get_scavenged_idle_fund()
+        if len(self.micro_positions) == 0:
+            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
+                self.execute_micro_buy()
             return
 
         for pos in list(self.micro_positions):
@@ -1751,13 +1759,8 @@ class UltraQuantSpotBot:
                         self.execute_micro_sell(pos)
                         return
 
-        idle_fund = self.get_scavenged_idle_fund()
         if idle_fund < 10.0 or self.usdt_balance < 10.0:
             self.micro_tb_active = False
-            return
-
-        if len(self.micro_positions) == 0:
-            self.execute_micro_buy()
             return
 
         if len(self.micro_positions) < 10:
@@ -1908,16 +1911,18 @@ class UltraQuantSpotBot:
             "exec_type": "KILLER2_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and len(self.killer2_positions) == 0 and self.get_killer2_idle_fund() >= 10.0:
+        if not self.is_paused and self.usdt_balance >= 10.0:
             self.execute_killer2_buy()
 
     def run_killer2_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
 
-        total_k2 = len(self.killer2_positions)
-        origin_dump_price = max(self.killer2_last_ref_price, ref_anchor if 'ref_anchor' in locals() and ref_anchor > 0 else self.live_price + 3.0)
-        is_deep_round = self.active_round in [6, 7, 8]
+        idle_fund = self.get_killer2_idle_fund()
+        if len(self.killer2_positions) == 0:
+            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
+                self.execute_killer2_buy()
+            return
 
         for idx, pos in enumerate(list(self.killer2_positions)):
             entry_p = pos["entryPrice"]
@@ -1931,13 +1936,8 @@ class UltraQuantSpotBot:
                         self.execute_killer2_sell(pos)
                         return
 
-        idle_fund = self.get_killer2_idle_fund()
         if idle_fund < 10.0 or self.usdt_balance < 10.0:
             self.killer2_tb_active = False
-            return
-
-        if len(self.killer2_positions) == 0:
-            self.execute_killer2_buy()
             return
 
         if len(self.killer2_positions) < 10:
@@ -2088,16 +2088,18 @@ class UltraQuantSpotBot:
             "exec_type": "KILLER3_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and len(self.killer3_positions) == 0 and self.get_killer3_idle_fund() >= 10.0:
+        if not self.is_paused and self.usdt_balance >= 10.0:
             self.execute_killer3_buy()
 
     def run_killer3_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
 
-        total_k3 = len(self.killer3_positions)
-        origin_dump_price = max(self.killer3_last_ref_price, ref_anchor if 'ref_anchor' in locals() and ref_anchor > 0 else self.live_price + 3.5)
-        is_deep_round = self.active_round in [6, 7, 8]
+        idle_fund = self.get_killer3_idle_fund()
+        if len(self.killer3_positions) == 0:
+            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
+                self.execute_killer3_buy()
+            return
 
         for idx, pos in enumerate(list(self.killer3_positions)):
             entry_p = pos["entryPrice"]
@@ -2111,13 +2113,8 @@ class UltraQuantSpotBot:
                         self.execute_killer3_sell(pos)
                         return
 
-        idle_fund = self.get_killer3_idle_fund()
         if idle_fund < 10.0 or self.usdt_balance < 10.0:
             self.killer3_tb_active = False
-            return
-
-        if len(self.killer3_positions) == 0:
-            self.execute_killer3_buy()
             return
 
         if len(self.killer3_positions) < 10:
