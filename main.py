@@ -2350,7 +2350,7 @@ class UltraQuantSpotBot:
                             asyncio.create_task(manager.broadcast(json.dumps(self.get_state())))
                 elif side_str == "BUY":
                     if cur_p <= 1.0 or act_p <= 1.0:
-                        continue
+                        pass
                     if not ord.get("isActivated", False):
                         if cur_p <= act_p:
                             ord["isActivated"] = True
@@ -2736,7 +2736,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     c_type = str(msg.get("botType", "VELOCITY_DCA"))
                     c_slots = min(10, max(1, int(msg.get("slotsAllowed", 1))))
                     if bot.manual_test_balance < c_amt or c_amt <= 0:
-                        continue
+                        pass
                     if not hasattr(bot, "copy_subscribers"):
                         bot.copy_subscribers = []
                     bot.manual_test_balance -= c_amt
