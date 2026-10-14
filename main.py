@@ -2683,9 +2683,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.on_event("startup")
-async def startup_event():
-    await bot.load_from_database()
+
 
 @app.get("/")
 def home():
@@ -2814,6 +2812,22 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
     except Exception:
         manager.disconnect(websocket)
+
+async def self_keep_alive_ping():
+    await asyncio.sleep(10)
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://shine-crypto-bot.onrender.com/status") as resp:
+                    pass
+        except Exception:
+            pass
+        await asyncio.sleep(240)
+
+@app.on_event("startup")
+async def startup_event():
+    await bot.load_from_database()
+    asyncio.create_task(self_keep_alive_ping())
 
 if __name__ == "__main__":
     import uvicorn
