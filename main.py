@@ -390,8 +390,7 @@ class UltraQuantSpotBot:
                             pass
                             w_pos_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions)
                             w_ord_inv = sum(float(o.get("invested", o.get("amount", 0.0))) for o in self.wallet_open_orders if o.get("side") == "BUY")
-                            if (w_pos_inv + w_ord_inv) > 0 and self.manual_test_balance >= 90.0:
-                                self.manual_test_balance = max(0.0, round(self.manual_test_balance - (w_pos_inv + w_ord_inv), 2))
+                            self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv, 2))
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
         except Exception as e:
@@ -1042,8 +1041,10 @@ class UltraQuantSpotBot:
         net_value = gross_value - fee
         user_net_profit = round(net_value - cost_basis, 4)
 
-        self.manual_test_balance += net_value
-        self.manual_realized_pnl += user_net_profit
+        self.manual_realized_pnl = round(self.manual_realized_pnl + user_net_profit, 4)
+        w_pos_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions if p.get("id") != pos_id)
+        w_ord_inv = sum(float(o.get("invested", o.get("amount", 0.0))) for o in self.wallet_open_orders if o.get("side") == "BUY")
+        self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv, 2))
 
         if pos_id:
             self.wallet_active_positions = [p for p in self.wallet_active_positions if p.get("id") != pos_id]
