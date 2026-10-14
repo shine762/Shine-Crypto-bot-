@@ -2633,21 +2633,20 @@ class UltraQuantSpotBot:
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
         for pos in list(regular_positions):
             entry_p = pos["entryPrice"]
-            if (self.live_price - entry_p) >= 1.00:
+            if self.live_price > entry_p:
                 if "ts_high" not in pos or self.live_price > pos["ts_high"]:
                     pos["ts_high"] = round(self.live_price, 2)
 
+                gain = pos["ts_high"] - entry_p
                 projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
+
                 if projected_p >= self.min_net_profit_usdt:
-                    if self.whale_sentiment == "BULLISH":
-                        trail_pct = 0.010
-                        self.ts_stage = "1.0%"
-                    elif self.whale_sentiment == "BEARISH":
+                    if gain >= 1.00:
+                        trail_pct = 0.010 if self.whale_sentiment == "BULLISH" else 0.005
+                        self.ts_stage = "1.0%" if self.whale_sentiment == "BULLISH" else "0.5%"
+                    else:
                         trail_pct = 0.0025
                         self.ts_stage = "PEAK_SNIP"
-                    else:
-                        trail_pct = 0.005
-                        self.ts_stage = "0.5%"
 
                     calc_stop = round(pos["ts_high"] * (1.0 - trail_pct), 2)
                     if "ts_low" not in pos or calc_stop > pos["ts_low"]:
@@ -2655,7 +2654,7 @@ class UltraQuantSpotBot:
                         self.ts_low = calc_stop
                     self.ts_high = pos["ts_high"]
 
-                    if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"]:
+                    if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"] and (self.live_price - entry_p) >= 0.20:
                         self.execute_sell_individual(pos)
                         break
 
