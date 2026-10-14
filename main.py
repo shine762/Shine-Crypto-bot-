@@ -1749,16 +1749,22 @@ class UltraQuantSpotBot:
             return
 
         for pos in list(self.micro_positions):
-            entry_p = pos["entryPrice"]
-            if self.live_price > entry_p:
-                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
-                    pos["ts_high"] = round(self.live_price, 2)
-                gain = pos["ts_high"] - entry_p
-                if gain >= 0.30:
-                    pullback = 0.01 if gain >= 0.70 else (0.02 if gain >= 0.50 else 0.03)
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.05:
+            entry_p = float(pos["entryPrice"])
+            current_p = float(self.live_price)
+
+            if current_p > entry_p:
+                if "ts_high" not in pos or current_p > float(pos.get("ts_high", entry_p)):
+                    pos["ts_high"] = round(current_p, 2)
+
+                peak = float(pos["ts_high"])
+                gain = peak - entry_p
+
+                if gain >= 0.15:
+                    pullback = 0.02 if gain >= 0.40 else 0.01
+                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.03:
                         self.execute_micro_sell(pos)
-                        return
+                elif (current_p - entry_p) >= 0.30:
+                    self.execute_micro_sell(pos)
 
         if idle_fund < 10.0 or self.usdt_balance < 10.0:
             self.micro_tb_active = False
