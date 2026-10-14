@@ -339,7 +339,7 @@ class UltraQuantSpotBot:
                                 ord_id = str(t.get("order_id", ""))
                                 p_val = float(t.get("profit", 0.0))
                                 s_qty_val = float(t.get("sol_amount") or 0.0)
-                                if s_qty_val <= 0 and ("OPEN_" in e_type or "CANCEL" in e_type or ord_id.startswith("ATL_") or ord_id.startswith("ORD_")):
+                                if "CANCEL" in e_type:
                                     continue
                                 formatted_t = {
                                     "orderId": ord_id,
@@ -390,7 +390,8 @@ class UltraQuantSpotBot:
                             pass
                             w_pos_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions)
                             w_ord_inv = sum(float(o.get("invested", o.get("amount", 0.0))) for o in self.wallet_open_orders if o.get("side") == "BUY")
-                            self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv, 2))
+                            copy_locked_inv = sum(float(s.get("totalCapital", s.get("invested", 0.0))) for s in getattr(self, "copy_subscribers", []))
+                            self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv - copy_locked_inv, 2))
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
         except Exception as e:
