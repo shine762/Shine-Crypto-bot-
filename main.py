@@ -1925,46 +1925,54 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_killer2_idle_fund()
-        if len(self.killer2_positions) == 0:
-            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
-                self.execute_killer2_buy()
-            return
-
-        for idx, pos in enumerate(list(self.killer2_positions)):
-            entry_p = pos["entryPrice"]
-            if self.live_price > entry_p:
-                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
-                    pos["ts_high"] = round(self.live_price, 2)
-                gain = pos["ts_high"] - entry_p
+        for pos in list(self.killer2_positions):
+            entry_p = float(pos["entryPrice"])
+            current_p = float(self.live_price)
+            if current_p > entry_p:
+                if "ts_high" not in pos or current_p > float(pos.get("ts_high", entry_p)):
+                    pos["ts_high"] = round(current_p, 2)
+                peak = float(pos["ts_high"])
+                gain = peak - entry_p
                 if gain >= 0.60:
                     pullback = 0.02 if gain >= 1.20 else (0.04 if gain >= 0.90 else 0.06)
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.10:
+                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.10:
                         self.execute_killer2_sell(pos)
-                        return
 
-        if idle_fund < 10.0 or self.usdt_balance < 10.0:
+        idle_fund = self.get_killer2_idle_fund()
+        if idle_fund < 10.0 or self.usdt_balance < 10.0 or len(self.killer2_positions) >= 10:
             self.killer2_tb_active = False
             return
 
-        if len(self.killer2_positions) < 10:
-            lowest_k2 = min(p["entryPrice"] for p in self.killer2_positions)
-            current_dip = lowest_k2 - self.live_price
+        ref_p = 0.0
+        if len(self.killer2_positions) > 0:
+            ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
+        elif len(self.micro_positions) > 0:
+            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+        elif len(self.active_positions) > 0:
+            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
+            if len(reg_pos) > 0:
+                ref_p = float(reg_pos[0]["entryPrice"])
 
-            if current_dip >= 0.60:
-                if not self.killer2_tb_active:
-                    self.killer2_tb_active = True
-                    self.killer2_tb_lowest = self.live_price
-                else:
-                    if self.live_price < self.killer2_tb_lowest:
-                        self.killer2_tb_lowest = self.live_price
-                    total_drop = lowest_k2 - self.killer2_tb_lowest
-                    bounce_gap = 0.06 if total_drop >= 1.20 else (0.04 if total_drop >= 0.90 else 0.02)
-                    if self.live_price >= (self.killer2_tb_lowest + bounce_gap):
-                        self.killer2_tb_active = False
-                        self.execute_killer2_buy()
+        if ref_p <= 0:
+            ref_p = float(self.ts_high if self.ts_high > 0 else self.live_price)
+
+        self.killer2_last_ref_price = ref_p
+        current_dip = ref_p - self.live_price
+
+        if current_dip >= 0.60:
+            if not self.killer2_tb_active:
+                self.killer2_tb_active = True
+                self.killer2_tb_lowest = self.live_price
             else:
-                self.killer2_tb_active = False
+                if self.live_price < self.killer2_tb_lowest:
+                    self.killer2_tb_lowest = self.live_price
+                total_drop = ref_p - self.killer2_tb_lowest
+                bounce_gap = 0.06 if total_drop >= 1.20 else (0.04 if total_drop >= 0.90 else 0.02)
+                if self.live_price >= (self.killer2_tb_lowest + bounce_gap):
+                    self.killer2_tb_active = False
+                    self.execute_killer2_buy()
+        else:
+            self.killer2_tb_active = False
 
     def get_killer3_idle_fund(self):
         if self.usdt_balance < 10.0:
@@ -2102,46 +2110,56 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_killer3_idle_fund()
-        if len(self.killer3_positions) == 0:
-            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
-                self.execute_killer3_buy()
-            return
-
-        for idx, pos in enumerate(list(self.killer3_positions)):
-            entry_p = pos["entryPrice"]
-            if self.live_price > entry_p:
-                if "ts_high" not in pos or self.live_price > pos["ts_high"]:
-                    pos["ts_high"] = round(self.live_price, 2)
-                gain = pos["ts_high"] - entry_p
+        for pos in list(self.killer3_positions):
+            entry_p = float(pos["entryPrice"])
+            current_p = float(self.live_price)
+            if current_p > entry_p:
+                if "ts_high" not in pos or current_p > float(pos.get("ts_high", entry_p)):
+                    pos["ts_high"] = round(current_p, 2)
+                peak = float(pos["ts_high"])
+                gain = peak - entry_p
                 if gain >= 0.90:
                     pullback = 0.03 if gain >= 1.80 else (0.06 if gain >= 1.35 else 0.09)
-                    if self.live_price <= (pos["ts_high"] - pullback) and (self.live_price - entry_p) >= 0.15:
+                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.15:
                         self.execute_killer3_sell(pos)
-                        return
 
-        if idle_fund < 10.0 or self.usdt_balance < 10.0:
+        idle_fund = self.get_killer3_idle_fund()
+        if idle_fund < 10.0 or self.usdt_balance < 10.0 or len(self.killer3_positions) >= 10:
             self.killer3_tb_active = False
             return
 
-        if len(self.killer3_positions) < 10:
-            lowest_k3 = min(p["entryPrice"] for p in self.killer3_positions)
-            current_dip = lowest_k3 - self.live_price
+        ref_p = 0.0
+        if len(self.killer3_positions) > 0:
+            ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
+        elif len(self.killer2_positions) > 0:
+            ref_p = max(float(p["entryPrice"]) for p in self.killer2_positions)
+        elif len(self.micro_positions) > 0:
+            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+        elif len(self.active_positions) > 0:
+            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
+            if len(reg_pos) > 0:
+                ref_p = float(reg_pos[0]["entryPrice"])
 
-            if current_dip >= 0.90:
-                if not self.killer3_tb_active:
-                    self.killer3_tb_active = True
-                    self.killer3_tb_lowest = self.live_price
-                else:
-                    if self.live_price < self.killer3_tb_lowest:
-                        self.killer3_tb_lowest = self.live_price
-                    total_drop = lowest_k3 - self.killer3_tb_lowest
-                    bounce_gap = 0.09 if total_drop >= 1.80 else (0.06 if total_drop >= 1.35 else 0.03)
-                    if self.live_price >= (self.killer3_tb_lowest + bounce_gap):
-                        self.killer3_tb_active = False
-                        self.execute_killer3_buy()
+        if ref_p <= 0:
+            ref_p = float(self.ts_high if self.ts_high > 0 else self.live_price)
+
+        self.killer3_last_ref_price = ref_p
+        current_dip = ref_p - self.live_price
+
+        if current_dip >= 0.90:
+            if not self.killer3_tb_active:
+                self.killer3_tb_active = True
+                self.killer3_tb_lowest = self.live_price
             else:
-                self.killer3_tb_active = False
+                if self.live_price < self.killer3_tb_lowest:
+                    self.killer3_tb_lowest = self.live_price
+                total_drop = ref_p - self.killer3_tb_lowest
+                bounce_gap = 0.09 if total_drop >= 1.80 else (0.06 if total_drop >= 1.35 else 0.03)
+                if self.live_price >= (self.killer3_tb_lowest + bounce_gap):
+                    self.killer3_tb_active = False
+                    self.execute_killer3_buy()
+        else:
+            self.killer3_tb_active = False
 
     def update_price_tick(self, new_price):
         if new_price <= 0:
