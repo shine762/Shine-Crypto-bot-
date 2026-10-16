@@ -2819,6 +2819,44 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         manager.disconnect(websocket)
 
+async def run_backend_price_feed():
+    endpoints = [
+        "wss://stream.binance.com:9443/ws/solusdt@trade",
+        "wss://data-stream.binance.vision/ws/solusdt@trade",
+        "wss://ws-feed.exchange.coinbase.com"
+    ]
+    ep_idx = 0
+    while True:
+        url = endpoints[ep_idx % len(endpoints)]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(url, timeout=10.0) as ws:
+                    if "coinbase" in url:
+                        sub_msg = {
+                            "type": "subscribe",
+                            "product_ids": ["SOL-USD"],
+                            "channels": ["ticker"]
+                        }
+                        await ws.send_json(sub_msg)
+                    async for msg in ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            p = 0.0
+                            if "p" in data:
+                                p = float(data["p"])
+                                bot.process_market_trades([data])
+                            elif "price" in data:
+                                p = float(data["price"])
+                            if p > 0:
+                                bot.update_price_tick(p)
+                                await manager.broadcast(json.dumps(bot.get_state()))
+                        elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+        except Exception:
+            pass
+        ep_idx += 1
+        await asyncio.sleep(1)
+
 async def self_keep_alive_ping():
     await asyncio.sleep(10)
     while True:
@@ -2834,6 +2872,7 @@ async def self_keep_alive_ping():
 async def startup_event():
     await bot.load_from_database()
     asyncio.create_task(self_keep_alive_ping())
+    asyncio.create_task(run_backend_price_feed())
 
 if __name__ == "__main__":
     import uvicorn
