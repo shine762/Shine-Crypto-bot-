@@ -310,7 +310,7 @@ class UltraQuantSpotBot:
                             total_active_cost = self.invested_amount + self.macro_vault_invested
                             if total_active_cost > 0:
                                 self.usdt_balance = max(0.0, round(100.0 + self.realized_pnl - total_active_cost, 2))
-                            self.avg_entry_price = round(self.invested_amount / self.sol_balance, 2) if self.sol_balance > 0 else 0.0
+                            self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
                             self.sub_trade_count = len(regular_pos)
                             self.round_trades_done = {r: 0 for r in range(1, 11)}
                             for p in regular_pos:
@@ -387,15 +387,12 @@ class UltraQuantSpotBot:
                             self.spot_realized_pnl = round(spot_closed_profit, 2)
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
-                            pass
                             w_pos_inv = sum(float(p.get("invested", 0.0)) for p in self.wallet_active_positions)
                             w_ord_inv = sum(float(o.get("invested", o.get("amount", 0.0))) for o in self.wallet_open_orders if o.get("side") == "BUY")
                             copy_locked_inv = sum(float(s.get("totalCapital", s.get("invested", 0.0))) for s in getattr(self, "copy_subscribers", []))
                             self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv - copy_locked_inv, 2))
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and len(self.micro_positions) == 0 and self.usdt_balance >= 10.0:
-            self.execute_micro_buy()
         except Exception as e:
             print(f"DATABASE LOAD ERROR: {e}")
             return
