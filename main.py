@@ -69,6 +69,18 @@ class UltraQuantSpotBot:
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
+        self.hyper_pool_active = True
+        self.hyper_pool_users = 100
+        self.hyper_pool_balance = 1000.0
+        self.hyper_user_investment = 10.0
+        self.hyper_trade_size = 100.0
+        self.hyper_positions = []
+        self.hyper_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.hyper_tb_active = False
+        self.hyper_tb_lowest = 0.0
+        self.hyper_last_ref_price = 0.0
+        self.hyper_realized_pnl = 0.0
+        self.hyper_total_trades = 0
         self.micro_positions = []
         self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
         self.micro_tb_active = False
@@ -726,6 +738,15 @@ class UltraQuantSpotBot:
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
             "botThought": ai_thoughts,
+            "hyperPoolActive": self.hyper_pool_active,
+            "hyperPoolUsers": self.hyper_pool_users,
+            "hyperPoolBalance": round(self.hyper_pool_balance, 2),
+            "hyperUserInvestment": round(self.hyper_user_investment, 2),
+            "hyperTradeSize": round(self.hyper_trade_size, 2),
+            "hyperPositions": self.hyper_positions,
+            "hyperRealizedPnl": round(self.hyper_realized_pnl, 4),
+            "hyperTotalTrades": self.hyper_total_trades,
+            "hyperUserDailyPnl": round((self.hyper_realized_pnl / max(1, self.hyper_pool_users)), 4),
             "microPositions": self.micro_positions,
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
             "microTotalTrades": self.micro_total_trades,
@@ -1623,6 +1644,106 @@ class UltraQuantSpotBot:
         if not self.is_paused and len(self.active_positions) == 0 and self.usdt_balance >= 10.0:
             self.execute_buy(is_sub_trade=False)
 
+    def execute_hyper_buy(self):
+        if not self.hyper_pool_active or self.hyper_pool_balance < self.hyper_trade_size or self.live_price <= 0:
+            return
+        h_round = self.active_round
+        if self.hyper_round_trades_done.get(h_round, 0) >= 10:
+            return
+        target_size = self.hyper_trade_size
+        fee = target_size * self.taker_fee_pct
+        net_invest = target_size - fee
+        sol_amt = net_invest / self.live_price
+        self.hyper_pool_balance -= target_size
+        self.hyper_round_trades_done[h_round] = self.hyper_round_trades_done.get(h_round, 0) + 1
+        pos_id = "HYPER_" + str(uuid.uuid4())[:6]
+        pos = {
+            "id": pos_id,
+            "round": h_round,
+            "subTrade": self.hyper_round_trades_done[h_round],
+            "label": f"HYPER TITAN R{h_round} (#{self.hyper_round_trades_done[h_round]})",
+            "entryPrice": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "invested": round(target_size, 2),
+            "ts_high": round(self.live_price, 2),
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+        }
+        self.hyper_positions.append(pos)
+        self.hyper_last_ref_price = self.live_price
+        self.hyper_tb_active = False
+        self.hyper_tb_lowest = 0.0
+
+    def execute_hyper_sell(self, pos):
+        pos_id = pos["id"]
+        sol_amt = pos["solAmount"]
+        invested = pos["invested"]
+        gross_val = sol_amt * self.live_price
+        fee = gross_val * self.taker_fee_pct
+        net_return = gross_val - fee
+        profit = net_return - invested
+        if profit < self.min_net_profit_usdt:
+            return
+        self.hyper_pool_balance += net_return
+        self.hyper_realized_pnl += profit
+        self.hyper_total_trades += 1
+        h_round = pos.get("round", 1)
+        if self.hyper_round_trades_done.get(h_round, 0) > 0:
+            self.hyper_round_trades_done[h_round] -= 1
+        self.hyper_positions = [p for p in self.hyper_positions if p["id"] != pos_id]
+        self.hyper_last_ref_price = self.live_price
+        if not self.is_paused and len(self.hyper_positions) == 0 and self.hyper_pool_balance >= self.hyper_trade_size:
+            self.execute_hyper_buy()
+
+    def run_hyper_titan_tick(self):
+        if not self.hyper_pool_active or self.is_paused or self.live_price <= 0:
+            return
+        if len(self.hyper_positions) == 0:
+            if self.hyper_pool_balance >= self.hyper_trade_size:
+                self.execute_hyper_buy()
+            return
+        for pos in list(self.hyper_positions):
+            entry_p = float(pos["entryPrice"])
+            current_p = float(self.live_price)
+            if current_p > entry_p:
+                if "ts_high" not in pos or current_p > float(pos.get("ts_high", entry_p)):
+                    pos["ts_high"] = round(current_p, 2)
+                peak = float(pos["ts_high"])
+                gain = peak - entry_p
+                if gain >= 0.10:
+                    if self.whale_sentiment == "BULLISH":
+                        pullback = 0.010
+                    elif self.whale_sentiment == "BEARISH":
+                        pullback = 0.002
+                    else:
+                        pullback = 0.005
+                    if current_p <= (peak - pullback):
+                        self.execute_hyper_sell(pos)
+        if self.hyper_pool_balance < self.hyper_trade_size or len(self.hyper_positions) >= 10:
+            self.hyper_tb_active = False
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
+        self.hyper_last_ref_price = ref_p
+        current_dip = ref_p - self.live_price
+        if current_dip >= 0.10:
+            if not self.hyper_tb_active:
+                self.hyper_tb_active = True
+                self.hyper_tb_lowest = self.live_price
+            else:
+                if self.live_price < self.hyper_tb_lowest:
+                    self.hyper_tb_lowest = self.live_price
+                if self.whale_sentiment == "BEARISH":
+                    bounce_gap = 0.010
+                elif self.whale_sentiment == "BULLISH":
+                    bounce_gap = 0.002
+                else:
+                    bounce_gap = 0.005
+                if self.live_price >= (self.hyper_tb_lowest + bounce_gap):
+                    self.hyper_tb_active = False
+                    self.hyper_tb_lowest = 0.0
+                    self.execute_hyper_buy()
+        else:
+            self.hyper_tb_active = False
+
     def get_scavenged_idle_fund(self):
         if self.usdt_balance < 10.0:
             return 0.0
@@ -2255,7 +2376,7 @@ class UltraQuantSpotBot:
                         "price": round(self.live_price, 2),
                         "text": f"HOLDING SOL @ ${round(self.live_price, 2)} (Avg Entry: ${round(self.avg_entry_price, 2)}, Whales Re-accumulating)"
                     }
-
+        self.run_hyper_titan_tick()
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
         self.run_killer3_scalper_tick()
