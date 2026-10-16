@@ -1661,7 +1661,7 @@ class UltraQuantSpotBot:
             "id": pos_id,
             "round": h_round,
             "subTrade": self.hyper_round_trades_done[h_round],
-            "label": f"HYPER TITAN R{h_round} (#{self.hyper_round_trades_done[h_round]})",
+            "label": f"SHINE HYPER TITAN POOL R{h_round} (#{self.hyper_round_trades_done[h_round]})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
@@ -1672,6 +1672,34 @@ class UltraQuantSpotBot:
         self.hyper_last_ref_price = self.live_price
         self.hyper_tb_active = False
         self.hyper_tb_lowest = 0.0
+        t_record = {
+            "orderId": pos_id + "_B",
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": h_round,
+            "execType": "HYPER_TITAN_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, t_record)
+        self.spot_trades_history.insert(0, t_record)
+        asyncio.create_task(self.db_save_buy(pos, t_record))
+        t_record = {
+            "orderId": pos_id + "_B",
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": h_round,
+            "execType": "HYPER_SCALP_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, t_record)
+        self.scalp_trades_history.insert(0, t_record)
+        asyncio.create_task(self.db_save_buy(pos, t_record))
 
     def execute_hyper_sell(self, pos):
         pos_id = pos["id"]
@@ -1691,6 +1719,22 @@ class UltraQuantSpotBot:
             self.hyper_round_trades_done[h_round] -= 1
         self.hyper_positions = [p for p in self.hyper_positions if p["id"] != pos_id]
         self.hyper_last_ref_price = self.live_price
+        trade_record = {
+            "orderId": pos_id + "_S",
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "realizedPnl": round(profit, 4),
+            "round": h_round,
+            "execType": "HYPER_SCALP_EXIT",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        self.trades_history.insert(0, trade_record)
+        self.scalp_trades_history.insert(0, trade_record)
+        asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
+        asyncio.create_task(self.db_sync_state())
         if not self.is_paused and len(self.hyper_positions) == 0 and self.hyper_pool_balance >= self.hyper_trade_size:
             self.execute_hyper_buy()
 
