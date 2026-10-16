@@ -394,6 +394,8 @@ class UltraQuantSpotBot:
                             self.manual_test_balance = max(0.0, round(100.0 + self.manual_realized_pnl - w_pos_inv - w_ord_inv - copy_locked_inv, 2))
                             self.db_loaded = True
                             asyncio.create_task(self.db_sync_state())
+        if not self.is_paused and len(self.micro_positions) == 0 and self.usdt_balance >= 10.0:
+            self.execute_micro_buy()
         except Exception as e:
             print(f"DATABASE LOAD ERROR: {e}")
             return
@@ -1735,16 +1737,13 @@ class UltraQuantSpotBot:
             "exec_type": "MICRO_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and self.usdt_balance >= 10.0:
-            self.execute_micro_buy()
 
     def run_micro_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
             return
 
-        idle_fund = self.get_scavenged_idle_fund()
         if len(self.micro_positions) == 0:
-            if idle_fund >= 10.0 and self.usdt_balance >= 10.0:
+            if self.usdt_balance >= 10.0:
                 self.execute_micro_buy()
             return
 
@@ -1759,35 +1758,44 @@ class UltraQuantSpotBot:
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
 
-                if gain >= 0.15:
-                    pullback = 0.02 if gain >= 0.40 else 0.01
-                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.03:
+                if gain >= 0.30:
+                    if self.whale_sentiment == "BULLISH":
+                        pullback = 0.03
+                    elif self.whale_sentiment == "BEARISH":
+                        pullback = 0.01
+                    else:
+                        pullback = 0.02
+                    if current_p <= (peak - pullback):
                         self.execute_micro_sell(pos)
-                elif (current_p - entry_p) >= 0.30:
-                    self.execute_micro_sell(pos)
 
-        if idle_fund < 10.0 or self.usdt_balance < 10.0:
+        idle_fund = self.get_scavenged_idle_fund()
+        if idle_fund < 10.0 or self.usdt_balance < 10.0 or len(self.micro_positions) >= 10:
             self.micro_tb_active = False
             return
 
-        if len(self.micro_positions) < 10:
-            lowest_entry = min(p["entryPrice"] for p in self.micro_positions)
-            current_dip = lowest_entry - self.live_price
+        ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
+        self.micro_last_ref_price = ref_p
+        current_dip = ref_p - self.live_price
 
-            if current_dip >= 0.30:
-                if not self.micro_tb_active:
-                    self.micro_tb_active = True
-                    self.micro_tb_lowest = self.live_price
-                else:
-                    if self.live_price < self.micro_tb_lowest:
-                        self.micro_tb_lowest = self.live_price
-                    total_drop = lowest_entry - self.micro_tb_lowest
-                    bounce_gap = 0.03 if total_drop >= 0.70 else (0.02 if total_drop >= 0.50 else 0.01)
-                    if self.live_price >= (self.micro_tb_lowest + bounce_gap):
-                        self.micro_tb_active = False
-                        self.execute_micro_buy()
+        if current_dip >= 0.30:
+            if not self.micro_tb_active:
+                self.micro_tb_active = True
+                self.micro_tb_lowest = self.live_price
             else:
-                self.micro_tb_active = False
+                if self.live_price < self.micro_tb_lowest:
+                    self.micro_tb_lowest = self.live_price
+                if self.whale_sentiment == "BEARISH":
+                    bounce_gap = 0.03
+                elif self.whale_sentiment == "BULLISH":
+                    bounce_gap = 0.01
+                else:
+                    bounce_gap = 0.02
+                if self.live_price >= (self.micro_tb_lowest + bounce_gap):
+                    self.micro_tb_active = False
+                    self.micro_tb_lowest = 0.0
+                    self.execute_micro_buy()
+        else:
+            self.micro_tb_active = False
 
     def get_killer2_idle_fund(self):
         if self.usdt_balance < 10.0:
@@ -1918,8 +1926,7 @@ class UltraQuantSpotBot:
             "exec_type": "KILLER2_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and self.usdt_balance >= 10.0:
-            self.execute_killer2_buy()
+        
 
     def run_killer2_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
@@ -1934,8 +1941,13 @@ class UltraQuantSpotBot:
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
                 if gain >= 0.60:
-                    pullback = 0.02 if gain >= 1.20 else (0.04 if gain >= 0.90 else 0.06)
-                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.10:
+                    if self.whale_sentiment == "BULLISH":
+                        pullback = 0.06
+                    elif self.whale_sentiment == "BEARISH":
+                        pullback = 0.04
+                    else:
+                        pullback = 0.05
+                    if current_p <= (peak - pullback):
                         self.execute_killer2_sell(pos)
 
         idle_fund = self.get_killer2_idle_fund()
@@ -1947,7 +1959,7 @@ class UltraQuantSpotBot:
         if len(self.killer2_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+            ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
         elif len(self.active_positions) > 0:
             reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
             if len(reg_pos) > 0:
@@ -1966,10 +1978,15 @@ class UltraQuantSpotBot:
             else:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
-                total_drop = ref_p - self.killer2_tb_lowest
-                bounce_gap = 0.06 if total_drop >= 1.20 else (0.04 if total_drop >= 0.90 else 0.02)
+                if self.whale_sentiment == "BEARISH":
+                    bounce_gap = 0.06
+                elif self.whale_sentiment == "BULLISH":
+                    bounce_gap = 0.04
+                else:
+                    bounce_gap = 0.05
                 if self.live_price >= (self.killer2_tb_lowest + bounce_gap):
                     self.killer2_tb_active = False
+                    self.killer2_tb_lowest = 0.0
                     self.execute_killer2_buy()
         else:
             self.killer2_tb_active = False
@@ -2103,8 +2120,7 @@ class UltraQuantSpotBot:
             "exec_type": "KILLER3_SCALP_EXIT"
         }))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and self.usdt_balance >= 10.0:
-            self.execute_killer3_buy()
+        
 
     def run_killer3_scalper_tick(self):
         if self.is_paused or self.live_price <= 0:
@@ -2119,8 +2135,13 @@ class UltraQuantSpotBot:
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
                 if gain >= 0.90:
-                    pullback = 0.03 if gain >= 1.80 else (0.06 if gain >= 1.35 else 0.09)
-                    if current_p <= (peak - pullback) and (current_p - entry_p) >= 0.15:
+                    if self.whale_sentiment == "BULLISH":
+                        pullback = 0.09
+                    elif self.whale_sentiment == "BEARISH":
+                        pullback = 0.07
+                    else:
+                        pullback = 0.08
+                    if current_p <= (peak - pullback):
                         self.execute_killer3_sell(pos)
 
         idle_fund = self.get_killer3_idle_fund()
@@ -2132,9 +2153,9 @@ class UltraQuantSpotBot:
         if len(self.killer3_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
         elif len(self.killer2_positions) > 0:
-            ref_p = max(float(p["entryPrice"]) for p in self.killer2_positions)
+            ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+            ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
         elif len(self.active_positions) > 0:
             reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
             if len(reg_pos) > 0:
@@ -2153,10 +2174,15 @@ class UltraQuantSpotBot:
             else:
                 if self.live_price < self.killer3_tb_lowest:
                     self.killer3_tb_lowest = self.live_price
-                total_drop = ref_p - self.killer3_tb_lowest
-                bounce_gap = 0.09 if total_drop >= 1.80 else (0.06 if total_drop >= 1.35 else 0.03)
+                if self.whale_sentiment == "BEARISH":
+                    bounce_gap = 0.09
+                elif self.whale_sentiment == "BULLISH":
+                    bounce_gap = 0.07
+                else:
+                    bounce_gap = 0.08
                 if self.live_price >= (self.killer3_tb_lowest + bounce_gap):
                     self.killer3_tb_active = False
+                    self.killer3_tb_lowest = 0.0
                     self.execute_killer3_buy()
         else:
             self.killer3_tb_active = False
@@ -2614,7 +2640,7 @@ class UltraQuantSpotBot:
         last_entry = regular_positions[-1]["entryPrice"]
         current_dip = last_entry - self.live_price
 
-        if current_dip < 1.00:
+        if current_dip < 1.20:
             self.tb_active = False
             self.tb_stage = "IDLE"
         else:
@@ -2666,13 +2692,16 @@ class UltraQuantSpotBot:
                 gain = pos["ts_high"] - entry_p
                 projected_p = (pos["solAmount"] * self.live_price * (1 - self.taker_fee_pct)) - pos["invested"]
 
-                if projected_p >= self.min_net_profit_usdt:
-                    if gain >= 1.00:
-                        trail_pct = 0.010 if self.whale_sentiment == "BULLISH" else 0.005
-                        self.ts_stage = "1.0%" if self.whale_sentiment == "BULLISH" else "0.5%"
-                    else:
+                if projected_p >= self.min_net_profit_usdt and gain >= 1.00:
+                    if self.whale_sentiment == "BULLISH":
+                        trail_pct = 0.010
+                        self.ts_stage = "1.0%"
+                    elif self.whale_sentiment == "BEARISH":
                         trail_pct = 0.0025
                         self.ts_stage = "PEAK_SNIP"
+                    else:
+                        trail_pct = 0.005
+                        self.ts_stage = "0.5%"
 
                     calc_stop = round(pos["ts_high"] * (1.0 - trail_pct), 2)
                     if "ts_low" not in pos or calc_stop > pos["ts_low"]:
@@ -2680,7 +2709,7 @@ class UltraQuantSpotBot:
                         self.ts_low = calc_stop
                     self.ts_high = pos["ts_high"]
 
-                    if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"] and (self.live_price - entry_p) >= 0.20:
+                    if pos.get("ts_low", 0) > 0 and self.live_price <= pos["ts_low"]:
                         self.execute_sell_individual(pos)
                         break
 
