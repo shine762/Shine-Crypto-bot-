@@ -2821,6 +2821,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def binance_backend_stream():
     url = "wss://stream.binance.com:9443/ws/solusdt@trade"
+    last_update = 0.0
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -2831,8 +2832,11 @@ async def binance_backend_stream():
                             price = float(data.get("p", 0.0))
                             if price > 0:
                                 bot.process_market_trades([data])
-                                bot.update_price_tick(price)
-                                await manager.broadcast(json.dumps(bot.get_state()))
+                                now = asyncio.get_event_loop().time()
+                                if now - last_update >= 0.8:
+                                    last_update = now
+                                    bot.update_price_tick(price)
+                                    await manager.broadcast(json.dumps(bot.get_state()))
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception:
