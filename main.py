@@ -183,8 +183,7 @@ if p_id.startswith("HYPER_"):
                                     self.hyper_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.hyper_round_trades_done[r_idx] = self.hyper_round_trades_done.get(r_idx, 0) + 1
-                                el
-                                if p_id.startswith("M_"):
+                                elif p_id.startswith("M_"):
                                     self.micro_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.micro_round_trades_done[r_idx] = self.micro_round_trades_done.get(r_idx, 0) + 1
@@ -1713,7 +1712,7 @@ if p_id.startswith("HYPER_"):
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = round(net_return - invested, 4)
-        if profit < 0.20:
+        if profit <= 0.01:
             return
         self.hyper_pool_balance = round(self.hyper_pool_balance + net_return, 2)
         self.hyper_realized_pnl = round(self.hyper_realized_pnl + profit, 4)
@@ -1758,13 +1757,13 @@ if p_id.startswith("HYPER_"):
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
-                if gain >= 0.80:
+                if gain >= 0.12:
                     if self.whale_sentiment == "BULLISH":
-                        pullback = 0.08
+                        pullback = 0.015
                     elif self.whale_sentiment == "BEARISH":
-                        pullback = 0.04
+                        pullback = 0.005
                     else:
-                        pullback = 0.05
+                        pullback = 0.010
                     if current_p <= (peak - pullback):
                         self.execute_hyper_sell(pos)
         if self.hyper_pool_balance < self.hyper_trade_size or len(self.hyper_positions) >= 10:
@@ -1773,7 +1772,7 @@ if p_id.startswith("HYPER_"):
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
-        if current_dip >= 0.80:
+        if current_dip >= 0.10:
             if not self.hyper_tb_active:
                 self.hyper_tb_active = True
                 self.hyper_tb_lowest = self.live_price
@@ -1781,11 +1780,11 @@ if p_id.startswith("HYPER_"):
                 if self.live_price < self.hyper_tb_lowest:
                     self.hyper_tb_lowest = self.live_price
                 if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.08
+                    bounce_gap = 0.015
                 elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.04
+                    bounce_gap = 0.005
                 else:
-                    bounce_gap = 0.05
+                    bounce_gap = 0.010
                 if self.live_price >= (self.hyper_tb_lowest + bounce_gap):
                     self.hyper_tb_active = False
                     self.hyper_tb_lowest = 0.0
