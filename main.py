@@ -2122,18 +2122,13 @@ class UltraQuantSpotBot:
             self.killer2_tb_active = False
             return
 
-        ref_p = 0.0
         if len(self.killer2_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
-        elif len(self.active_positions) > 0:
-            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
-            if len(reg_pos) > 0:
-                ref_p = float(reg_pos[0]["entryPrice"])
-
-        if ref_p <= 0:
-            ref_p = float(self.ts_high if self.ts_high > 0 else self.live_price)
+            ref_p = float(self.micro_positions[0]["entryPrice"])
+        else:
+            self.killer2_tb_active = False
+            return
 
         self.killer2_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
@@ -2142,6 +2137,9 @@ class UltraQuantSpotBot:
             if not self.killer2_tb_active:
                 self.killer2_tb_active = True
                 self.killer2_tb_lowest = self.live_price
+            else:
+                if self.live_price < self.killer2_tb_lowest:
+                    self.killer2_tb_lowest = self.live_price
             else:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
@@ -2316,20 +2314,13 @@ class UltraQuantSpotBot:
             self.killer3_tb_active = False
             return
 
-        ref_p = 0.0
         if len(self.killer3_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
-        elif len(self.killer2_positions) > 0:
-            ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
-        elif len(self.active_positions) > 0:
-            reg_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
-            if len(reg_pos) > 0:
-                ref_p = float(reg_pos[0]["entryPrice"])
-
-        if ref_p <= 0:
-            ref_p = float(self.ts_high if self.ts_high > 0 else self.live_price)
+            ref_p = float(self.micro_positions[0]["entryPrice"])
+        else:
+            self.killer3_tb_active = False
+            return
 
         self.killer3_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
@@ -3071,14 +3062,29 @@ async def run_backend_price_feed():
         ep_idx += 1
         await asyncio.sleep(1)
 
-async def cleanup_hyper_titan_24h_history():
+async def cleanup_all_bots_24h_history():
     while True:
         await asyncio.sleep(3600)
         try:
             cutoff = datetime.now(timezone.utc).timestamp() - 86400
             iso_cutoff = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?exec_type=ilike.*HYPER*&created_at=lt.{iso_cutoff}")
+                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?created_at=lt.{iso_cutoff}")
+            if hasattr(bot, "trades_history"):
+                bot.trades_history = [
+                    t for t in bot.trades_history
+                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
+                ]
+            if hasattr(bot, "spot_trades_history"):
+                bot.spot_trades_history = [
+                    t for t in bot.spot_trades_history
+                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
+                ]
+            if hasattr(bot, "scalp_trades_history"):
+                bot.scalp_trades_history = [
+                    t for t in bot.scalp_trades_history
+                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
+                ]
             if hasattr(bot, "hyper_trades_history"):
                 bot.hyper_trades_history = [
                     t for t in bot.hyper_trades_history
@@ -3103,7 +3109,7 @@ async def startup_event():
     await bot.load_from_database()
     asyncio.create_task(self_keep_alive_ping())
     asyncio.create_task(run_backend_price_feed())
-    asyncio.create_task(cleanup_hyper_titan_24h_history())
+    asyncio.create_task(cleanup_all_bots_24h_history())
 
 if __name__ == "__main__":
     import uvicorn
