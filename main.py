@@ -2140,9 +2140,6 @@ class UltraQuantSpotBot:
             else:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
-            else:
-                if self.live_price < self.killer2_tb_lowest:
-                    self.killer2_tb_lowest = self.live_price
                 if self.whale_sentiment == "BEARISH":
                     bounce_gap = 0.06
                 elif self.whale_sentiment == "BULLISH":
