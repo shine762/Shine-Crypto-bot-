@@ -147,12 +147,17 @@ class UltraQuantSpotBot:
                                 self.killer2_realized_pnl = float(row.get("killer2_realized_pnl"))
                             if "killer3_realized_pnl" in row and row.get("killer3_realized_pnl") is not None:
                                 self.killer3_realized_pnl = float(row.get("killer3_realized_pnl"))
+                            if "hyper_realized_pnl" in row and row.get("hyper_realized_pnl") is not None:
+                                self.hyper_realized_pnl = float(row.get("hyper_realized_pnl"))
+                            if "hyper_pool_balance" in row and row.get("hyper_pool_balance") is not None:
+                                self.hyper_pool_balance = float(row.get("hyper_pool_balance"))
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
                         pos_data = await resp.json()
                         if isinstance(pos_data, list):
                             loaded_positions = []
+                            self.hyper_positions = []
                             self.micro_positions = []
                             self.killer2_positions = []
                             self.killer3_positions = []
@@ -174,7 +179,11 @@ class UltraQuantSpotBot:
                                     "targetPrice": float(p.get("target_price") or 0.0),
                                     "ts_high": float(p.get("entry_price") or 0.0)
                                 }
-
+if p_id.startswith("HYPER_"):
+                                    self.hyper_positions.append(pos_obj)
+                                    r_idx = pos_obj["round"]
+                                    self.hyper_round_trades_done[r_idx] = self.hyper_round_trades_done.get(r_idx, 0) + 1
+                                el
                                 if p_id.startswith("M_"):
                                     self.micro_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
@@ -387,8 +396,13 @@ class UltraQuantSpotBot:
                                         spot_closed_profit += p_val
 
                             self.trades_history = all_logs
-                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_")) and "SCALP" not in str(t.get("execType",""))]
-                            self.scalp_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType",""))]
+                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_","HYPER_")) and "SCALP" not in str(t.get("execType","")) and "HYPER" not in str(t.get("execType",""))]
+                            self.scalp_trades_history = [t for t in all_logs if (str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType",""))) and not str(t.get("orderId","")).startswith("HYPER_")]
+                            self.hyper_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith("HYPER_") or "HYPER" in str(t.get("execType",""))]
+                            h_pnl = sum(float(t.get("profit", 0.0)) for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL")
+                            if h_pnl > 0:
+                                self.hyper_realized_pnl = round(h_pnl, 4)
+                                self.hyper_total_trades = len([t for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL"])
                             self.manual_trades_history = wallet_logs
                             self.micro_realized_pnl = round(m_pnl, 4)
                             self.micro_total_trades = m_count
@@ -425,6 +439,8 @@ class UltraQuantSpotBot:
                 "micro_realized_pnl": round(self.micro_realized_pnl, 4),
                 "killer2_realized_pnl": round(self.killer2_realized_pnl, 4),
                 "killer3_realized_pnl": round(self.killer3_realized_pnl, 4),
+                "hyper_realized_pnl": round(self.hyper_realized_pnl, 4),
+                "hyper_pool_balance": round(self.hyper_pool_balance, 2),
                 "active_phase": self.active_phase,
                 "active_round": self.active_round,
                 "sub_trade_count": self.sub_trade_count,
@@ -746,6 +762,7 @@ class UltraQuantSpotBot:
             "hyperPositions": self.hyper_positions,
             "hyperRealizedPnl": round(self.hyper_realized_pnl, 4),
             "hyperTotalTrades": self.hyper_total_trades,
+            "hyperTradesHistory": getattr(self, "hyper_trades_history", []),
             "hyperUserDailyPnl": round((self.hyper_realized_pnl / max(1, self.hyper_pool_users)), 4),
             "microPositions": self.micro_positions,
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
@@ -1654,14 +1671,14 @@ class UltraQuantSpotBot:
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
         sol_amt = net_invest / self.live_price
-        self.hyper_pool_balance -= target_size
+        self.hyper_pool_balance = round(self.hyper_pool_balance - target_size, 2)
         self.hyper_round_trades_done[h_round] = self.hyper_round_trades_done.get(h_round, 0) + 1
         pos_id = "HYPER_" + str(uuid.uuid4())[:6]
         pos = {
             "id": pos_id,
             "round": h_round,
             "subTrade": self.hyper_round_trades_done[h_round],
-            "label": f"SHINE HYPER TITAN POOL R{h_round} (#{self.hyper_round_trades_done[h_round]})",
+            "label": f"HYPER TITAN R{h_round} (#{self.hyper_round_trades_done[h_round]})",
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
@@ -1683,36 +1700,23 @@ class UltraQuantSpotBot:
             "execType": "HYPER_TITAN_ENTRY",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        self.trades_history.insert(0, t_record)
-        self.spot_trades_history.insert(0, t_record)
-        asyncio.create_task(self.db_save_buy(pos, t_record))
-        t_record = {
-            "orderId": pos_id + "_B",
-            "side": "BUY",
-            "price": round(self.live_price, 2),
-            "solAmount": round(sol_amt, 4),
-            "fee": round(fee, 4),
-            "profit": 0.0,
-            "round": h_round,
-            "execType": "HYPER_SCALP_ENTRY",
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        self.trades_history.insert(0, t_record)
-        self.scalp_trades_history.insert(0, t_record)
+        if not hasattr(self, "hyper_trades_history"):
+            self.hyper_trades_history = []
+        self.hyper_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
     def execute_hyper_sell(self, pos):
         pos_id = pos["id"]
-        sol_amt = pos["solAmount"]
-        invested = pos["invested"]
+        sol_amt = float(pos["solAmount"])
+        invested = float(pos["invested"])
         gross_val = sol_amt * self.live_price
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
-        profit = net_return - invested
-        if profit < self.min_net_profit_usdt:
+        profit = round(net_return - invested, 4)
+        if profit < 0.20:
             return
-        self.hyper_pool_balance += net_return
-        self.hyper_realized_pnl += profit
+        self.hyper_pool_balance = round(self.hyper_pool_balance + net_return, 2)
+        self.hyper_realized_pnl = round(self.hyper_realized_pnl + profit, 4)
         self.hyper_total_trades += 1
         h_round = pos.get("round", 1)
         if self.hyper_round_trades_done.get(h_round, 0) > 0:
@@ -1728,11 +1732,12 @@ class UltraQuantSpotBot:
             "profit": round(profit, 4),
             "realizedPnl": round(profit, 4),
             "round": h_round,
-            "execType": "HYPER_SCALP_EXIT",
+            "execType": "HYPER_TITAN_EXIT",
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        self.trades_history.insert(0, trade_record)
-        self.scalp_trades_history.insert(0, trade_record)
+        if not hasattr(self, "hyper_trades_history"):
+            self.hyper_trades_history = []
+        self.hyper_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
         asyncio.create_task(self.db_sync_state())
         if not self.is_paused and len(self.hyper_positions) == 0 and self.hyper_pool_balance >= self.hyper_trade_size:
@@ -1753,13 +1758,13 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
-                if gain >= 0.10:
+                if gain >= 0.80:
                     if self.whale_sentiment == "BULLISH":
-                        pullback = 0.010
+                        pullback = 0.08
                     elif self.whale_sentiment == "BEARISH":
-                        pullback = 0.002
+                        pullback = 0.04
                     else:
-                        pullback = 0.005
+                        pullback = 0.05
                     if current_p <= (peak - pullback):
                         self.execute_hyper_sell(pos)
         if self.hyper_pool_balance < self.hyper_trade_size or len(self.hyper_positions) >= 10:
@@ -1768,7 +1773,7 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
-        if current_dip >= 0.10:
+        if current_dip >= 0.80:
             if not self.hyper_tb_active:
                 self.hyper_tb_active = True
                 self.hyper_tb_lowest = self.live_price
@@ -1776,11 +1781,11 @@ class UltraQuantSpotBot:
                 if self.live_price < self.hyper_tb_lowest:
                     self.hyper_tb_lowest = self.live_price
                 if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.010
+                    bounce_gap = 0.08
                 elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.002
+                    bounce_gap = 0.04
                 else:
-                    bounce_gap = 0.005
+                    bounce_gap = 0.05
                 if self.live_price >= (self.hyper_tb_lowest + bounce_gap):
                     self.hyper_tb_active = False
                     self.hyper_tb_lowest = 0.0
@@ -3066,6 +3071,22 @@ async def run_backend_price_feed():
         ep_idx += 1
         await asyncio.sleep(1)
 
+async def cleanup_hyper_titan_24h_history():
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            cutoff = datetime.now(timezone.utc).timestamp() - 86400
+            iso_cutoff = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?exec_type=ilike.*HYPER*&created_at=lt.{iso_cutoff}")
+            if hasattr(bot, "hyper_trades_history"):
+                bot.hyper_trades_history = [
+                    t for t in bot.hyper_trades_history
+                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
+                ]
+        except Exception:
+            pass
+
 async def self_keep_alive_ping():
     await asyncio.sleep(10)
     while True:
@@ -3082,6 +3103,7 @@ async def startup_event():
     await bot.load_from_database()
     asyncio.create_task(self_keep_alive_ping())
     asyncio.create_task(run_backend_price_feed())
+    asyncio.create_task(cleanup_hyper_titan_24h_history())
 
 if __name__ == "__main__":
     import uvicorn
