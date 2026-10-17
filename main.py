@@ -179,7 +179,8 @@ class UltraQuantSpotBot:
                                     "targetPrice": float(p.get("target_price") or 0.0),
                                     "ts_high": float(p.get("entry_price") or 0.0)
                                 }
-if p_id.startswith("HYPER_"):
+
+                                if p_id.startswith("HYPER_"):
                                     self.hyper_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.hyper_round_trades_done[r_idx] = self.hyper_round_trades_done.get(r_idx, 0) + 1
