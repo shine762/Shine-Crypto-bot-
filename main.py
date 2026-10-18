@@ -81,6 +81,7 @@ class UltraQuantSpotBot:
         self.hyper_last_ref_price = 0.0
         self.hyper_realized_pnl = 0.0
         self.hyper_total_trades = 0
+        self.micro_pool_users = 1
         self.micro_positions = []
         self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
         self.micro_tb_active = False
@@ -88,6 +89,7 @@ class UltraQuantSpotBot:
         self.micro_last_ref_price = 0.0
         self.micro_realized_pnl = 0.0
         self.micro_total_trades = 0
+        self.killer2_pool_users = 1
         self.killer2_positions = []
         self.killer2_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer2_tb_active = False
@@ -95,6 +97,7 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = 0.0
         self.killer2_realized_pnl = 0.0
         self.killer2_total_trades = 0
+        self.killer3_pool_users = 1
         self.killer3_positions = []
         self.killer3_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer3_tb_active = False
@@ -764,14 +767,26 @@ class UltraQuantSpotBot:
             "hyperTotalTrades": self.hyper_total_trades,
             "hyperTradesHistory": getattr(self, "hyper_trades_history", []),
             "hyperUserDailyPnl": round((self.hyper_realized_pnl / max(1, self.hyper_pool_users)), 4),
+            "microPoolUsers": getattr(self, "micro_pool_users", 1),
+            "microPoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.micro_positions), 2),
+            "microUserInvestment": 10.0,
+            "microUserDailyPnl": round(self.micro_realized_pnl / max(1, getattr(self, "micro_pool_users", 1)), 4),
             "microPositions": self.micro_positions,
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
             "microTotalTrades": self.micro_total_trades,
             "microIdleFundAvail": round(self.get_scavenged_idle_fund(), 2),
+            "killer2PoolUsers": getattr(self, "killer2_pool_users", 1),
+            "killer2PoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.killer2_positions), 2),
+            "killer2UserInvestment": 10.0,
+            "killer2UserDailyPnl": round(self.killer2_realized_pnl / max(1, getattr(self, "killer2_pool_users", 1)), 4),
             "killer2Positions": self.killer2_positions,
             "killer2RealizedPnl": round(self.killer2_realized_pnl, 4),
             "killer2TotalTrades": self.killer2_total_trades,
             "killer2IdleFundAvail": round(self.get_killer2_idle_fund(), 2),
+            "killer3PoolUsers": getattr(self, "killer3_pool_users", 1),
+            "killer3PoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.killer3_positions), 2),
+            "killer3UserInvestment": 10.0,
+            "killer3UserDailyPnl": round(self.killer3_realized_pnl / max(1, getattr(self, "killer3_pool_users", 1)), 4),
             "killer3Positions": self.killer3_positions,
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
@@ -1758,13 +1773,13 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
-                if gain >= 0.12:
-                    if self.whale_sentiment == "BULLISH":
-                        pullback = 0.015
-                    elif self.whale_sentiment == "BEARISH":
+                if gain >= 0.01:
+                    if gain >= 0.02:
                         pullback = 0.005
+                    elif gain >= 0.015:
+                        pullback = 0.002
                     else:
-                        pullback = 0.010
+                        pullback = 0.002
                     if current_p <= (peak - pullback):
                         self.execute_hyper_sell(pos)
         if self.hyper_pool_balance < self.hyper_trade_size or len(self.hyper_positions) >= 10:
@@ -1773,19 +1788,14 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
-        if current_dip >= 0.10:
+        if current_dip >= 0.01:
             if not self.hyper_tb_active:
                 self.hyper_tb_active = True
                 self.hyper_tb_lowest = self.live_price
             else:
                 if self.live_price < self.hyper_tb_lowest:
                     self.hyper_tb_lowest = self.live_price
-                if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.015
-                elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.005
-                else:
-                    bounce_gap = 0.010
+                bounce_gap = 0.002
                 if self.live_price >= (self.hyper_tb_lowest + bounce_gap):
                     self.hyper_tb_active = False
                     self.hyper_tb_lowest = 0.0
@@ -2125,10 +2135,11 @@ class UltraQuantSpotBot:
         if len(self.killer2_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = float(self.micro_positions[0]["entryPrice"])
+            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+        elif self.killer2_last_ref_price > 0:
+            ref_p = self.killer2_last_ref_price
         else:
-            self.killer2_tb_active = False
-            return
+            ref_p = self.live_price
 
         self.killer2_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
@@ -2141,12 +2152,12 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
                 if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.06
+                    bounce_gap = 0.03
                 elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.04
+                    bounce_gap = 0.015
                 else:
-                    bounce_gap = 0.05
-                if self.live_price >= (self.killer2_tb_lowest + bounce_gap):
+                    bounce_gap = 0.02
+                if self.live_price >= (self.killer2_tb_lowest + bounce_gap) or current_dip >= (0.60 + bounce_gap):
                     self.killer2_tb_active = False
                     self.killer2_tb_lowest = 0.0
                     self.execute_killer2_buy()
@@ -2314,10 +2325,11 @@ class UltraQuantSpotBot:
         if len(self.killer3_positions) > 0:
             ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
         elif len(self.micro_positions) > 0:
-            ref_p = float(self.micro_positions[0]["entryPrice"])
+            ref_p = max(float(p["entryPrice"]) for p in self.micro_positions)
+        elif self.killer3_last_ref_price > 0:
+            ref_p = self.killer3_last_ref_price
         else:
-            self.killer3_tb_active = False
-            return
+            ref_p = self.live_price
 
         self.killer3_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
@@ -2330,12 +2342,12 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer3_tb_lowest:
                     self.killer3_tb_lowest = self.live_price
                 if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.09
+                    bounce_gap = 0.03
                 elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.07
+                    bounce_gap = 0.015
                 else:
-                    bounce_gap = 0.08
-                if self.live_price >= (self.killer3_tb_lowest + bounce_gap):
+                    bounce_gap = 0.02
+                if self.live_price >= (self.killer3_tb_lowest + bounce_gap) or current_dip >= (0.90 + bounce_gap):
                     self.killer3_tb_active = False
                     self.killer3_tb_lowest = 0.0
                     self.execute_killer3_buy()
