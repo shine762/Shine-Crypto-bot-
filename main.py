@@ -71,9 +71,9 @@ class UltraQuantSpotBot:
         }
         self.hyper_pool_active = True
         self.hyper_pool_users = 100
-        self.hyper_pool_balance = 1000.0
-        self.hyper_user_investment = 10.0
-        self.hyper_trade_size = 100.0
+        self.hyper_pool_balance = 9999.0
+        self.hyper_user_investment = 99.99
+        self.hyper_trade_size = 999.90
         self.hyper_positions = []
         self.hyper_round_trades_done = {r: 0 for r in range(1, 11)}
         self.hyper_tb_active = False
@@ -190,7 +190,8 @@ class UltraQuantSpotBot:
                             if "hyper_realized_pnl" in row and row.get("hyper_realized_pnl") is not None:
                                 self.hyper_realized_pnl = float(row.get("hyper_realized_pnl"))
                             if "hyper_pool_balance" in row and row.get("hyper_pool_balance") is not None:
-                                self.hyper_pool_balance = float(row.get("hyper_pool_balance"))
+                                loaded_h_bal = float(row.get("hyper_pool_balance"))
+                                self.hyper_pool_balance = loaded_h_bal if loaded_h_bal >= 9999.0 else 9999.0
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
@@ -430,6 +431,9 @@ class UltraQuantSpotBot:
                                     elif e_type == "KILLER3_SCALP_EXIT" or ord_id.startswith("K3_"):
                                         k3_count += 1
                                         k3_pnl += p_val
+                                elif ord_id.startswith("HYPER_") or "HYPER" in e_type:
+                                    if t.get("side") == "SELL":
+                                        h_pnl += p_val
                                 else:
                                     bot_logs.append(formatted_t)
                                     if t.get("side") == "SELL":
@@ -788,7 +792,7 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.trades_history if self.trades_history else self.spot_trades_history,
+            "tradesHistory": self.spot_trades_history,
             "spotTradesHistory": self.spot_trades_history,
             "scalpTradesHistory": self.scalp_trades_history,
             "manualTradesHistory": self.manual_trades_history,
@@ -3270,33 +3274,26 @@ async def run_backend_price_feed():
         await asyncio.sleep(1)
 
 async def cleanup_all_bots_24h_history():
+    pkt_zone = timezone(timedelta(hours=5))
     while True:
-        await asyncio.sleep(3600)
+        now_pkt = datetime.now(pkt_zone)
+        target_midnight = (now_pkt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        wait_seconds = (target_midnight - now_pkt).total_seconds()
+        await asyncio.sleep(wait_seconds)
         try:
-            cutoff = datetime.now(timezone.utc).timestamp() - 86400
-            iso_cutoff = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+            now_iso = datetime.now(timezone.utc).isoformat()
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?created_at=lt.{iso_cutoff}")
+                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?created_at=lte.{now_iso}")
             if hasattr(bot, "trades_history"):
-                bot.trades_history = [
-                    t for t in bot.trades_history
-                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
-                ]
+                bot.trades_history.clear()
             if hasattr(bot, "spot_trades_history"):
-                bot.spot_trades_history = [
-                    t for t in bot.spot_trades_history
-                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
-                ]
+                bot.spot_trades_history.clear()
             if hasattr(bot, "scalp_trades_history"):
-                bot.scalp_trades_history = [
-                    t for t in bot.scalp_trades_history
-                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
-                ]
+                bot.scalp_trades_history.clear()
             if hasattr(bot, "hyper_trades_history"):
-                bot.hyper_trades_history = [
-                    t for t in bot.hyper_trades_history
-                    if datetime.fromisoformat(str(t.get("timestamp")).replace("Z", "+00:00")).timestamp() >= cutoff
-                ]
+                bot.hyper_trades_history.clear()
+            await bot.db_sync_state()
+            await manager.broadcast(json.dumps(bot.get_state()))
         except Exception:
             pass
 
