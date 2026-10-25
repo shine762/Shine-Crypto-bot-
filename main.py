@@ -123,6 +123,26 @@ class UltraQuantSpotBot:
         self.spot_realized_pnl = 0.0
         self.db_loaded = False
         self.total_user_capital = 100.0
+        self.singularity_active = True
+        self.singularity_users = 1000
+        self.singularity_pool_balance = 100000.0
+        self.singularity_user_investment = 100.0
+        self.singularity_positions = []
+        self.singularity_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.singularity_realized_pnl = 0.0
+        self.singularity_total_trades = 0
+        self.singularity_macro_sol = 0.0
+        self.singularity_macro_invested = 0.0
+        self.singularity_macro_target = 0.0
+        self.singularity_macro_ts_high = 0.0
+        self.singularity_macro_ts_low = 0.0
+        self.singularity_round_funds = {
+            1: 1000.0, 2: 2000.0, 3: 4000.0, 4: 6000.0, 5: 10000.0,
+            6: 20000.0, 7: 30000.0, 8: 27000.0, 9: 0.0, 10: 0.0
+        }
+        self.singularity_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.singularity_tb_active = {1: False, 2: False, 3: False, 4: False, 5: False}
+        self.singularity_tb_lowest = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
 
     def get_tier_config(self, capital=None):
         cap = capital if capital is not None else self.total_user_capital
@@ -158,6 +178,23 @@ class UltraQuantSpotBot:
         units = int(cap // 1000.0)
         return min(30, units * 3)
 
+    def get_singularity_tier_config(self, cap=None):
+        capital = cap if cap is not None else self.total_user_capital
+        if capital < 1000.0:
+            slots = 10
+        elif capital < 1500.0:
+            slots = 10
+        elif capital < 2000.0:
+            slots = 15
+        elif capital < 3000.0:
+            slots = 20
+        else:
+            slots = 30
+        
+        base_pool = max(100000.0, self.singularity_pool_balance + sum(p.get("invested", 0.0) for p in self.singularity_positions))
+        trade_size = round(base_pool / max(1, slots), 2)
+        return {"slots": slots, "trade_size": trade_size}
+
     async def load_from_database(self):
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
@@ -192,6 +229,11 @@ class UltraQuantSpotBot:
                             if "hyper_pool_balance" in row and row.get("hyper_pool_balance") is not None:
                                 loaded_h_bal = float(row.get("hyper_pool_balance"))
                                 self.hyper_pool_balance = loaded_h_bal if loaded_h_bal >= 9999.0 else 9999.0
+                            if "singularity_realized_pnl" in row and row.get("singularity_realized_pnl") is not None:
+                                self.singularity_realized_pnl = float(row.get("singularity_realized_pnl"))
+                            if "singularity_pool_balance" in row and row.get("singularity_pool_balance") is not None:
+                                loaded_s_bal = float(row.get("singularity_pool_balance"))
+                                self.singularity_pool_balance = loaded_s_bal if loaded_s_bal >= 100000.0 else 100000.0
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?order=created_at.asc") as resp:
                     if resp.status == 200:
@@ -221,7 +263,15 @@ class UltraQuantSpotBot:
                                     "ts_high": float(p.get("entry_price") or 0.0)
                                 }
 
-                                if p_id.startswith("HYPER_"):
+                                if p_id.startswith("SNG_"):
+                                    self.singularity_positions.append(pos_obj)
+                                    r_idx = pos_obj["round"]
+                                    self.singularity_round_trades_done[r_idx] = self.singularity_round_trades_done.get(r_idx, 0) + 1
+                                    self.singularity_round_spent[r_idx] = self.singularity_round_spent.get(r_idx, 0.0) + pos_obj["invested"]
+                                    if pos_obj.get("isMacro", False):
+                                        self.singularity_macro_sol += pos_obj["solAmount"]
+                                        self.singularity_macro_invested += pos_obj["invested"]
+                                elif p_id.startswith("HYPER_"):
                                     self.hyper_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
                                     self.hyper_round_trades_done[r_idx] = self.hyper_round_trades_done.get(r_idx, 0) + 1
@@ -448,6 +498,11 @@ class UltraQuantSpotBot:
                             if h_pnl > 0:
                                 self.hyper_realized_pnl = round(h_pnl, 4)
                                 self.hyper_total_trades = len([t for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL"])
+                            self.singularity_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith("SNG_") or "SINGULARITY" in str(t.get("execType",""))]
+                            sng_pnl = sum(float(t.get("profit", 0.0)) for t in self.singularity_trades_history if str(t.get("side","")).upper() == "SELL")
+                            if sng_pnl > 0:
+                                self.singularity_realized_pnl = round(sng_pnl, 4)
+                                self.singularity_total_trades = len([t for t in self.singularity_trades_history if str(t.get("side","")).upper() == "SELL"])
                             self.manual_trades_history = wallet_logs
                             self.micro_realized_pnl = round(m_pnl, 4)
                             self.micro_total_trades = m_count
@@ -486,6 +541,8 @@ class UltraQuantSpotBot:
                 "killer3_realized_pnl": round(self.killer3_realized_pnl, 4),
                 "hyper_realized_pnl": round(self.hyper_realized_pnl, 4),
                 "hyper_pool_balance": round(self.hyper_pool_balance, 2),
+                "singularity_realized_pnl": round(self.singularity_realized_pnl, 4),
+                "singularity_pool_balance": round(self.singularity_pool_balance, 2),
                 "active_phase": self.active_phase,
                 "active_round": self.active_round,
                 "sub_trade_count": self.sub_trade_count,
@@ -833,6 +890,18 @@ class UltraQuantSpotBot:
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
             "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
+            "singularityActive": self.singularity_active,
+            "singularityUsers": self.singularity_users,
+            "singularityPoolBalance": round(self.singularity_pool_balance, 2),
+            "singularityUserInvestment": round(self.singularity_user_investment, 2),
+            "singularityTradeSize": round(self.get_singularity_tier_config()["trade_size"], 2),
+            "singularityPositions": self.singularity_positions,
+            "singularityRealizedPnl": round(self.singularity_realized_pnl, 4),
+            "singularityTotalTrades": self.singularity_total_trades,
+            "singularityTradesHistory": getattr(self, "singularity_trades_history", []),
+            "singularityUserDailyPnl": round(self.singularity_realized_pnl / max(1, self.singularity_users), 4),
+            "singularityMacroSol": round(self.singularity_macro_sol, 4),
+            "singularityMacroInvested": round(self.singularity_macro_invested, 2),
             "autoLoops": self.auto_loops,
             "copySubscribers": getattr(self, "copy_subscribers", []),
             "harvesterActive": self.harvester_active,
@@ -1859,7 +1928,7 @@ class UltraQuantSpotBot:
             self.hyper_tb_active = False
 
     def check_and_apply_self_healing(self, scalp_profit):
-        if scalp_profit <= 0 or self.live_price <= 0:
+        if scalp_profit <= 0 or self.live_price <= 0 or self.usdt_balance >= 10.0:
             return scalp_profit
 
         all_candidates = []
@@ -2503,6 +2572,230 @@ class UltraQuantSpotBot:
         else:
             self.killer3_tb_active = False
 
+    def execute_singularity_buy(self, engine_idx=1):
+        if not self.singularity_active or self.singularity_users < 1000 or self.live_price <= 0:
+            return
+        
+        self.sync_phase_and_round()
+        cur_rnd = self.active_round
+        if cur_rnd in [9, 10]:
+            return
+        
+        tier_cfg = self.get_singularity_tier_config()
+        allowed_slots = tier_cfg["slots"]
+        target_size = tier_cfg["trade_size"]
+        
+        if self.singularity_round_trades_done.get(cur_rnd, 0) >= allowed_slots:
+            return
+        
+        round_max_fund = (self.round_allocations.get(cur_rnd, 0.0)) * 100000.0
+        round_spent_now = self.singularity_round_spent.get(cur_rnd, 0.0)
+        round_remaining = round_max_fund - round_spent_now
+        
+        if round_remaining < target_size or self.singularity_pool_balance < target_size:
+            return
+        
+        fee = target_size * self.taker_fee_pct
+        net_invest = target_size - fee
+        sol_amt = net_invest / self.live_price
+        
+        self.singularity_pool_balance = round(self.singularity_pool_balance - target_size, 2)
+        self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
+        self.singularity_round_trades_done[cur_rnd] = self.singularity_round_trades_done.get(cur_rnd, 0) + 1
+        trade_num = self.singularity_round_trades_done[cur_rnd]
+        
+        pos_id = f"SNG_{engine_idx}_" + str(uuid.uuid4())[:6]
+        engine_labels = {
+            1: "HOME_DCA",
+            2: "HYPER_TITAN",
+            3: "APEX_VELOCITY",
+            4: "QUANTUM_PULSE",
+            5: "TITAN_ABYSS"
+        }
+        eng_name = engine_labels.get(engine_idx, "FUSION")
+        is_macro = (cur_rnd == 8)
+        
+        if is_macro:
+            self.singularity_macro_sol += sol_amt
+            self.singularity_macro_invested += target_size
+            avg_m = self.singularity_macro_invested / self.singularity_macro_sol if self.singularity_macro_sol > 0 else 0.0
+            self.singularity_macro_target = round(max(200.0, avg_m * 2.0), 2)
+            pos_label = f"SINGULARITY R8 MACRO VAULT (#{trade_num})"
+        else:
+            pos_label = f"SINGULARITY [{eng_name}] R{cur_rnd} (#{trade_num})"
+            
+        pos = {
+            "id": pos_id,
+            "engineIdx": engine_idx,
+            "round": cur_rnd,
+            "subTrade": trade_num,
+            "label": pos_label,
+            "entryPrice": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "invested": round(target_size, 2),
+            "isMacro": is_macro,
+            "targetPrice": self.singularity_macro_target if is_macro else 0.0,
+            "ts_high": round(self.live_price, 2),
+            "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
+        }
+        
+        self.singularity_positions.append(pos)
+        self.singularity_tb_active[engine_idx] = False
+        self.singularity_tb_lowest[engine_idx] = 0.0
+        
+        t_record = {
+            "orderId": pos_id + "_B",
+            "side": "BUY",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": 0.0,
+            "round": cur_rnd,
+            "execType": f"SINGULARITY_{eng_name}_ENTRY",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        if not hasattr(self, "singularity_trades_history"):
+            self.singularity_trades_history = []
+        self.singularity_trades_history.insert(0, t_record)
+        asyncio.create_task(self.db_save_buy(pos, t_record))
+
+    def execute_singularity_sell(self, pos):
+        pos_id = pos["id"]
+        sol_amt = float(pos["solAmount"])
+        invested = float(pos["invested"])
+        r_num = pos.get("round", 1)
+        eng_idx = pos.get("engineIdx", 1)
+        
+        gross_val = sol_amt * self.live_price
+        fee = gross_val * self.taker_fee_pct
+        net_return = gross_val - fee
+        profit = round(net_return - invested, 4)
+        if profit <= 0.01:
+            return
+            
+        self.singularity_pool_balance = round(self.singularity_pool_balance + net_return, 2)
+        self.singularity_realized_pnl = round(self.singularity_realized_pnl + profit, 4)
+        self.singularity_total_trades += 1
+        
+        if self.singularity_round_trades_done.get(r_num, 0) > 0:
+            self.singularity_round_trades_done[r_num] -= 1
+        self.singularity_round_spent[r_num] = max(0.0, round(self.singularity_round_spent.get(r_num, 0.0) - invested, 2))
+        
+        if pos.get("isMacro", False):
+            self.singularity_macro_sol = max(0.0, self.singularity_macro_sol - sol_amt)
+            self.singularity_macro_invested = max(0.0, self.singularity_macro_invested - invested)
+            
+        self.singularity_positions = [p for p in self.singularity_positions if p["id"] != pos_id]
+        
+        trade_record = {
+            "orderId": pos_id + "_S",
+            "side": "SELL",
+            "price": round(self.live_price, 2),
+            "solAmount": round(sol_amt, 4),
+            "fee": round(fee, 4),
+            "profit": round(profit, 4),
+            "realizedPnl": round(profit, 4),
+            "round": r_num,
+            "execType": f"SINGULARITY_E{eng_idx}_EXIT",
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        if not hasattr(self, "singularity_trades_history"):
+            self.singularity_trades_history = []
+        self.singularity_trades_history.insert(0, trade_record)
+        asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
+        asyncio.create_task(self.db_sync_state())
+
+    def run_singularity_tick(self):
+        if not self.singularity_active or self.is_paused or self.live_price <= 0:
+            return
+        
+        for eng_idx in range(1, 6):
+            eng_positions = [p for p in self.singularity_positions if p.get("engineIdx") == eng_idx]
+            if len(eng_positions) == 0:
+                self.execute_singularity_buy(engine_idx=eng_idx)
+                
+        for pos in list(self.singularity_positions):
+            entry_p = float(pos["entryPrice"])
+            current_p = float(self.live_price)
+            eng_idx = pos.get("engineIdx", 1)
+            is_macro = pos.get("isMacro", False)
+            
+            if is_macro:
+                if current_p >= self.singularity_macro_target and self.singularity_macro_target > 0:
+                    if current_p > self.singularity_macro_ts_high:
+                        self.singularity_macro_ts_high = current_p
+                    calc_stop = round(self.singularity_macro_ts_high * 0.99, 2)
+                    if calc_stop > self.singularity_macro_ts_low:
+                        self.singularity_macro_ts_low = calc_stop
+                    if current_p <= self.singularity_macro_ts_low:
+                        self.execute_singularity_sell(pos)
+                continue
+                
+            if current_p > entry_p:
+                if "ts_high" not in pos or current_p > float(pos.get("ts_high", entry_p)):
+                    pos["ts_high"] = round(current_p, 2)
+                peak = float(pos["ts_high"])
+                gain = peak - entry_p
+                pullback = 0.0
+                
+                if eng_idx == 1:
+                    if gain >= 1.50: pullback = 0.20
+                    elif gain >= 0.80: pullback = 0.15
+                    elif gain >= 0.40: pullback = 0.10
+                elif eng_idx == 2:
+                    if gain >= 0.70: pullback = 0.12
+                    elif gain >= 0.40: pullback = 0.08
+                    elif gain >= 0.20: pullback = 0.05
+                elif eng_idx == 3:
+                    if gain >= 0.80: pullback = 0.15
+                    elif gain >= 0.55: pullback = 0.12
+                    elif gain >= 0.35: pullback = 0.08
+                elif eng_idx == 4:
+                    if gain >= 1.20: pullback = 0.25
+                    elif gain >= 0.80: pullback = 0.20
+                    elif gain >= 0.50: pullback = 0.15
+                elif eng_idx == 5:
+                    if gain >= 1.50: pullback = 0.03
+                    elif gain >= 1.00: pullback = round(peak * 0.005, 2)
+                    elif gain >= 0.60: pullback = round(peak * 0.010, 2)
+                    
+                if pullback > 0.0 and current_p <= (peak - pullback):
+                    self.execute_singularity_sell(pos)
+                    continue
+
+        dip_thresholds = {
+            1: 1.20,
+            2: 0.20,
+            3: 0.30,
+            4: 0.60,
+            5: 0.90
+        }
+        
+        tier_cfg = self.get_singularity_tier_config()
+        for eng_idx, dip_req in dip_thresholds.items():
+            eng_positions = [p for p in self.singularity_positions if p.get("engineIdx") == eng_idx and not p.get("isMacro", False)]
+            if len(eng_positions) == 0 or len(eng_positions) >= tier_cfg["slots"]:
+                self.singularity_tb_active[eng_idx] = False
+                continue
+                
+            ref_p = min(float(p["entryPrice"]) for p in eng_positions)
+            current_dip = ref_p - self.live_price
+            
+            if current_dip >= dip_req:
+                if not self.singularity_tb_active[eng_idx]:
+                    self.singularity_tb_active[eng_idx] = True
+                    self.singularity_tb_lowest[eng_idx] = self.live_price
+                else:
+                    if self.live_price < self.singularity_tb_lowest[eng_idx]:
+                        self.singularity_tb_lowest[eng_idx] = self.live_price
+                    bounce = 0.02 if eng_idx in [1, 4, 5] else 0.01
+                    if self.live_price >= (self.singularity_tb_lowest[eng_idx] + bounce) or current_dip >= (dip_req + 0.05):
+                        self.singularity_tb_active[eng_idx] = False
+                        self.singularity_tb_lowest[eng_idx] = 0.0
+                        self.execute_singularity_buy(engine_idx=eng_idx)
+            else:
+                self.singularity_tb_active[eng_idx] = False
+
     def update_price_tick(self, new_price):
         if new_price <= 0:
             return
@@ -2578,6 +2871,7 @@ class UltraQuantSpotBot:
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
         self.run_killer3_scalper_tick()
+        self.run_singularity_tick()
         self.run_auto_trailing_loop_tick()
 
         if self.live_price <= 0:
@@ -3108,6 +3402,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         bot.execute_killer2_buy()
                     elif b_target == "KILLER3":
                         bot.execute_killer3_buy()
+                    elif b_target == "SINGULARITY":
+                        e_idx = int(msg.get("engineIdx", 1))
+                        bot.execute_singularity_buy(engine_idx=e_idx)
                 elif action == "ADMIN_BOT_SELL":
                     b_target = str(msg.get("bot", "HOME")).upper()
                     t_pos_id = str(msg.get("posId", ""))
@@ -3136,6 +3433,11 @@ async def websocket_endpoint(websocket: WebSocket):
                             if p.get("id") == t_pos_id:
                                 bot.execute_killer3_sell(p)
                                 break
+                    elif b_target == "SINGULARITY":
+                        for p in list(bot.singularity_positions):
+                            if p.get("id") == t_pos_id:
+                                bot.execute_singularity_sell(p)
+                                break
                 elif action == "ADMIN_BOT_SELL_ALL":
                     b_target = str(msg.get("bot", "HOME")).upper()
                     if b_target == "HOME":
@@ -3153,6 +3455,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     elif b_target == "KILLER3":
                         for p in list(bot.killer3_positions):
                             bot.execute_killer3_sell(p)
+                    elif b_target == "SINGULARITY":
+                        for p in list(bot.singularity_positions):
+                            bot.execute_singularity_sell(p)
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
                     await bot.create_advanced_order(msg)
                 elif action == "CLIENT_PRICE_TICK":
