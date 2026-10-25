@@ -141,6 +141,7 @@ class UltraQuantSpotBot:
             6: 20000.0, 7: 30000.0, 8: 27000.0, 9: 0.0, 10: 0.0
         }
         self.singularity_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.singularity_round_borrowed = {r: 0.0 for r in range(1, 11)}
         self.singularity_tb_active = {1: False, 2: False, 3: False, 4: False, 5: False}
         self.singularity_tb_lowest = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0}
 
@@ -178,11 +179,9 @@ class UltraQuantSpotBot:
         units = int(cap // 1000.0)
         return min(30, units * 3)
 
-    def get_singularity_tier_config(self, cap=None):
+    def get_singularity_tier_config(self, cap=None, target_round=None):
         capital = cap if cap is not None else self.total_user_capital
-        if capital < 1000.0:
-            slots = 10
-        elif capital < 1500.0:
+        if capital < 1500.0:
             slots = 10
         elif capital < 2000.0:
             slots = 15
@@ -190,10 +189,12 @@ class UltraQuantSpotBot:
             slots = 20
         else:
             slots = 30
-        
-        base_pool = max(100000.0, self.singularity_pool_balance + sum(p.get("invested", 0.0) for p in self.singularity_positions))
-        trade_size = round(base_pool / max(1, slots), 2)
-        return {"slots": slots, "trade_size": trade_size}
+
+        r_num = target_round if target_round is not None else self.active_round
+        round_pct = self.round_allocations.get(r_num, 0.10)
+        round_fund = 100000.0 * (round_pct if round_pct > 0 else 0.10)
+        trade_size = max(10.0, round(round_fund / max(1, slots), 2))
+        return {"slots": slots, "trade_size": trade_size, "round_fund": round_fund}
 
     async def load_from_database(self):
         try:
@@ -2575,35 +2576,69 @@ class UltraQuantSpotBot:
     def execute_singularity_buy(self, engine_idx=1):
         if not self.singularity_active or self.singularity_users < 1000 or self.live_price <= 0:
             return
-        
+
         self.sync_phase_and_round()
         cur_rnd = self.active_round
         if cur_rnd in [9, 10]:
             return
-        
-        tier_cfg = self.get_singularity_tier_config()
+
+        tier_cfg = self.get_singularity_tier_config(target_round=cur_rnd)
         allowed_slots = tier_cfg["slots"]
         target_size = tier_cfg["trade_size"]
-        
-        if self.singularity_round_trades_done.get(cur_rnd, 0) >= allowed_slots:
+
+        if self.singularity_pool_balance < target_size:
             return
-        
+
         round_max_fund = (self.round_allocations.get(cur_rnd, 0.0)) * 100000.0
         round_spent_now = self.singularity_round_spent.get(cur_rnd, 0.0)
         round_remaining = round_max_fund - round_spent_now
-        
-        if round_remaining < target_size or self.singularity_pool_balance < target_size:
-            return
-        
+
+        borrowed_donor_round = 0
+        is_macro_vault_hold = False
+
+        if cur_rnd == 8:
+            if self.singularity_macro_invested < round_max_fund and (round_max_fund - self.singularity_macro_invested) >= target_size:
+                is_macro_vault_hold = True
+                self.singularity_round_spent[8] = round(self.singularity_round_spent.get(8, 0.0) + target_size, 2)
+            else:
+                for r_donor in range(1, 8):
+                    d_alloc = (self.round_allocations.get(r_donor, 0.0)) * 100000.0
+                    d_spent = self.singularity_round_spent.get(r_donor, 0.0)
+                    if (d_alloc - d_spent) >= target_size:
+                        borrowed_donor_round = r_donor
+                        self.singularity_round_spent[r_donor] = round(d_spent + target_size, 2)
+                        self.singularity_round_borrowed[8] = round(self.singularity_round_borrowed.get(8, 0.0) + target_size, 2)
+                        break
+                if borrowed_donor_round == 0:
+                    return
+        elif cur_rnd in [6, 7]:
+            if round_remaining >= target_size:
+                self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
+            else:
+                donor_range = range(1, 6) if cur_rnd == 6 else range(1, 7)
+                for r_donor in donor_range:
+                    d_alloc = (self.round_allocations.get(r_donor, 0.0)) * 100000.0
+                    d_spent = self.singularity_round_spent.get(r_donor, 0.0)
+                    if (d_alloc - d_spent) >= target_size:
+                        borrowed_donor_round = r_donor
+                        self.singularity_round_spent[r_donor] = round(d_spent + target_size, 2)
+                        self.singularity_round_borrowed[cur_rnd] = round(self.singularity_round_borrowed.get(cur_rnd, 0.0) + target_size, 2)
+                        break
+                if borrowed_donor_round == 0:
+                    return
+        else:
+            if round_remaining < target_size:
+                return
+            self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
+
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
         sol_amt = net_invest / self.live_price
-        
+
         self.singularity_pool_balance = round(self.singularity_pool_balance - target_size, 2)
-        self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
         self.singularity_round_trades_done[cur_rnd] = self.singularity_round_trades_done.get(cur_rnd, 0) + 1
         trade_num = self.singularity_round_trades_done[cur_rnd]
-        
+
         pos_id = f"SNG_{engine_idx}_" + str(uuid.uuid4())[:6]
         engine_labels = {
             1: "HOME_DCA",
@@ -2613,17 +2648,18 @@ class UltraQuantSpotBot:
             5: "TITAN_ABYSS"
         }
         eng_name = engine_labels.get(engine_idx, "FUSION")
-        is_macro = (cur_rnd == 8)
-        
-        if is_macro:
+
+        if is_macro_vault_hold:
             self.singularity_macro_sol += sol_amt
             self.singularity_macro_invested += target_size
             avg_m = self.singularity_macro_invested / self.singularity_macro_sol if self.singularity_macro_sol > 0 else 0.0
             self.singularity_macro_target = round(max(200.0, avg_m * 2.0), 2)
             pos_label = f"SINGULARITY R8 MACRO VAULT (#{trade_num})"
+        elif borrowed_donor_round > 0:
+            pos_label = f"SINGULARITY [{eng_name}] R{cur_rnd} (LOAN R{borrowed_donor_round})"
         else:
             pos_label = f"SINGULARITY [{eng_name}] R{cur_rnd} (#{trade_num})"
-            
+
         pos = {
             "id": pos_id,
             "engineIdx": engine_idx,
@@ -2633,16 +2669,17 @@ class UltraQuantSpotBot:
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
-            "isMacro": is_macro,
-            "targetPrice": self.singularity_macro_target if is_macro else 0.0,
+            "isMacro": is_macro_vault_hold,
+            "targetPrice": self.singularity_macro_target if is_macro_vault_hold else 0.0,
+            "borrowedFrom": borrowed_donor_round,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
-        
+
         self.singularity_positions.append(pos)
         self.singularity_tb_active[engine_idx] = False
         self.singularity_tb_lowest[engine_idx] = 0.0
-        
+
         t_record = {
             "orderId": pos_id + "_B",
             "side": "BUY",
@@ -2665,26 +2702,32 @@ class UltraQuantSpotBot:
         invested = float(pos["invested"])
         r_num = pos.get("round", 1)
         eng_idx = pos.get("engineIdx", 1)
-        
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
         gross_val = sol_amt * self.live_price
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = round(net_return - invested, 4)
         if profit <= 0.01:
             return
-            
+
         self.singularity_pool_balance = round(self.singularity_pool_balance + net_return, 2)
         self.singularity_realized_pnl = round(self.singularity_realized_pnl + profit, 4)
         self.singularity_total_trades += 1
-        
+
         if self.singularity_round_trades_done.get(r_num, 0) > 0:
             self.singularity_round_trades_done[r_num] -= 1
-        self.singularity_round_spent[r_num] = max(0.0, round(self.singularity_round_spent.get(r_num, 0.0) - invested, 2))
-        
+
+        if borrowed_donor > 0:
+            self.singularity_round_spent[borrowed_donor] = max(0.0, round(self.singularity_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.singularity_round_borrowed[r_num] = max(0.0, round(self.singularity_round_borrowed.get(r_num, 0.0) - invested, 2))
+        else:
+            self.singularity_round_spent[r_num] = max(0.0, round(self.singularity_round_spent.get(r_num, 0.0) - invested, 2))
+
         if pos.get("isMacro", False):
             self.singularity_macro_sol = max(0.0, self.singularity_macro_sol - sol_amt)
             self.singularity_macro_invested = max(0.0, self.singularity_macro_invested - invested)
-            
+
         self.singularity_positions = [p for p in self.singularity_positions if p["id"] != pos_id]
         
         trade_record = {
