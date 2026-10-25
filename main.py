@@ -441,8 +441,8 @@ class UltraQuantSpotBot:
                                         spot_closed_profit += p_val
 
                             self.trades_history = all_logs
-                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_","HYPER_")) and "SCALP" not in str(t.get("execType","")) and "HYPER" not in str(t.get("execType",""))]
-                            self.scalp_trades_history = [t for t in all_logs if (str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType",""))) and not str(t.get("orderId","")).startswith("HYPER_")]
+                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_","HYPER_")) and "SCALP" not in str(t.get("execType","")) and "KILLER" not in str(t.get("execType","")) and "MICRO" not in str(t.get("execType","")) and "HYPER" not in str(t.get("execType",""))]
+                            self.scalp_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType","")) or "KILLER" in str(t.get("execType","")) or "MICRO" in str(t.get("execType",""))]
                             self.hyper_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith("HYPER_") or "HYPER" in str(t.get("execType",""))]
                             h_pnl = sum(float(t.get("profit", 0.0)) for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL")
                             if h_pnl > 0:
@@ -793,7 +793,7 @@ class UltraQuantSpotBot:
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
-            "tradesHistory": self.spot_trades_history,
+            "tradesHistory": self.trades_history,
             "spotTradesHistory": self.spot_trades_history,
             "scalpTradesHistory": self.scalp_trades_history,
             "manualTradesHistory": self.manual_trades_history,
@@ -1671,9 +1671,10 @@ class UltraQuantSpotBot:
         profit = net_return - invested
         if profit < self.min_net_profit_usdt:
             return
+        leftover_profit = self.check_and_apply_self_healing(profit)
         self.usdt_balance += net_return
-        self.realized_pnl = round(self.realized_pnl + profit, 4)
-        self.spot_realized_pnl = round(self.spot_realized_pnl + profit, 4)
+        self.realized_pnl = round(self.realized_pnl + leftover_profit, 4)
+        self.spot_realized_pnl = round(self.spot_realized_pnl + leftover_profit, 4)
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
@@ -1860,40 +1861,67 @@ class UltraQuantSpotBot:
     def check_and_apply_self_healing(self, scalp_profit):
         if scalp_profit <= 0 or self.live_price <= 0:
             return scalp_profit
-        cfg = self.get_tier_config()
-        trade_size = cfg["size"]
-        max_slots = cfg["slots"]
-        regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
-        if self.usdt_balance >= trade_size and len(regular_pos) < (max_slots - 1):
+
+        all_candidates = []
+        for p in self.active_positions:
+            if not p.get("isMacro", False) and float(p.get("entryPrice", 0.0)) > self.live_price:
+                all_candidates.append(("HOME", p))
+        for p in self.micro_positions:
+            if float(p.get("entryPrice", 0.0)) > self.live_price:
+                all_candidates.append(("MICRO", p))
+        for p in self.killer2_positions:
+            if float(p.get("entryPrice", 0.0)) > self.live_price:
+                all_candidates.append(("KILLER2", p))
+        for p in self.killer3_positions:
+            if float(p.get("entryPrice", 0.0)) > self.live_price:
+                all_candidates.append(("KILLER3", p))
+
+        if not all_candidates:
             return scalp_profit
-        if not regular_pos:
-            return scalp_profit
-        losing_pos = [p for p in regular_pos if float(p.get("entryPrice", 0.0)) > self.live_price]
-        if not losing_pos:
-            return scalp_profit
-        highest_pos = max(losing_pos, key=lambda p: float(p.get("entryPrice", 0.0)))
+
+        best_target = max(all_candidates, key=lambda item: float(item[1].get("entryPrice", 0.0)))
+        bot_type, highest_pos = best_target
+
         entry_p = float(highest_pos.get("entryPrice", 0.0))
         current_sol = float(highest_pos.get("solAmount", 0.0))
         current_inv = float(highest_pos.get("invested", 0.0))
         loss_per_sol = entry_p - (self.live_price * (1.0 - self.taker_fee_pct))
-        if loss_per_sol <= 0:
+        if loss_per_sol <= 0 or current_sol <= 0:
             return scalp_profit
+
         max_possible_loss = current_sol * loss_per_sol
         if scalp_profit >= max_possible_loss:
             trimmed_sol = current_sol
             absorbed_loss = max_possible_loss
             leftover_profit = scalp_profit - absorbed_loss
             cash_unlocked = trimmed_sol * self.live_price * (1.0 - self.taker_fee_pct)
+
             self.usdt_balance = round(self.usdt_balance + cash_unlocked, 2)
             self.sol_balance = max(0.0, self.sol_balance - trimmed_sol)
             self.invested_amount = max(0.0, self.invested_amount - current_inv)
             self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
+
             r_num = highest_pos.get("round", self.active_round)
-            if self.round_trades_done.get(r_num, 0) > 0:
-                self.round_trades_done[r_num] -= 1
-            self.active_positions = [p for p in self.active_positions if p["id"] != highest_pos["id"]]
-            self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False)])
             pos_id = highest_pos["id"]
+
+            if bot_type == "HOME":
+                if self.round_trades_done.get(r_num, 0) > 0:
+                    self.round_trades_done[r_num] -= 1
+                self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
+                self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False)])
+            elif bot_type == "MICRO":
+                if self.micro_round_trades_done.get(r_num, 0) > 0:
+                    self.micro_round_trades_done[r_num] -= 1
+                self.micro_positions = [p for p in self.micro_positions if p["id"] != pos_id]
+            elif bot_type == "KILLER2":
+                if self.killer2_round_trades_done.get(r_num, 0) > 0:
+                    self.killer2_round_trades_done[r_num] -= 1
+                self.killer2_positions = [p for p in self.killer2_positions if p["id"] != pos_id]
+            elif bot_type == "KILLER3":
+                if self.killer3_round_trades_done.get(r_num, 0) > 0:
+                    self.killer3_round_trades_done[r_num] -= 1
+                self.killer3_positions = [p for p in self.killer3_positions if p["id"] != pos_id]
+
             t_record = {
                 "orderId": pos_id + "_HEAL",
                 "side": "SELL",
@@ -1917,12 +1945,15 @@ class UltraQuantSpotBot:
             leftover_profit = 0.0
             cash_unlocked = trimmed_sol * self.live_price * (1.0 - self.taker_fee_pct)
             invested_cut = trimmed_sol * entry_p
+
             highest_pos["solAmount"] = round(current_sol - trimmed_sol, 4)
             highest_pos["invested"] = round(current_inv - invested_cut, 2)
+
             self.usdt_balance = round(self.usdt_balance + cash_unlocked, 2)
             self.sol_balance = max(0.0, self.sol_balance - trimmed_sol)
             self.invested_amount = max(0.0, self.invested_amount - invested_cut)
             self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
+
             pos_id = highest_pos["id"]
             t_record = {
                 "orderId": pos_id + "_TRIM",
@@ -2000,16 +2031,7 @@ class UltraQuantSpotBot:
         }
         self.trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
-        asyncio.create_task(self.db_save_buy(pos, {
-            "order_id": pos_id + "_B",
-            "side": "BUY",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(sol_amt, 4),
-            "fee": round(fee, 4),
-            "profit": 0.0,
-            "round": m_round,
-            "exec_type": "MICRO_SCALP_ENTRY"
-        }))
+        asyncio.create_task(self.db_save_buy(pos, t_record))
 
     def execute_micro_sell(self, pos):
         pos_id = pos["id"]
@@ -2076,6 +2098,11 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
+
+                if self.usdt_balance < 10.0 and (current_p * float(pos["solAmount"]) * (1.0 - self.taker_fee_pct) - float(pos["invested"])) >= self.min_net_profit_usdt:
+                    self.execute_micro_sell(pos)
+                    continue
+
                 if gain >= 0.80:
                     pullback = 0.15
                 elif gain >= 0.55:
@@ -2190,16 +2217,7 @@ class UltraQuantSpotBot:
         }
         self.trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
-        asyncio.create_task(self.db_save_buy(pos, {
-            "order_id": pos_id + "_B",
-            "side": "BUY",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(sol_amt, 4),
-            "fee": round(fee, 4),
-            "profit": 0.0,
-            "round": k_round,
-            "exec_type": "KILLER2_SCALP_ENTRY"
-        }))
+        asyncio.create_task(self.db_save_buy(pos, t_record))
 
     def execute_killer2_sell(self, pos):
         pos_id = pos["id"]
@@ -2266,6 +2284,11 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
+
+                if self.usdt_balance < 10.0 and (current_p * float(pos["solAmount"]) * (1.0 - self.taker_fee_pct) - float(pos["invested"])) >= self.min_net_profit_usdt:
+                    self.execute_killer2_sell(pos)
+                    continue
+
                 if gain >= 1.20:
                     pullback = 0.25
                 elif gain >= 0.80:
@@ -2374,16 +2397,7 @@ class UltraQuantSpotBot:
         }
         self.trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
-        asyncio.create_task(self.db_save_buy(pos, {
-            "order_id": pos_id + "_B",
-            "side": "BUY",
-            "price": round(self.live_price, 2),
-            "sol_amount": round(sol_amt, 4),
-            "fee": round(fee, 4),
-            "profit": 0.0,
-            "round": k_round,
-            "exec_type": "KILLER3_SCALP_ENTRY"
-        }))
+        asyncio.create_task(self.db_save_buy(pos, t_record))
 
     def execute_killer3_sell(self, pos):
         pos_id = pos["id"]
@@ -2450,6 +2464,11 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
+
+                if self.usdt_balance < 10.0 and (current_p * float(pos["solAmount"]) * (1.0 - self.taker_fee_pct) - float(pos["invested"])) >= self.min_net_profit_usdt:
+                    self.execute_killer3_sell(pos)
+                    continue
+
                 if gain >= 1.50:
                     pullback = 0.03
                 elif gain >= 1.00:
@@ -2993,6 +3012,10 @@ class UltraQuantSpotBot:
 
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
+
+                if self.usdt_balance < 10.0 and (current_p * float(pos["solAmount"]) * (1.0 - self.taker_fee_pct) - float(pos["invested"])) >= self.min_net_profit_usdt:
+                    self.execute_sell_individual(pos)
+                    break
 
                 if gain >= 1.50:
                     pullback = 0.20
