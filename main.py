@@ -2,7 +2,7 @@ import asyncio
 import json
 import uuid
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -393,6 +393,7 @@ class UltraQuantSpotBot:
                             k2_count = 0
                             k3_pnl = 0.0
                             k3_count = 0
+                            h_pnl = 0.0
                             spot_closed_profit = 0.0
                             wallet_pnl = 0.0
 
