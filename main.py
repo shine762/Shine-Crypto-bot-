@@ -50,7 +50,13 @@ class UltraQuantSpotBot:
         self.active_positions = []
         self.trades_history = []
         self.spot_trades_history = []
+        self.micro_trades_history = []
+        self.killer2_trades_history = []
+        self.killer3_trades_history = []
+        self.hyper_trades_history = []
+        self.singularity_trades_history = []
         self.scalp_trades_history = []
+        self.manual_trades_history = []
         self.price_history = []
         self.latest_signal = {"action": "HOLD", "price": 0.0, "text": "Scanning market for high-probability signals..."}
         self.macro_vault_sol = 0.0
@@ -69,6 +75,10 @@ class UltraQuantSpotBot:
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
+        self.home_pool_users = 1
+        self.home_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.home_round_borrowed = {r: 0.0 for r in range(1, 11)}
+        self.macro_profit_vault = 0.0
         self.hyper_pool_active = True
         self.hyper_pool_users = 100
         self.hyper_pool_balance = 9999.0
@@ -76,6 +86,10 @@ class UltraQuantSpotBot:
         self.hyper_trade_size = 999.90
         self.hyper_positions = []
         self.hyper_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.hyper_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.hyper_round_borrowed = {r: 0.0 for r in range(1, 11)}
+        self.hyper_macro_profit_vault = 0.0
+        self.singularity_macro_profit_vault = 0.0
         self.hyper_tb_active = False
         self.hyper_tb_lowest = 0.0
         self.hyper_last_ref_price = 0.0
@@ -84,6 +98,9 @@ class UltraQuantSpotBot:
         self.micro_pool_users = 1
         self.micro_positions = []
         self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.micro_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.micro_round_borrowed = {r: 0.0 for r in range(1, 11)}
+        self.micro_macro_profit_vault = 0.0
         self.micro_tb_active = False
         self.micro_tb_lowest = 0.0
         self.micro_last_ref_price = 0.0
@@ -92,6 +109,9 @@ class UltraQuantSpotBot:
         self.killer2_pool_users = 1
         self.killer2_positions = []
         self.killer2_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.killer2_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.killer2_round_borrowed = {r: 0.0 for r in range(1, 11)}
+        self.killer2_macro_profit_vault = 0.0
         self.killer2_tb_active = False
         self.killer2_tb_lowest = 0.0
         self.killer2_last_ref_price = 0.0
@@ -100,6 +120,9 @@ class UltraQuantSpotBot:
         self.killer3_pool_users = 1
         self.killer3_positions = []
         self.killer3_round_trades_done = {r: 0 for r in range(1, 11)}
+        self.killer3_round_spent = {r: 0.0 for r in range(1, 11)}
+        self.killer3_round_borrowed = {r: 0.0 for r in range(1, 11)}
+        self.killer3_macro_profit_vault = 0.0
         self.killer3_tb_active = False
         self.killer3_tb_lowest = 0.0
         self.killer3_last_ref_price = 0.0
@@ -426,9 +449,12 @@ class UltraQuantSpotBot:
                             self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
                             self.sub_trade_count = len(regular_pos)
                             self.round_trades_done = {r: 0 for r in range(1, 11)}
+                            self.home_round_spent = {r: 0.0 for r in range(1, 11)}
+                            self.home_round_borrowed = {r: 0.0 for r in range(1, 11)}
                             for p in regular_pos:
                                 r_idx = p.get("round", 1)
                                 self.round_trades_done[r_idx] = self.round_trades_done.get(r_idx, 0) + 1
+                                self.home_round_spent[r_idx] = round(self.home_round_spent.get(r_idx, 0.0) + float(p.get("invested", 0.0)), 2)
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=500") as resp:
                     if resp.status == 200:
@@ -448,9 +474,15 @@ class UltraQuantSpotBot:
                             spot_closed_profit = 0.0
                             wallet_pnl = 0.0
 
+                            micro_logs = []
+                            killer2_logs = []
+                            killer3_logs = []
+                            hyper_logs = []
+                            sng_logs = []
+
                             for t in t_data:
-                                e_type = str(t.get("exec_type", ""))
-                                ord_id = str(t.get("order_id", ""))
+                                e_type = str(t.get("exec_type", "")).upper()
+                                ord_id = str(t.get("order_id", "")).upper()
                                 p_val = float(t.get("profit", 0.0))
                                 s_qty_val = float(t.get("sol_amount") or 0.0)
                                 if "CANCEL" in e_type:
@@ -461,56 +493,71 @@ class UltraQuantSpotBot:
                                     "price": float(t.get("price") or 0.0),
                                     "solAmount": s_qty_val,
                                     "fee": float(t.get("fee") or 0.0),
-                                    "profit": float(t.get("profit") or 0.0),
-                                    "realizedPnl": float(t.get("profit") or 0.0),
+                                    "profit": p_val,
+                                    "realizedPnl": p_val,
                                     "round": int(t.get("round") or 1),
                                     "execType": e_type,
                                     "timestamp": t.get("created_at") or datetime.now(timezone.utc).isoformat()
                                 }
                                 all_logs.append(formatted_t)
-                                if ord_id.startswith("MAN_") or ord_id.startswith("ATL_") or ord_id.startswith("ORD_") or ord_id.startswith("COPY_") or "BUY_FILLED" in e_type or "SELL_FILLED" in e_type or e_type == "AUTO_TRAILING_LOOP":
+                                is_sell_trade = (t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type or "EXIT" in e_type or "PROFIT" in e_type)
+
+                                if ord_id.startswith(("MAN_", "ATL_", "ORD_", "COPY_", "CPOS_", "BOT_")) or any(k in e_type for k in ["BUY_FILLED", "SELL_FILLED", "AUTO_TRAILING_LOOP", "MANUAL", "COPY"]):
                                     wallet_logs.append(formatted_t)
-                                    if t.get("side") in ["SELL", "AUTO_LOOP_SELL"] or "SELL" in e_type or "PROFIT" in e_type:
+                                    if is_sell_trade:
                                         wallet_pnl += p_val
-                                elif ord_id.startswith("M_") or ord_id.startswith("K2_") or ord_id.startswith("K3_") or "SCALP" in e_type:
+                                elif ord_id.startswith("M_") or "MICRO" in e_type or "APEX" in e_type:
+                                    micro_logs.append(formatted_t)
                                     scalp_logs.append(formatted_t)
-                                    if e_type == "MICRO_SCALP_EXIT" or ord_id.startswith("M_"):
+                                    if is_sell_trade:
                                         m_count += 1
                                         m_pnl += p_val
-                                    elif e_type == "KILLER2_SCALP_EXIT" or ord_id.startswith("K2_"):
+                                elif ord_id.startswith("K2_") or "KILLER2" in e_type or "QUANTUM" in e_type:
+                                    killer2_logs.append(formatted_t)
+                                    scalp_logs.append(formatted_t)
+                                    if is_sell_trade:
                                         k2_count += 1
                                         k2_pnl += p_val
-                                    elif e_type == "KILLER3_SCALP_EXIT" or ord_id.startswith("K3_"):
+                                elif ord_id.startswith("K3_") or "KILLER3" in e_type or "ABYSS" in e_type:
+                                    killer3_logs.append(formatted_t)
+                                    scalp_logs.append(formatted_t)
+                                    if is_sell_trade:
                                         k3_count += 1
                                         k3_pnl += p_val
                                 elif ord_id.startswith("HYPER_") or "HYPER" in e_type:
-                                    if t.get("side") == "SELL":
+                                    hyper_logs.append(formatted_t)
+                                    if is_sell_trade:
                                         h_pnl += p_val
+                                elif ord_id.startswith("SNG_") or "SINGULARITY" in e_type:
+                                    sng_logs.append(formatted_t)
+                                    if is_sell_trade:
+                                        pass
                                 else:
                                     bot_logs.append(formatted_t)
-                                    if t.get("side") == "SELL":
+                                    if is_sell_trade:
                                         spot_closed_profit += p_val
 
                             self.trades_history = all_logs
-                            self.spot_trades_history = [t for t in all_logs if not str(t.get("orderId","")).startswith(("MAN_","ORD_","ATL_","COPY_","M_","K2_","K3_","HYPER_")) and "SCALP" not in str(t.get("execType","")) and "KILLER" not in str(t.get("execType","")) and "MICRO" not in str(t.get("execType","")) and "HYPER" not in str(t.get("execType",""))]
-                            self.scalp_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith(("M_","K2_","K3_")) or "SCALP" in str(t.get("execType","")) or "KILLER" in str(t.get("execType","")) or "MICRO" in str(t.get("execType",""))]
-                            self.hyper_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith("HYPER_") or "HYPER" in str(t.get("execType",""))]
-                            h_pnl = sum(float(t.get("profit", 0.0)) for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL")
-                            if h_pnl > 0:
-                                self.hyper_realized_pnl = round(h_pnl, 4)
-                                self.hyper_total_trades = len([t for t in self.hyper_trades_history if str(t.get("side","")).upper() == "SELL"])
-                            self.singularity_trades_history = [t for t in all_logs if str(t.get("orderId","")).startswith("SNG_") or "SINGULARITY" in str(t.get("execType",""))]
-                            sng_pnl = sum(float(t.get("profit", 0.0)) for t in self.singularity_trades_history if str(t.get("side","")).upper() == "SELL")
-                            if sng_pnl > 0:
-                                self.singularity_realized_pnl = round(sng_pnl, 4)
-                                self.singularity_total_trades = len([t for t in self.singularity_trades_history if str(t.get("side","")).upper() == "SELL"])
+                            self.spot_trades_history = bot_logs
+                            self.micro_trades_history = micro_logs
+                            self.killer2_trades_history = killer2_logs
+                            self.killer3_trades_history = killer3_logs
+                            self.hyper_trades_history = hyper_logs
+                            self.singularity_trades_history = sng_logs
+                            self.scalp_trades_history = scalp_logs
                             self.manual_trades_history = wallet_logs
+
                             self.micro_realized_pnl = round(m_pnl, 4)
                             self.micro_total_trades = m_count
                             self.killer2_realized_pnl = round(k2_pnl, 4)
                             self.killer2_total_trades = k2_count
                             self.killer3_realized_pnl = round(k3_pnl, 4)
                             self.killer3_total_trades = k3_count
+                            self.hyper_realized_pnl = round(h_pnl, 4)
+                            self.hyper_total_trades = len([t for t in hyper_logs if str(t.get("side","")).upper() == "SELL"])
+                            sng_pnl = sum(float(t.get("profit", 0.0)) for t in sng_logs if str(t.get("side","")).upper() == "SELL")
+                            self.singularity_realized_pnl = round(sng_pnl, 4)
+                            self.singularity_total_trades = len([t for t in sng_logs if str(t.get("side","")).upper() == "SELL"])
                             self.spot_realized_pnl = round(spot_closed_profit, 2)
                             self.manual_realized_pnl = round(wallet_pnl, 4)
                             self.realized_pnl = round(spot_closed_profit + m_pnl + k2_pnl + k3_pnl, 2)
@@ -853,6 +900,9 @@ class UltraQuantSpotBot:
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history,
             "spotTradesHistory": self.spot_trades_history,
+            "microTradesHistory": self.micro_trades_history,
+            "killer2TradesHistory": self.killer2_trades_history,
+            "killer3TradesHistory": self.killer3_trades_history,
             "scalpTradesHistory": self.scalp_trades_history,
             "manualTradesHistory": self.manual_trades_history,
             "latestSignal": self.latest_signal,
@@ -922,31 +972,90 @@ class UltraQuantSpotBot:
             return
 
         self.sync_phase_and_round()
-        all_sol = self.sol_balance + self.macro_vault_sol
-        total_account_val = self.usdt_balance + (all_sol * self.live_price)
+        cur_rnd = self.active_round
         vol_multiplier = 1.2 if self.whale_sentiment == "BULLISH" else (0.9 if self.whale_sentiment == "BEARISH" else 1.0)
-
         cfg = self.get_tier_config()
         max_allowed_slots = cfg["slots"]
-        target_size = cfg["size"]
 
-        current_done = self.round_trades_done.get(self.active_round, 0)
+        current_done = self.round_trades_done.get(cur_rnd, 0)
         if current_done >= max_allowed_slots:
             return
 
-        invest_target = max(10.0, target_size * vol_multiplier)
-        if invest_target > self.usdt_balance:
-            invest_target = self.usdt_balance
+        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "home_pool_users", 1) >= 100)
+        total_trading_capital = self.total_user_capital * 0.80
+        borrowed_donor = 0
+        is_macro_hold = False
+
+        if is_pool_mode:
+            target_size = max(10.0, round((self.round_allocations.get(cur_rnd, 0.10) * total_trading_capital) / max(1, max_allowed_slots), 2))
+            round_max = self.round_allocations.get(cur_rnd, 0.0) * total_trading_capital
+            round_spent = self.home_round_spent.get(cur_rnd, 0.0)
+            round_avail = round_max - round_spent
+
+            if cur_rnd == 8:
+                if self.macro_vault_invested < round_max and (round_max - self.macro_vault_invested) >= target_size:
+                    is_macro_hold = True
+                    self.home_round_spent[8] = round(self.home_round_spent.get(8, 0.0) + target_size, 2)
+                else:
+                    for r_donor in range(1, 8):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
+                        d_spent = self.home_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.home_round_borrowed[8] = round(self.home_round_borrowed.get(8, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif cur_rnd == 7:
+                if round_avail >= target_size:
+                    self.home_round_spent[7] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 7):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
+                        d_spent = self.home_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.home_round_borrowed[7] = round(self.home_round_borrowed.get(7, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif cur_rnd == 6:
+                if round_avail >= target_size:
+                    self.home_round_spent[6] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 6):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
+                        d_spent = self.home_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.home_round_borrowed[6] = round(self.home_round_borrowed.get(6, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            else:
+                if round_avail < target_size:
+                    return
+                self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
+            invest_target = target_size
+        else:
+            invest_target = max(10.0, cfg["size"] * vol_multiplier)
+            if invest_target > self.usdt_balance:
+                invest_target = self.usdt_balance
+            if cur_rnd == 8:
+                is_macro_hold = True
 
         fee = invest_target * self.taker_fee_pct
         net_invest = invest_target - fee
         sol_bought = net_invest / self.live_price
         self.usdt_balance -= invest_target
-        self.round_trades_done[self.active_round] = self.round_trades_done.get(self.active_round, 0) + 1
-        self.sub_trade_count = self.round_trades_done[self.active_round]
+        self.round_trades_done[cur_rnd] = self.round_trades_done.get(cur_rnd, 0) + 1
+        self.sub_trade_count = self.round_trades_done[cur_rnd]
         pos_id = str(uuid.uuid4())[:8]
 
-        if self.active_round == 8:
+        if is_macro_hold:
             self.macro_vault_sol += sol_bought
             self.macro_vault_invested += invest_target
             self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else 0.0
@@ -961,6 +1070,7 @@ class UltraQuantSpotBot:
                 "solAmount": round(sol_bought, 4),
                 "invested": round(invest_target, 2),
                 "isMacro": True,
+                "borrowedFrom": 0,
                 "targetPrice": self.macro_target_price
             }
         else:
@@ -968,16 +1078,20 @@ class UltraQuantSpotBot:
             self.invested_amount += invest_target
             self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
             target_exit = round(self.live_price + 0.40, 2)
-            pos_label = f"R{self.active_round} (Trade {self.sub_trade_count}/10)"
+            if borrowed_donor > 0:
+                pos_label = f"R{cur_rnd} (LOAN R{borrowed_donor} #{self.sub_trade_count})"
+            else:
+                pos_label = f"R{cur_rnd} (Trade {self.sub_trade_count}/30)"
             pos = {
                 "id": pos_id,
-                "round": self.active_round,
+                "round": cur_rnd,
                 "subTrade": self.sub_trade_count,
                 "label": pos_label,
                 "entryPrice": round(self.live_price, 2),
                 "solAmount": round(sol_bought, 4),
                 "invested": round(invest_target, 2),
                 "isMacro": False,
+                "borrowedFrom": borrowed_donor,
                 "targetPrice": target_exit,
                 "ts_high": round(self.live_price, 2),
                 "ts_low": 0.0
@@ -992,7 +1106,7 @@ class UltraQuantSpotBot:
             "solAmount": round(sol_bought, 4),
             "fee": round(fee, 4),
             "profit": 0.0,
-            "round": self.active_round,
+            "round": cur_rnd,
             "execType": "WHALE_MAKER_MATCHED",
             "orderflowRatio": self.whale_orderflow_ratio,
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -1011,7 +1125,7 @@ class UltraQuantSpotBot:
             "sol_amount": round(sol_bought, 4),
             "fee": round(fee, 4),
             "profit": 0.0,
-            "round": self.active_round,
+            "round": cur_rnd,
             "exec_type": "WHALE_MAKER_MATCHED"
         }))
         self.ts_high = round(self.live_price, 2)
@@ -1741,18 +1855,31 @@ class UltraQuantSpotBot:
         profit = net_return - invested
         if profit < self.min_net_profit_usdt:
             return
-        leftover_profit = self.check_and_apply_self_healing(profit)
+
+        r_num = pos.get("round", self.active_round)
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
+        if borrowed_donor > 0:
+            self.home_round_spent[borrowed_donor] = max(0.0, round(self.home_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.home_round_borrowed[r_num] = max(0.0, round(self.home_round_borrowed.get(r_num, 0.0) - invested, 2))
+        else:
+            self.home_round_spent[r_num] = max(0.0, round(self.home_round_spent.get(r_num, 0.0) - invested, 2))
+
+        if r_num == 8 and borrowed_donor > 0:
+            self.macro_profit_vault = round(self.macro_profit_vault + profit, 4)
+
         self.usdt_balance += net_return
-        self.realized_pnl = round(self.realized_pnl + leftover_profit, 4)
-        self.spot_realized_pnl = round(self.spot_realized_pnl + leftover_profit, 4)
+        self.realized_pnl = round(self.realized_pnl + profit, 4)
+        self.spot_realized_pnl = round(self.spot_realized_pnl + profit, 4)
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-        r_num = pos.get("round", self.active_round)
+
         if self.round_trades_done.get(r_num, 0) > 0:
             self.round_trades_done[r_num] -= 1
         self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False) and p["id"] != pos_id])
         self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
+
         trade_record = {
             "orderId": pos_id + "_S",
             "side": "SELL",
@@ -1784,33 +1911,99 @@ class UltraQuantSpotBot:
             self.execute_buy(is_sub_trade=False)
 
     def execute_hyper_buy(self):
-        if not self.hyper_pool_active or self.hyper_pool_users < 100 or self.hyper_pool_balance < self.hyper_trade_size or self.live_price <= 0:
+        if not self.hyper_pool_active or self.hyper_pool_users < 100 or self.live_price <= 0:
             return
+        if self.active_round in [9, 10]:
+            return
+
+        self.sync_phase_and_round()
         h_round = self.active_round
-        allowed_hyper_slots = self.get_hyper_slots(self.total_user_capital)
-        if allowed_hyper_slots <= 0:
-            allowed_hyper_slots = 30 if self.total_user_capital >= 10000.0 else 3
+        allowed_hyper_slots = 30
         if self.hyper_round_trades_done.get(h_round, 0) >= allowed_hyper_slots:
             return
-        if self.total_user_capital > 10000.0:
-            cfg = self.get_tier_config()
-            target_size = cfg["size"]
+
+        total_hyper_pool = 9999.0
+        target_size = max(10.0, round((self.round_allocations.get(h_round, 0.10) * total_hyper_pool) / max(1, allowed_hyper_slots), 2))
+        round_max = self.round_allocations.get(h_round, 0.0) * total_hyper_pool
+        round_spent = self.hyper_round_spent.get(h_round, 0.0)
+        round_avail = round_max - round_spent
+
+        borrowed_donor = 0
+        is_macro_hold = False
+
+        if self.hyper_pool_balance < target_size:
+            return
+
+        if h_round == 8:
+            if (round_max - self.hyper_macro_profit_vault) >= target_size:
+                is_macro_hold = True
+                self.hyper_round_spent[8] = round(self.hyper_round_spent.get(8, 0.0) + target_size, 2)
+            else:
+                for r_donor in range(1, 8):
+                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
+                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
+                    if (d_alloc - d_spent) >= target_size:
+                        borrowed_donor = r_donor
+                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
+                        self.hyper_round_borrowed[8] = round(self.hyper_round_borrowed.get(8, 0.0) + target_size, 2)
+                        break
+                if borrowed_donor == 0:
+                    return
+        elif h_round == 7:
+            if round_avail >= target_size:
+                self.hyper_round_spent[7] = round(round_spent + target_size, 2)
+            else:
+                for r_donor in range(1, 7):
+                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
+                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
+                    if (d_alloc - d_spent) >= target_size:
+                        borrowed_donor = r_donor
+                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
+                        self.hyper_round_borrowed[7] = round(self.hyper_round_borrowed.get(7, 0.0) + target_size, 2)
+                        break
+                if borrowed_donor == 0:
+                    return
+        elif h_round == 6:
+            if round_avail >= target_size:
+                self.hyper_round_spent[6] = round(round_spent + target_size, 2)
+            else:
+                for r_donor in range(1, 6):
+                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
+                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
+                    if (d_alloc - d_spent) >= target_size:
+                        borrowed_donor = r_donor
+                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
+                        self.hyper_round_borrowed[6] = round(self.hyper_round_borrowed.get(6, 0.0) + target_size, 2)
+                        break
+                if borrowed_donor == 0:
+                    return
         else:
-            target_size = self.hyper_trade_size
+            if round_avail < target_size:
+                return
+            self.hyper_round_spent[h_round] = round(round_spent + target_size, 2)
+
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
         sol_amt = net_invest / self.live_price
         self.hyper_pool_balance = round(self.hyper_pool_balance - target_size, 2)
         self.hyper_round_trades_done[h_round] = self.hyper_round_trades_done.get(h_round, 0) + 1
         pos_id = "HYPER_" + str(uuid.uuid4())[:6]
+
+        if borrowed_donor > 0:
+            lbl_text = f"HYPER TITAN R{h_round} (LOAN R{borrowed_donor} #{self.hyper_round_trades_done[h_round]})"
+        else:
+            lbl_text = f"HYPER TITAN R{h_round} (#{self.hyper_round_trades_done[h_round]})"
+
         pos = {
             "id": pos_id,
             "round": h_round,
             "subTrade": self.hyper_round_trades_done[h_round],
-            "label": f"HYPER TITAN R{h_round} (#{self.hyper_round_trades_done[h_round]})",
+            "label": lbl_text,
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
+            "isMacro": is_macro_hold,
+            "borrowedFrom": borrowed_donor,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
@@ -1844,10 +2037,23 @@ class UltraQuantSpotBot:
         profit = round(net_return - invested, 4)
         if profit <= 0.01:
             return
+
+        h_round = pos.get("round", 1)
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
+        if borrowed_donor > 0:
+            self.hyper_round_spent[borrowed_donor] = max(0.0, round(self.hyper_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.hyper_round_borrowed[h_round] = max(0.0, round(self.hyper_round_borrowed.get(h_round, 0.0) - invested, 2))
+        else:
+            self.hyper_round_spent[h_round] = max(0.0, round(self.hyper_round_spent.get(h_round, 0.0) - invested, 2))
+
+        if h_round == 8 and borrowed_donor > 0:
+            self.hyper_macro_profit_vault = round(self.hyper_macro_profit_vault + profit, 4)
+
         self.hyper_pool_balance = round(self.hyper_pool_balance + net_return, 2)
         self.hyper_realized_pnl = round(self.hyper_realized_pnl + profit, 4)
         self.hyper_total_trades += 1
-        h_round = pos.get("round", 1)
+
         if self.hyper_round_trades_done.get(h_round, 0) > 0:
             self.hyper_round_trades_done[h_round] -= 1
         self.hyper_positions = [p for p in self.hyper_positions if p["id"] != pos_id]
@@ -1869,7 +2075,7 @@ class UltraQuantSpotBot:
         self.hyper_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, trade_record))
         asyncio.create_task(self.db_sync_state())
-        if not self.is_paused and len(self.hyper_positions) == 0 and self.hyper_pool_balance >= self.hyper_trade_size:
+        if not self.is_paused and len(self.hyper_positions) == 0 and self.hyper_pool_balance >= 10.0:
             self.execute_hyper_buy()
 
     def run_hyper_titan_tick(self):
@@ -1928,120 +2134,7 @@ class UltraQuantSpotBot:
         else:
             self.hyper_tb_active = False
 
-    def check_and_apply_self_healing(self, scalp_profit):
-        if scalp_profit <= 0 or self.live_price <= 0 or self.usdt_balance >= 10.0:
-            return scalp_profit
-
-        all_candidates = []
-        for p in self.active_positions:
-            if not p.get("isMacro", False) and float(p.get("entryPrice", 0.0)) > self.live_price:
-                all_candidates.append(("HOME", p))
-        for p in self.micro_positions:
-            if float(p.get("entryPrice", 0.0)) > self.live_price:
-                all_candidates.append(("MICRO", p))
-        for p in self.killer2_positions:
-            if float(p.get("entryPrice", 0.0)) > self.live_price:
-                all_candidates.append(("KILLER2", p))
-        for p in self.killer3_positions:
-            if float(p.get("entryPrice", 0.0)) > self.live_price:
-                all_candidates.append(("KILLER3", p))
-
-        if not all_candidates:
-            return scalp_profit
-
-        best_target = max(all_candidates, key=lambda item: float(item[1].get("entryPrice", 0.0)))
-        bot_type, highest_pos = best_target
-
-        entry_p = float(highest_pos.get("entryPrice", 0.0))
-        current_sol = float(highest_pos.get("solAmount", 0.0))
-        current_inv = float(highest_pos.get("invested", 0.0))
-        loss_per_sol = entry_p - (self.live_price * (1.0 - self.taker_fee_pct))
-        if loss_per_sol <= 0 or current_sol <= 0:
-            return scalp_profit
-
-        max_possible_loss = current_sol * loss_per_sol
-        if scalp_profit >= max_possible_loss:
-            trimmed_sol = current_sol
-            absorbed_loss = max_possible_loss
-            leftover_profit = scalp_profit - absorbed_loss
-            cash_unlocked = trimmed_sol * self.live_price * (1.0 - self.taker_fee_pct)
-
-            self.usdt_balance = round(self.usdt_balance + cash_unlocked, 2)
-            self.sol_balance = max(0.0, self.sol_balance - trimmed_sol)
-            self.invested_amount = max(0.0, self.invested_amount - current_inv)
-            self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
-
-            r_num = highest_pos.get("round", self.active_round)
-            pos_id = highest_pos["id"]
-
-            if bot_type == "HOME":
-                if self.round_trades_done.get(r_num, 0) > 0:
-                    self.round_trades_done[r_num] -= 1
-                self.active_positions = [p for p in self.active_positions if p["id"] != pos_id]
-                self.sub_trade_count = len([p for p in self.active_positions if not p.get("isMacro", False)])
-            elif bot_type == "MICRO":
-                if self.micro_round_trades_done.get(r_num, 0) > 0:
-                    self.micro_round_trades_done[r_num] -= 1
-                self.micro_positions = [p for p in self.micro_positions if p["id"] != pos_id]
-            elif bot_type == "KILLER2":
-                if self.killer2_round_trades_done.get(r_num, 0) > 0:
-                    self.killer2_round_trades_done[r_num] -= 1
-                self.killer2_positions = [p for p in self.killer2_positions if p["id"] != pos_id]
-            elif bot_type == "KILLER3":
-                if self.killer3_round_trades_done.get(r_num, 0) > 0:
-                    self.killer3_round_trades_done[r_num] -= 1
-                self.killer3_positions = [p for p in self.killer3_positions if p["id"] != pos_id]
-
-            t_record = {
-                "orderId": pos_id + "_HEAL",
-                "side": "SELL",
-                "price": round(self.live_price, 2),
-                "solAmount": round(trimmed_sol, 4),
-                "fee": round(trimmed_sol * self.live_price * self.taker_fee_pct, 4),
-                "profit": round(-absorbed_loss, 4),
-                "realizedPnl": round(-absorbed_loss, 4),
-                "round": r_num,
-                "execType": "SELF_HEALING_RECYCLED",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            self.trades_history.insert(0, t_record)
-            self.spot_trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_sell_individual(pos_id, t_record))
-            asyncio.create_task(self.db_sync_state())
-            return leftover_profit
-        else:
-            trimmed_sol = scalp_profit / loss_per_sol
-            absorbed_loss = scalp_profit
-            leftover_profit = 0.0
-            cash_unlocked = trimmed_sol * self.live_price * (1.0 - self.taker_fee_pct)
-            invested_cut = trimmed_sol * entry_p
-
-            highest_pos["solAmount"] = round(current_sol - trimmed_sol, 4)
-            highest_pos["invested"] = round(current_inv - invested_cut, 2)
-
-            self.usdt_balance = round(self.usdt_balance + cash_unlocked, 2)
-            self.sol_balance = max(0.0, self.sol_balance - trimmed_sol)
-            self.invested_amount = max(0.0, self.invested_amount - invested_cut)
-            self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
-
-            pos_id = highest_pos["id"]
-            t_record = {
-                "orderId": pos_id + "_TRIM",
-                "side": "SELL",
-                "price": round(self.live_price, 2),
-                "solAmount": round(trimmed_sol, 4),
-                "fee": round(trimmed_sol * self.live_price * self.taker_fee_pct, 4),
-                "profit": round(-absorbed_loss, 4),
-                "realizedPnl": round(-absorbed_loss, 4),
-                "round": highest_pos.get("round", self.active_round),
-                "execType": "SELF_HEALING_TRIM",
-                "timestamp": datetime.now(timezone.utc).isoformat()
-            }
-            self.trades_history.insert(0, t_record)
-            self.spot_trades_history.insert(0, t_record)
-            asyncio.create_task(self.db_save_buy(highest_pos, t_record))
-            asyncio.create_task(self.db_sync_state())
-            return leftover_profit
+    
 
     def get_scavenged_idle_fund(self):
         if self.usdt_balance < 10.0:
@@ -2056,30 +2149,104 @@ class UltraQuantSpotBot:
     def execute_micro_buy(self):
         if self.usdt_balance < 10.0 or self.live_price <= 0:
             return
+        if self.active_round in [9, 10]:
+            return
         self.sync_phase_and_round()
         m_round = self.active_round
         cfg = self.get_tier_config()
-        if self.micro_round_trades_done.get(m_round, 0) >= cfg["slots"]:
+        max_allowed_slots = cfg["slots"]
+
+        if self.micro_round_trades_done.get(m_round, 0) >= max_allowed_slots:
             return
-        target_size = max(10.0, cfg["size"])
-        if target_size > self.usdt_balance:
-            target_size = self.usdt_balance
-        if target_size < 10.0:
-            return
-        fee = target_size * self.taker_fee_pct
-        net_invest = target_size - fee
+
+        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "micro_pool_users", 1) >= 100)
+        total_pool_budget = self.total_user_capital * 0.80
+        borrowed_donor = 0
+        is_macro_hold = False
+
+        if is_pool_mode:
+            target_size = max(10.0, round((self.round_allocations.get(m_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
+            round_max = self.round_allocations.get(m_round, 0.0) * total_pool_budget
+            round_spent = self.micro_round_spent.get(m_round, 0.0)
+            round_avail = round_max - round_spent
+
+            if m_round == 8:
+                if (round_max - self.micro_macro_profit_vault) >= target_size:
+                    is_macro_hold = True
+                    self.micro_round_spent[8] = round(self.micro_round_spent.get(8, 0.0) + target_size, 2)
+                else:
+                    for r_donor in range(1, 8):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.micro_round_borrowed[8] = round(self.micro_round_borrowed.get(8, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif m_round == 7:
+                if round_avail >= target_size:
+                    self.micro_round_spent[7] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 7):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.micro_round_borrowed[7] = round(self.micro_round_borrowed.get(7, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif m_round == 6:
+                if round_avail >= target_size:
+                    self.micro_round_spent[6] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 6):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.micro_round_borrowed[6] = round(self.micro_round_borrowed.get(6, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            else:
+                if round_avail < target_size:
+                    return
+                self.micro_round_spent[m_round] = round(round_spent + target_size, 2)
+            invest_target = target_size
+        else:
+            invest_target = max(10.0, cfg["size"])
+            if invest_target > self.usdt_balance:
+                invest_target = self.usdt_balance
+            if m_round == 8:
+                is_macro_hold = True
+
+        fee = invest_target * self.taker_fee_pct
+        net_invest = invest_target - fee
         sol_amt = net_invest / self.live_price
-        self.usdt_balance = round(self.usdt_balance - target_size, 2)
+        self.usdt_balance = round(self.usdt_balance - invest_target, 2)
         self.micro_round_trades_done[m_round] = self.micro_round_trades_done.get(m_round, 0) + 1
         pos_id = "M_" + str(uuid.uuid4())[:6]
+
+        if borrowed_donor > 0:
+            lbl_text = f"APEX VELOCITY R{m_round} (LOAN R{borrowed_donor} #{self.micro_round_trades_done[m_round]})"
+        else:
+            lbl_text = f"APEX VELOCITY R{m_round} (#{self.micro_round_trades_done[m_round]})"
+
         pos = {
             "id": pos_id,
             "round": m_round,
             "subTrade": self.micro_round_trades_done[m_round],
-            "label": f"APEX VELOCITY R{m_round} (#{self.micro_round_trades_done[m_round]})",
+            "label": lbl_text,
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
-            "invested": round(target_size, 2),
+            "invested": round(invest_target, 2),
+            "isMacro": is_macro_hold,
+            "borrowedFrom": borrowed_donor,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
@@ -2100,6 +2267,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.micro_trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
@@ -2113,12 +2281,24 @@ class UltraQuantSpotBot:
         profit = net_return - invested
         if profit < self.min_net_profit_usdt:
             return
-        leftover_profit = self.check_and_apply_self_healing(profit)
-        self.usdt_balance = round(self.usdt_balance + net_return, 2)
-        self.realized_pnl = round(self.realized_pnl + leftover_profit, 4)
-        self.micro_realized_pnl = round(self.micro_realized_pnl + leftover_profit, 4)
-        self.micro_total_trades += 1
+
         m_round = pos.get("round", 1)
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
+        if borrowed_donor > 0:
+            self.micro_round_spent[borrowed_donor] = max(0.0, round(self.micro_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.micro_round_borrowed[m_round] = max(0.0, round(self.micro_round_borrowed.get(m_round, 0.0) - invested, 2))
+        else:
+            self.micro_round_spent[m_round] = max(0.0, round(self.micro_round_spent.get(m_round, 0.0) - invested, 2))
+
+        if m_round == 8 and borrowed_donor > 0:
+            self.micro_macro_profit_vault = round(self.micro_macro_profit_vault + profit, 4)
+
+        self.usdt_balance = round(self.usdt_balance + net_return, 2)
+        self.realized_pnl = round(self.realized_pnl + profit, 4)
+        self.micro_realized_pnl = round(self.micro_realized_pnl + profit, 4)
+        self.micro_total_trades += 1
+
         if self.micro_round_trades_done.get(m_round, 0) > 0:
             self.micro_round_trades_done[m_round] -= 1
         self.micro_positions = [p for p in self.micro_positions if p["id"] != pos_id]
@@ -2138,6 +2318,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.micro_trades_history.insert(0, trade_record)
         self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
@@ -2241,31 +2422,106 @@ class UltraQuantSpotBot:
                 return 0.04
 
     def execute_killer2_buy(self):
-        idle_fund = self.get_killer2_idle_fund()
-        if idle_fund < 10.0 or self.live_price <= 0:
+        if self.usdt_balance < 10.0 or self.live_price <= 0:
+            return
+        if self.active_round in [9, 10]:
             return
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
-        if self.killer2_round_trades_done.get(k_round, 0) >= cfg["slots"]:
+        max_allowed_slots = cfg["slots"]
+
+        if self.killer2_round_trades_done.get(k_round, 0) >= max_allowed_slots:
             return
-        target_size = max(10.0, cfg["size"])
-        if target_size < 10.0 or target_size > self.usdt_balance:
-            return
-        fee = target_size * self.taker_fee_pct
-        net_invest = target_size - fee
+
+        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "killer2_pool_users", 1) >= 100)
+        total_pool_budget = self.total_user_capital * 0.80
+        borrowed_donor = 0
+        is_macro_hold = False
+
+        if is_pool_mode:
+            target_size = max(10.0, round((self.round_allocations.get(k_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
+            round_max = self.round_allocations.get(k_round, 0.0) * total_pool_budget
+            round_spent = self.killer2_round_spent.get(k_round, 0.0)
+            round_avail = round_max - round_spent
+
+            if k_round == 8:
+                if (round_max - self.killer2_macro_profit_vault) >= target_size:
+                    is_macro_hold = True
+                    self.killer2_round_spent[8] = round(self.killer2_round_spent.get(8, 0.0) + target_size, 2)
+                else:
+                    for r_donor in range(1, 8):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer2_round_borrowed[8] = round(self.killer2_round_borrowed.get(8, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif k_round == 7:
+                if round_avail >= target_size:
+                    self.killer2_round_spent[7] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 7):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer2_round_borrowed[7] = round(self.killer2_round_borrowed.get(7, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif k_round == 6:
+                if round_avail >= target_size:
+                    self.killer2_round_spent[6] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 6):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer2_round_borrowed[6] = round(self.killer2_round_borrowed.get(6, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            else:
+                if round_avail < target_size:
+                    return
+                self.killer2_round_spent[k_round] = round(round_spent + target_size, 2)
+            invest_target = target_size
+        else:
+            invest_target = max(10.0, cfg["size"])
+            if invest_target > self.usdt_balance:
+                invest_target = self.usdt_balance
+            if k_round == 8:
+                is_macro_hold = True
+
+        fee = invest_target * self.taker_fee_pct
+        net_invest = invest_target - fee
         sol_amt = net_invest / self.live_price
-        self.usdt_balance -= target_size
+        self.usdt_balance = round(self.usdt_balance - invest_target, 2)
         self.killer2_round_trades_done[k_round] = self.killer2_round_trades_done.get(k_round, 0) + 1
         pos_id = "K2_" + str(uuid.uuid4())[:6]
+
+        if borrowed_donor > 0:
+            lbl_text = f"QUANTUM PULSE R{k_round} (LOAN R{borrowed_donor} #{self.killer2_round_trades_done[k_round]})"
+        else:
+            lbl_text = f"QUANTUM PULSE R{k_round} (#{self.killer2_round_trades_done[k_round]})"
+
         pos = {
             "id": pos_id,
             "round": k_round,
             "subTrade": self.killer2_round_trades_done[k_round],
-            "label": f"QUANTUM PULSE R{k_round} (#{self.killer2_round_trades_done[k_round]})",
+            "label": lbl_text,
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
-            "invested": round(target_size, 2),
+            "invested": round(invest_target, 2),
+            "isMacro": is_macro_hold,
+            "borrowedFrom": borrowed_donor,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
@@ -2286,6 +2542,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.killer2_trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
@@ -2299,12 +2556,24 @@ class UltraQuantSpotBot:
         profit = net_return - invested
         if profit < self.min_net_profit_usdt:
             return
-        leftover_profit = self.check_and_apply_self_healing(profit)
-        self.usdt_balance = round(self.usdt_balance + net_return, 2)
-        self.realized_pnl = round(self.realized_pnl + leftover_profit, 4)
-        self.killer2_realized_pnl = round(self.killer2_realized_pnl + leftover_profit, 4)
-        self.killer2_total_trades += 1
+
         k_round = pos.get("round", 1)
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
+        if borrowed_donor > 0:
+            self.killer2_round_spent[borrowed_donor] = max(0.0, round(self.killer2_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.killer2_round_borrowed[k_round] = max(0.0, round(self.killer2_round_borrowed.get(k_round, 0.0) - invested, 2))
+        else:
+            self.killer2_round_spent[k_round] = max(0.0, round(self.killer2_round_spent.get(k_round, 0.0) - invested, 2))
+
+        if k_round == 8 and borrowed_donor > 0:
+            self.killer2_macro_profit_vault = round(self.killer2_macro_profit_vault + profit, 4)
+
+        self.usdt_balance = round(self.usdt_balance + net_return, 2)
+        self.realized_pnl = round(self.realized_pnl + profit, 4)
+        self.killer2_realized_pnl = round(self.killer2_realized_pnl + profit, 4)
+        self.killer2_total_trades += 1
+
         if self.killer2_round_trades_done.get(k_round, 0) > 0:
             self.killer2_round_trades_done[k_round] -= 1
         self.killer2_positions = [p for p in self.killer2_positions if p["id"] != pos_id]
@@ -2324,6 +2593,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.killer2_trades_history.insert(0, trade_record)
         self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
@@ -2421,31 +2691,106 @@ class UltraQuantSpotBot:
                 return 0.07
 
     def execute_killer3_buy(self):
-        idle_fund = self.get_killer3_idle_fund()
-        if idle_fund < 10.0 or self.live_price <= 0:
+        if self.usdt_balance < 10.0 or self.live_price <= 0:
+            return
+        if self.active_round in [9, 10]:
             return
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
-        if self.killer3_round_trades_done.get(k_round, 0) >= cfg["slots"]:
+        max_allowed_slots = cfg["slots"]
+
+        if self.killer3_round_trades_done.get(k_round, 0) >= max_allowed_slots:
             return
-        target_size = max(10.0, cfg["size"])
-        if target_size < 10.0 or target_size > self.usdt_balance:
-            return
-        fee = target_size * self.taker_fee_pct
-        net_invest = target_size - fee
+
+        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "killer3_pool_users", 1) >= 100)
+        total_pool_budget = self.total_user_capital * 0.80
+        borrowed_donor = 0
+        is_macro_hold = False
+
+        if is_pool_mode:
+            target_size = max(10.0, round((self.round_allocations.get(k_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
+            round_max = self.round_allocations.get(k_round, 0.0) * total_pool_budget
+            round_spent = self.killer3_round_spent.get(k_round, 0.0)
+            round_avail = round_max - round_spent
+
+            if k_round == 8:
+                if (round_max - self.killer3_macro_profit_vault) >= target_size:
+                    is_macro_hold = True
+                    self.killer3_round_spent[8] = round(self.killer3_round_spent.get(8, 0.0) + target_size, 2)
+                else:
+                    for r_donor in range(1, 8):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer3_round_borrowed[8] = round(self.killer3_round_borrowed.get(8, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif k_round == 7:
+                if round_avail >= target_size:
+                    self.killer3_round_spent[7] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 7):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer3_round_borrowed[7] = round(self.killer3_round_borrowed.get(7, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            elif k_round == 6:
+                if round_avail >= target_size:
+                    self.killer3_round_spent[6] = round(round_spent + target_size, 2)
+                else:
+                    for r_donor in range(1, 6):
+                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
+                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
+                        if (d_alloc - d_spent) >= target_size:
+                            borrowed_donor = r_donor
+                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
+                            self.killer3_round_borrowed[6] = round(self.killer3_round_borrowed.get(6, 0.0) + target_size, 2)
+                            break
+                    if borrowed_donor == 0:
+                        return
+            else:
+                if round_avail < target_size:
+                    return
+                self.killer3_round_spent[k_round] = round(round_spent + target_size, 2)
+            invest_target = target_size
+        else:
+            invest_target = max(10.0, cfg["size"])
+            if invest_target > self.usdt_balance:
+                invest_target = self.usdt_balance
+            if k_round == 8:
+                is_macro_hold = True
+
+        fee = invest_target * self.taker_fee_pct
+        net_invest = invest_target - fee
         sol_amt = net_invest / self.live_price
-        self.usdt_balance -= target_size
+        self.usdt_balance = round(self.usdt_balance - invest_target, 2)
         self.killer3_round_trades_done[k_round] = self.killer3_round_trades_done.get(k_round, 0) + 1
         pos_id = "K3_" + str(uuid.uuid4())[:6]
+
+        if borrowed_donor > 0:
+            lbl_text = f"TITAN ABYSS R{k_round} (LOAN R{borrowed_donor} #{self.killer3_round_trades_done[k_round]})"
+        else:
+            lbl_text = f"TITAN ABYSS R{k_round} (#{self.killer3_round_trades_done[k_round]})"
+
         pos = {
             "id": pos_id,
             "round": k_round,
             "subTrade": self.killer3_round_trades_done[k_round],
-            "label": f"TITAN ABYSS R{k_round} (#{self.killer3_round_trades_done[k_round]})",
+            "label": lbl_text,
             "entryPrice": round(self.live_price, 2),
             "solAmount": round(sol_amt, 4),
-            "invested": round(target_size, 2),
+            "invested": round(invest_target, 2),
+            "isMacro": is_macro_hold,
+            "borrowedFrom": borrowed_donor,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
         }
@@ -2466,6 +2811,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, t_record)
+        self.killer3_trades_history.insert(0, t_record)
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
@@ -2479,12 +2825,24 @@ class UltraQuantSpotBot:
         profit = net_return - invested
         if profit < self.min_net_profit_usdt:
             return
-        leftover_profit = self.check_and_apply_self_healing(profit)
-        self.usdt_balance = round(self.usdt_balance + net_return, 2)
-        self.realized_pnl = round(self.realized_pnl + leftover_profit, 4)
-        self.killer3_realized_pnl = round(self.killer3_realized_pnl + leftover_profit, 4)
-        self.killer3_total_trades += 1
+
         k_round = pos.get("round", 1)
+        borrowed_donor = pos.get("borrowedFrom", 0)
+
+        if borrowed_donor > 0:
+            self.killer3_round_spent[borrowed_donor] = max(0.0, round(self.killer3_round_spent.get(borrowed_donor, 0.0) - invested, 2))
+            self.killer3_round_borrowed[k_round] = max(0.0, round(self.killer3_round_borrowed.get(k_round, 0.0) - invested, 2))
+        else:
+            self.killer3_round_spent[k_round] = max(0.0, round(self.killer3_round_spent.get(k_round, 0.0) - invested, 2))
+
+        if k_round == 8 and borrowed_donor > 0:
+            self.killer3_macro_profit_vault = round(self.killer3_macro_profit_vault + profit, 4)
+
+        self.usdt_balance = round(self.usdt_balance + net_return, 2)
+        self.realized_pnl = round(self.realized_pnl + profit, 4)
+        self.killer3_realized_pnl = round(self.killer3_realized_pnl + profit, 4)
+        self.killer3_total_trades += 1
+
         if self.killer3_round_trades_done.get(k_round, 0) > 0:
             self.killer3_round_trades_done[k_round] -= 1
         self.killer3_positions = [p for p in self.killer3_positions if p["id"] != pos_id]
@@ -2504,6 +2862,7 @@ class UltraQuantSpotBot:
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.trades_history.insert(0, trade_record)
+        self.killer3_trades_history.insert(0, trade_record)
         self.scalp_trades_history.insert(0, trade_record)
         asyncio.create_task(self.db_save_sell_individual(pos_id, {
             "order_id": pos_id + "_S",
@@ -2723,6 +3082,9 @@ class UltraQuantSpotBot:
             self.singularity_round_borrowed[r_num] = max(0.0, round(self.singularity_round_borrowed.get(r_num, 0.0) - invested, 2))
         else:
             self.singularity_round_spent[r_num] = max(0.0, round(self.singularity_round_spent.get(r_num, 0.0) - invested, 2))
+
+        if r_num == 8 and borrowed_donor > 0:
+            self.singularity_macro_profit_vault = round(self.singularity_macro_profit_vault + profit, 4)
 
         if pos.get("isMacro", False):
             self.singularity_macro_sol = max(0.0, self.singularity_macro_sol - sol_amt)
@@ -3660,25 +4022,39 @@ async def cleanup_all_bots_24h_history():
                 bot.trades_history.clear()
             if hasattr(bot, "spot_trades_history"):
                 bot.spot_trades_history.clear()
+            if hasattr(bot, "micro_trades_history"):
+                bot.micro_trades_history.clear()
+            if hasattr(bot, "killer2_trades_history"):
+                bot.killer2_trades_history.clear()
+            if hasattr(bot, "killer3_trades_history"):
+                bot.killer3_trades_history.clear()
             if hasattr(bot, "scalp_trades_history"):
                 bot.scalp_trades_history.clear()
             if hasattr(bot, "hyper_trades_history"):
                 bot.hyper_trades_history.clear()
+            if hasattr(bot, "singularity_trades_history"):
+                bot.singularity_trades_history.clear()
             await bot.db_sync_state()
             await manager.broadcast(json.dumps(bot.get_state()))
         except Exception:
             pass
 
 async def self_keep_alive_ping():
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
+    ping_urls = [
+        "https://shine-crypto-bot.onrender.com/status",
+        "https://shine-crypto-bot.fastapicloud.dev/status"
+    ]
+    timeout = aiohttp.ClientTimeout(total=8)
     while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://shine-crypto-bot.onrender.com/status") as resp:
-                    pass
-        except Exception:
-            pass
-        await asyncio.sleep(240)
+        for u in ping_urls:
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(u) as resp:
+                        pass
+            except Exception:
+                pass
+        await asyncio.sleep(60)
 
 @app.on_event("startup")
 async def startup_event():
