@@ -71,11 +71,15 @@ class UltraQuantSpotBot:
         self.whale_sentiment = "NEUTRAL"
         self.taker_fee_pct = 0.001
         self.min_net_profit_usdt = 0.02
+        self.atr_value = 0.45
+        self.rolling_tr_list = []
+        self.orderbook_depth_usd = 0.0
+        self.jupiter_quote = {"dex": "Raydium CLMM", "outSol": 0.0945, "priceImpact": 0.01, "route": "SOL/USDT"}
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
-        self.home_pool_users = 1
+        self.home_pool_users = 100
         self.home_round_spent = {r: 0.0 for r in range(1, 11)}
         self.home_round_borrowed = {r: 0.0 for r in range(1, 11)}
         self.macro_profit_vault = 0.0
@@ -95,7 +99,7 @@ class UltraQuantSpotBot:
         self.hyper_last_ref_price = 0.0
         self.hyper_realized_pnl = 0.0
         self.hyper_total_trades = 0
-        self.micro_pool_users = 1
+        self.micro_pool_users = 100
         self.micro_positions = []
         self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
         self.micro_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -106,7 +110,7 @@ class UltraQuantSpotBot:
         self.micro_last_ref_price = 0.0
         self.micro_realized_pnl = 0.0
         self.micro_total_trades = 0
-        self.killer2_pool_users = 1
+        self.killer2_pool_users = 100
         self.killer2_positions = []
         self.killer2_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer2_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -117,7 +121,7 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = 0.0
         self.killer2_realized_pnl = 0.0
         self.killer2_total_trades = 0
-        self.killer3_pool_users = 1
+        self.killer3_pool_users = 100
         self.killer3_positions = []
         self.killer3_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer3_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -653,31 +657,71 @@ class UltraQuantSpotBot:
             qty = float(t.get("q", 0.0))
             is_buyer_maker = t.get("m", False)
             trade_val = price * qty
-            if trade_val >= 15000.0:
+            if trade_val > 0:
+                weight = 3.0 if trade_val >= 10000.0 else (2.0 if trade_val >= 2500.0 else 1.0)
                 self.whale_trades_window.append({
-                    "val": trade_val,
+                    "val": trade_val * weight,
+                    "rawVal": trade_val,
                     "isBuy": not is_buyer_maker,
                     "time": now_ts
                 })
 
-        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 120.0]
+        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 180.0]
 
         if len(self.whale_trades_window) > 0:
             buy_vol = sum(x["val"] for x in self.whale_trades_window if x["isBuy"])
             sell_vol = sum(x["val"] for x in self.whale_trades_window if not x["isBuy"])
             total_vol = buy_vol + sell_vol
+
+    def process_l2_depth(self, data):
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+        if not bids or not asks:
+            return
+        b_vol = sum(float(b[0]) * float(b[1]) for b in bids[:20])
+        a_vol = sum(float(a[0]) * float(a[1]) for a in asks[:20])
+        tot = b_vol + a_vol
+        if tot > 0:
+            self.orderbook_depth_usd = round(tot / 1000.0, 1)
+            ratio = round((b_vol / tot) * 100.0, 1)
+            self.whale_orderflow_ratio = ratio
+            if ratio >= 55.0:
+                self.whale_sentiment = "BULLISH"
+            elif ratio <= 45.0:
+                self.whale_sentiment = "BEARISH"
+            else:
+                self.whale_sentiment = "NEUTRAL"
+
+    async def fetch_jupiter_quote(self):
+        url = "https://quote-api.jup.ag/v6/quote?inputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&outputMint=So11111111111111111111111111111111111111112&amount=10000000&slippageBps=50"
+        try:
+            timeout = aiohttp.ClientTimeout(total=4)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        res = await resp.json()
+                        out_lamports = float(res.get("outAmount", 0))
+                        out_sol = round(out_lamports / 1000000000.0, 4)
+                        routes = res.get("routePlan", [])
+                        label = routes[0]["swapInfo"]["label"] if routes else "Raydium"
+                        impact = float(res.get("priceImpactPct", 0.01))
+                        self.jupiter_quote = {
+                            "dex": label,
+                            "outSol": out_sol,
+                            "priceImpact": impact,
+                            "route": "USDT -> SOL"
+                        }
+        except Exception:
+            pass
             if total_vol > 0:
                 ratio = round((buy_vol / total_vol) * 100.0, 1)
                 self.whale_orderflow_ratio = ratio
-                if ratio >= 58.0:
+                if ratio >= 55.0:
                     self.whale_sentiment = "BULLISH"
-                elif ratio <= 42.0:
+                elif ratio <= 45.0:
                     self.whale_sentiment = "BEARISH"
                 else:
                     self.whale_sentiment = "NEUTRAL"
-        else:
-            self.whale_orderflow_ratio = 52.4
-            self.whale_sentiment = "NEUTRAL"
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -872,6 +916,9 @@ class UltraQuantSpotBot:
             "macroVaultInvested": round(self.macro_vault_invested, 2),
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
+            "atrValue": round(self.atr_value, 2),
+            "l2DepthK": round(self.orderbook_depth_usd, 1),
+            "jupiterQuote": self.jupiter_quote,
             "canManualTrade": True,
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
@@ -2351,8 +2398,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
         self.micro_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        dynamic_micro_dip = max(0.15, round(self.atr_value * 0.50, 2))
 
-        if current_dip >= 0.30:
+        if current_dip >= dynamic_micro_dip:
             if not self.micro_tb_active:
                 self.micro_tb_active = True
                 self.micro_tb_lowest = self.live_price
@@ -2625,8 +2673,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         self.killer2_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        dynamic_k2_dip = max(0.25, round(self.atr_value * 1.00, 2))
 
-        if current_dip >= 0.60:
+        if current_dip >= dynamic_k2_dip:
             if not self.killer2_tb_active:
                 self.killer2_tb_active = True
                 self.killer2_tb_lowest = self.live_price
@@ -2894,8 +2943,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
         self.killer3_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        dynamic_k3_dip = max(0.40, round(self.atr_value * 1.75, 2))
 
-        if current_dip >= 0.90:
+        if current_dip >= dynamic_k3_dip:
             if not self.killer3_tb_active:
                 self.killer3_tb_active = True
                 self.killer3_tb_lowest = self.live_price
@@ -3187,6 +3237,13 @@ class UltraQuantSpotBot:
         self.price_history.append(new_price)
         if len(self.price_history) > 50:
             self.price_history.pop(0)
+
+        if len(self.price_history) >= 2:
+            tr = abs(self.price_history[-1] - self.price_history[-2])
+            self.rolling_tr_list.append(tr)
+            if len(self.rolling_tr_list) > 14:
+                self.rolling_tr_list.pop(0)
+            self.atr_value = max(0.15, round(sum(self.rolling_tr_list) / len(self.rolling_tr_list), 2))
 
         self.sync_phase_and_round()
 
@@ -3636,8 +3693,9 @@ class UltraQuantSpotBot:
 
         last_entry = regular_positions[-1]["entryPrice"]
         current_dip = last_entry - self.live_price
+        dynamic_home_dip = max(0.50, round(self.atr_value * 2.50, 2))
 
-        if current_dip < 1.20:
+        if current_dip < dynamic_home_dip:
             self.tb_active = False
             self.tb_stage = "IDLE"
         else:
@@ -3948,42 +4006,34 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 async def run_backend_price_feed():
-    endpoints = [
-        "wss://stream.binance.com:9443/ws/solusdt@trade",
-        "wss://data-stream.binance.vision/ws/solusdt@trade",
-        "wss://ws-feed.exchange.coinbase.com"
-    ]
-    ep_idx = 0
+    url = "wss://stream.binance.com:9443/stream?streams=solusdt@trade/solusdt@depth20@100ms"
     while True:
-        url = endpoints[ep_idx % len(endpoints)]
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(url, timeout=10.0) as ws:
-                    if "coinbase" in url:
-                        sub_msg = {
-                            "type": "subscribe",
-                            "product_ids": ["SOL-USD"],
-                            "channels": ["ticker"]
-                        }
-                        await ws.send_json(sub_msg)
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
-                            p = 0.0
-                            if "p" in data:
-                                p = float(data["p"])
-                                bot.process_market_trades([data])
-                            elif "price" in data:
-                                p = float(data["price"])
-                            if p > 0:
-                                bot.update_price_tick(p)
-                                await manager.broadcast(json.dumps(bot.get_state()))
+                            payload = json.loads(msg.data)
+                            stream_name = payload.get("stream", "")
+                            data = payload.get("data", payload)
+                            if "trade" in stream_name or "p" in data:
+                                p = float(data.get("p") or data.get("price", 0.0))
+                                if p > 0:
+                                    bot.process_market_trades([data])
+                                    bot.update_price_tick(p)
+                                    await manager.broadcast(json.dumps(bot.get_state()))
+                            elif "depth" in stream_name or "bids" in data:
+                                bot.process_l2_depth(data)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             break
         except Exception:
             pass
-        ep_idx += 1
         await asyncio.sleep(1)
+
+async def run_jupiter_quote_loop():
+    while True:
+        await bot.fetch_jupiter_quote()
+        await asyncio.sleep(8)
 
 async def cleanup_all_bots_24h_history():
     pkt_zone = timezone(timedelta(hours=5))
@@ -4039,6 +4089,7 @@ async def startup_event():
     await bot.load_from_database()
     asyncio.create_task(self_keep_alive_ping())
     asyncio.create_task(run_backend_price_feed())
+    asyncio.create_task(run_jupiter_quote_loop())
     asyncio.create_task(cleanup_all_bots_24h_history())
 
 if __name__ == "__main__":
