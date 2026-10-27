@@ -713,15 +713,6 @@ class UltraQuantSpotBot:
                         }
         except Exception:
             pass
-            if total_vol > 0:
-                ratio = round((buy_vol / total_vol) * 100.0, 1)
-                self.whale_orderflow_ratio = ratio
-                if ratio >= 55.0:
-                    self.whale_sentiment = "BULLISH"
-                elif ratio <= 45.0:
-                    self.whale_sentiment = "BEARISH"
-                else:
-                    self.whale_sentiment = "NEUTRAL"
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -1119,7 +1110,8 @@ class UltraQuantSpotBot:
                 "borrowedFrom": borrowed_donor,
                 "targetPrice": target_exit,
                 "ts_high": round(self.live_price, 2),
-                "ts_low": 0.0
+                "ts_low": 0.0,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
 
         self.active_positions.append(pos)
