@@ -43,7 +43,7 @@ class UltraQuantSpotBot:
         self.active_phase = 1
         self.active_round = 1
         self.sub_trade_count = 0
-        self.max_sub_trades = 10
+        self.max_sub_trades = 30
         self.round_trades_done = {r: 0 for r in range(1, 11)}
         self.realized_pnl = 0.0
         self.cooldown_remaining = 0
@@ -173,51 +173,21 @@ class UltraQuantSpotBot:
         if cap < 100.0:
             cap = 100.0
         net_fund = cap * 0.80
-        if cap < 200.0:
-            return {"slots": 10, "size": 10.0, "net_fund": net_fund}
-        elif cap < 300.0:
-            return {"slots": 20, "size": 10.0, "net_fund": net_fund}
-        elif cap < 400.0:
-            return {"slots": 20, "size": 15.0, "net_fund": net_fund}
-        elif cap < 500.0:
-            return {"slots": 20, "size": 20.0, "net_fund": net_fund}
-        elif cap < 600.0:
-            return {"slots": 30, "size": 15.0, "net_fund": net_fund}
-        elif cap < 700.0:
-            return {"slots": 30, "size": 18.0, "net_fund": net_fund}
-        elif cap < 800.0:
-            return {"slots": 30, "size": 20.0, "net_fund": net_fund}
-        elif cap < 900.0:
-            return {"slots": 30, "size": 23.0, "net_fund": net_fund}
-        elif cap < 1000.0:
-            return {"slots": 30, "size": 26.0, "net_fund": net_fund}
-        elif cap == 1000.0:
-            return {"slots": 30, "size": 33.33, "net_fund": net_fund}
+        if cap <= 300.0:
+            trade_size = 10.0
         else:
-            return {"slots": 30, "size": round(net_fund / 24.0, 2), "net_fund": net_fund}
+            trade_size = round(net_fund / 24.0, 2)
+        return {"slots": 30, "size": max(10.0, trade_size), "net_fund": net_fund}
 
-    def get_hyper_slots(self, cap):
-        if cap < 1000.0:
-            return 0
-        units = int(cap // 1000.0)
-        return min(30, units * 3)
+    def get_hyper_slots(self, cap=None):
+        return 30
 
     def get_singularity_tier_config(self, cap=None, target_round=None):
-        capital = cap if cap is not None else self.total_user_capital
-        if capital < 1500.0:
-            slots = 10
-        elif capital < 2000.0:
-            slots = 15
-        elif capital < 3000.0:
-            slots = 20
-        else:
-            slots = 30
-
         r_num = target_round if target_round is not None else self.active_round
         round_pct = self.round_allocations.get(r_num, 0.10)
         round_fund = 100000.0 * (round_pct if round_pct > 0 else 0.10)
-        trade_size = max(10.0, round(round_fund / max(1, slots), 2))
-        return {"slots": slots, "trade_size": trade_size, "round_fund": round_fund}
+        trade_size = max(10.0, round(round_fund / 150.0, 2))
+        return {"slots": 150, "trade_size": trade_size, "round_fund": round_fund}
 
     async def load_from_database(self):
         try:
@@ -674,32 +644,40 @@ class UltraQuantSpotBot:
     def process_market_trades(self, trades):
         if not trades:
             return
-        recent_buy_vol = 0.0
-        recent_sell_vol = 0.0
+        if not hasattr(self, "whale_trades_window"):
+            self.whale_trades_window = []
+
+        now_ts = datetime.now(timezone.utc).timestamp()
         for t in trades:
             price = float(t.get("p", 0.0))
             qty = float(t.get("q", 0.0))
             is_buyer_maker = t.get("m", False)
             trade_val = price * qty
-            if trade_val >= 1500.0:
-                multiplier = 2.0 if trade_val >= 10000.0 else 1.0
-                weighted_val = trade_val * multiplier
-                if not is_buyer_maker:
-                    recent_buy_vol += weighted_val
+            if trade_val >= 15000.0:
+                self.whale_trades_window.append({
+                    "val": trade_val,
+                    "isBuy": not is_buyer_maker,
+                    "time": now_ts
+                })
+
+        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 120.0]
+
+        if len(self.whale_trades_window) > 0:
+            buy_vol = sum(x["val"] for x in self.whale_trades_window if x["isBuy"])
+            sell_vol = sum(x["val"] for x in self.whale_trades_window if not x["isBuy"])
+            total_vol = buy_vol + sell_vol
+            if total_vol > 0:
+                ratio = round((buy_vol / total_vol) * 100.0, 1)
+                self.whale_orderflow_ratio = ratio
+                if ratio >= 58.0:
+                    self.whale_sentiment = "BULLISH"
+                elif ratio <= 42.0:
+                    self.whale_sentiment = "BEARISH"
                 else:
-                    recent_sell_vol += weighted_val
-        total_whale_vol = recent_buy_vol + recent_sell_vol
-        if total_whale_vol > 0:
-            self.whale_buy_vol = recent_buy_vol
-            self.whale_sell_vol = recent_sell_vol
-            ratio = round((recent_buy_vol / total_whale_vol) * 100.0, 1)
-            self.whale_orderflow_ratio = ratio
-            if self.whale_orderflow_ratio >= 70.0:
-                self.whale_sentiment = "BULLISH"
-            elif self.whale_orderflow_ratio <= 30.0:
-                self.whale_sentiment = "BEARISH"
-            else:
-                self.whale_sentiment = "NEUTRAL"
+                    self.whale_sentiment = "NEUTRAL"
+        else:
+            self.whale_orderflow_ratio = 52.4
+            self.whale_sentiment = "NEUTRAL"
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -3179,7 +3157,7 @@ class UltraQuantSpotBot:
         tier_cfg = self.get_singularity_tier_config()
         for eng_idx, dip_req in dip_thresholds.items():
             eng_positions = [p for p in self.singularity_positions if p.get("engineIdx") == eng_idx and not p.get("isMacro", False)]
-            if len(eng_positions) == 0 or len(eng_positions) >= tier_cfg["slots"]:
+            if len(eng_positions) == 0 or len(eng_positions) >= 30:
                 self.singularity_tb_active[eng_idx] = False
                 continue
                 
