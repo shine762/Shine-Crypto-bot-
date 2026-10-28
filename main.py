@@ -476,32 +476,30 @@ class UltraQuantSpotBot:
                                     wallet_logs.append(formatted_t)
                                     if is_sell_trade:
                                         wallet_pnl += p_val
-                                elif ord_id.startswith("M_") or "MICRO" in e_type or "APEX" in e_type:
+                                elif ord_id.startswith("SNG_") or "SINGULARITY" in e_type:
+                                    sng_logs.append(formatted_t)
+                                elif ord_id.startswith("HYPER_") or (("HYPER" in e_type or "TITAN_POOL" in e_type) and not ord_id.startswith("SNG_")):
+                                    hyper_logs.append(formatted_t)
+                                    if is_sell_trade:
+                                        h_pnl += p_val
+                                elif ord_id.startswith("M_") or (("MICRO" in e_type or "APEX" in e_type) and not ord_id.startswith("SNG_")):
                                     micro_logs.append(formatted_t)
                                     scalp_logs.append(formatted_t)
                                     if is_sell_trade:
                                         m_count += 1
                                         m_pnl += p_val
-                                elif ord_id.startswith("K2_") or "KILLER2" in e_type or "QUANTUM" in e_type:
+                                elif ord_id.startswith("K2_") or (("KILLER2" in e_type or "QUANTUM" in e_type) and not ord_id.startswith("SNG_")):
                                     killer2_logs.append(formatted_t)
                                     scalp_logs.append(formatted_t)
                                     if is_sell_trade:
                                         k2_count += 1
                                         k2_pnl += p_val
-                                elif ord_id.startswith("K3_") or "KILLER3" in e_type or "ABYSS" in e_type:
+                                elif ord_id.startswith("K3_") or (("KILLER3" in e_type or "ABYSS" in e_type) and not ord_id.startswith("SNG_")):
                                     killer3_logs.append(formatted_t)
                                     scalp_logs.append(formatted_t)
                                     if is_sell_trade:
                                         k3_count += 1
                                         k3_pnl += p_val
-                                elif ord_id.startswith("HYPER_") or "HYPER" in e_type:
-                                    hyper_logs.append(formatted_t)
-                                    if is_sell_trade:
-                                        h_pnl += p_val
-                                elif ord_id.startswith("SNG_") or "SINGULARITY" in e_type:
-                                    sng_logs.append(formatted_t)
-                                    if is_sell_trade:
-                                        pass
                                 else:
                                     bot_logs.append(formatted_t)
                                     if is_sell_trade:
@@ -717,6 +715,29 @@ class UltraQuantSpotBot:
         alloc_pct = self.round_allocations.get(self.active_round, 0.20) * 100.0
         combined_entry = (all_invested / all_sol) if all_sol > 0 else 0.0
 
+        def calc_bot_ts_state(pos_list, rules):
+            if not pos_list or self.live_price <= 0:
+                return 0.0, 0.0, "IDLE"
+            p_peak = max(float(p.get("ts_high", p.get("entryPrice", self.live_price))) for p in pos_list)
+            p_peak = max(p_peak, self.live_price)
+            p_entry = min(float(p.get("entryPrice", self.live_price)) for p in pos_list)
+            diff = p_peak - p_entry
+            pullback = 0.0
+            stg = "IDLE"
+            for g_req, pb_val, s_title in rules:
+                if diff >= g_req:
+                    pullback = pb_val
+                    stg = s_title
+                    break
+            stop_val = round(p_peak - pullback, 2) if pullback > 0.0 else 0.0
+            return round(p_peak, 2), stop_val, stg
+
+        h_ts_h, h_ts_l, h_stg = calc_bot_ts_state(self.hyper_positions, [(0.70, 0.12, "STAGE_3"), (0.40, 0.08, "STAGE_2"), (0.20, 0.05, "STAGE_1")])
+        m_ts_h, m_ts_l, m_stg = calc_bot_ts_state(self.micro_positions, [(0.80, 0.15, "STAGE_3"), (0.55, 0.12, "STAGE_2"), (0.35, 0.08, "STAGE_1")])
+        k2_ts_h, k2_ts_l, k2_stg = calc_bot_ts_state(self.killer2_positions, [(1.20, 0.25, "STAGE_3"), (0.80, 0.20, "STAGE_2"), (0.50, 0.15, "STAGE_1")])
+        k3_ts_h, k3_ts_l, k3_stg = calc_bot_ts_state(self.killer3_positions, [(1.50, 0.03, "STAGE_3"), (1.00, round(self.live_price * 0.005, 2), "STAGE_2"), (0.60, round(self.live_price * 0.010, 2), "STAGE_1")])
+        sng_ts_h, sng_ts_l, sng_stg = calc_bot_ts_state(self.singularity_positions, [(1.50, 0.20, "STAGE_3"), (0.80, 0.15, "STAGE_2"), (0.40, 0.10, "STAGE_1")])
+
         ai_thoughts = ""
         regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.is_paused:
@@ -894,6 +915,21 @@ class UltraQuantSpotBot:
             "hyperTotalTrades": self.hyper_total_trades,
             "hyperTradesHistory": getattr(self, "hyper_trades_history", []),
             "hyperUserDailyPnl": round((self.hyper_realized_pnl / max(1, self.hyper_pool_users)), 4),
+            "hyperTsHigh": h_ts_h,
+            "hyperTsLow": h_ts_l,
+            "hyperTrailingStage": h_stg,
+            "microTsHigh": m_ts_h,
+            "microTsLow": m_ts_l,
+            "microTrailingStage": m_stg,
+            "killer2TsHigh": k2_ts_h,
+            "killer2TsLow": k2_stop,
+            "killer2TrailingStage": k2_stg,
+            "killer3TsHigh": k3_peak,
+            "killer3TsLow": k3_stop,
+            "killer3TrailingStage": k3_stg,
+            "singularityTsHigh": sng_peak,
+            "singularityTsLow": sng_stop,
+            "singularityTrailingStage": sng_stg,
             "microPoolUsers": getattr(self, "micro_pool_users", 1),
             "microPoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.micro_positions), 2),
             "microUserInvestment": 10.0,
@@ -1030,7 +1066,7 @@ class UltraQuantSpotBot:
         self.usdt_balance -= invest_target
         self.round_trades_done[cur_rnd] = self.round_trades_done.get(cur_rnd, 0) + 1
         self.sub_trade_count = self.round_trades_done[cur_rnd]
-        pos_id = str(uuid.uuid4())[:8]
+        pos_id = str(uuid.uuid4())[:8].upper()
 
         if is_macro_hold:
             self.macro_vault_sol += sol_bought
