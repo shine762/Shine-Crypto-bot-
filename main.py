@@ -938,6 +938,10 @@ class UltraQuantSpotBot:
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
             "microTotalTrades": self.micro_total_trades,
             "microIdleFundAvail": round(self.get_scavenged_idle_fund(), 2),
+            "microTbLowest": round(self.micro_tb_lowest, 2),
+            "killer2TbLowest": round(self.killer2_tb_lowest, 2),
+            "killer3TbLowest": round(self.killer3_tb_lowest, 2),
+            "hyperTbLowest": round(self.hyper_tb_lowest, 2),
             "killer2PoolUsers": getattr(self, "killer2_pool_users", 1),
             "killer2PoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.killer2_positions), 2),
             "killer2UserInvestment": 10.0,
@@ -979,7 +983,7 @@ class UltraQuantSpotBot:
         }
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
-        if self.usdt_balance < 10.0 or self.live_price <= 0:
+        if self.is_paused or self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -1858,7 +1862,7 @@ class UltraQuantSpotBot:
         self.macro_ts_low = 0.0
         asyncio.create_task(self.db_sync_state())
 
-    def execute_sell_individual(self, pos):
+    def execute_sell_individual(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = pos["solAmount"]
         invested = pos["invested"]
@@ -1866,7 +1870,7 @@ class UltraQuantSpotBot:
         fee = sold_value * self.taker_fee_pct
         net_return = sold_value - fee
         profit = net_return - invested
-        if profit < self.min_net_profit_usdt:
+        if not force and profit < self.min_net_profit_usdt:
             return
 
         r_num = pos.get("round", self.active_round)
@@ -1924,7 +1928,7 @@ class UltraQuantSpotBot:
             self.execute_buy(is_sub_trade=False)
 
     def execute_hyper_buy(self):
-        if not self.hyper_pool_active or self.hyper_pool_users < 100 or self.live_price <= 0:
+        if self.is_paused or not self.hyper_pool_active or self.hyper_pool_users < 100 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -2040,7 +2044,7 @@ class UltraQuantSpotBot:
         self.hyper_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
-    def execute_hyper_sell(self, pos):
+    def execute_hyper_sell(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = float(pos["solAmount"])
         invested = float(pos["invested"])
@@ -2048,7 +2052,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = round(net_return - invested, 4)
-        if profit <= 0.01:
+        if not force and profit <= 0.01:
             return
 
         h_round = pos.get("round", 1)
@@ -2160,7 +2164,7 @@ class UltraQuantSpotBot:
         return round(self.usdt_balance / 10.0, 2)
 
     def execute_micro_buy(self):
-        if self.usdt_balance < 10.0 or self.live_price <= 0:
+        if self.is_paused or self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -2284,7 +2288,7 @@ class UltraQuantSpotBot:
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
-    def execute_micro_sell(self, pos):
+    def execute_micro_sell(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = pos["solAmount"]
         invested = pos["invested"]
@@ -2292,7 +2296,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit < self.min_net_profit_usdt:
+        if not force and profit < self.min_net_profit_usdt:
             return
 
         m_round = pos.get("round", 1)
@@ -2435,7 +2439,7 @@ class UltraQuantSpotBot:
                 return 0.04
 
     def execute_killer2_buy(self):
-        if self.usdt_balance < 10.0 or self.live_price <= 0:
+        if self.is_paused or self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -2559,7 +2563,7 @@ class UltraQuantSpotBot:
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
-    def execute_killer2_sell(self, pos):
+    def execute_killer2_sell(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = pos["solAmount"]
         invested = pos["invested"]
@@ -2567,7 +2571,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit < self.min_net_profit_usdt:
+        if not force and profit < self.min_net_profit_usdt:
             return
 
         k_round = pos.get("round", 1)
@@ -2704,7 +2708,7 @@ class UltraQuantSpotBot:
                 return 0.07
 
     def execute_killer3_buy(self):
-        if self.usdt_balance < 10.0 or self.live_price <= 0:
+        if self.is_paused or self.usdt_balance < 10.0 or self.live_price <= 0:
             return
         if self.active_round in [9, 10]:
             return
@@ -2828,7 +2832,7 @@ class UltraQuantSpotBot:
         self.scalp_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
-    def execute_killer3_sell(self, pos):
+    def execute_killer3_sell(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = pos["solAmount"]
         invested = pos["invested"]
@@ -2836,7 +2840,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = net_return - invested
-        if profit < self.min_net_profit_usdt:
+        if not force and profit < self.min_net_profit_usdt:
             return
 
         k_round = pos.get("round", 1)
@@ -2946,7 +2950,7 @@ class UltraQuantSpotBot:
             self.killer3_tb_active = False
 
     def execute_singularity_buy(self, engine_idx=1):
-        if not self.singularity_active or self.singularity_users < 1000 or self.live_price <= 0:
+        if self.is_paused or not self.singularity_active or self.singularity_users < 1000 or self.live_price <= 0:
             return
 
         self.sync_phase_and_round()
@@ -3068,7 +3072,7 @@ class UltraQuantSpotBot:
         self.singularity_trades_history.insert(0, t_record)
         asyncio.create_task(self.db_save_buy(pos, t_record))
 
-    def execute_singularity_sell(self, pos):
+    def execute_singularity_sell(self, pos, force=False):
         pos_id = pos["id"]
         sol_amt = float(pos["solAmount"])
         invested = float(pos["invested"])
@@ -3080,7 +3084,7 @@ class UltraQuantSpotBot:
         fee = gross_val * self.taker_fee_pct
         net_return = gross_val - fee
         profit = round(net_return - invested, 4)
-        if profit <= 0.01:
+        if not force and profit <= 0.01:
             return
 
         self.singularity_pool_balance = round(self.singularity_pool_balance + net_return, 2)
@@ -3285,6 +3289,9 @@ class UltraQuantSpotBot:
                         "price": round(self.live_price, 2),
                         "text": f"HOLDING SOL @ ${round(self.live_price, 2)} (Avg Entry: ${round(self.avg_entry_price, 2)}, Whales Re-accumulating)"
                     }
+        if self.is_paused:
+            return
+
         self.run_hyper_titan_tick()
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
@@ -3659,9 +3666,6 @@ class UltraQuantSpotBot:
             self.cooldown_remaining -= 1
             return
 
-        if self.is_paused:
-            return
-
         regular_positions = [p for p in self.active_positions if not p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
@@ -3825,57 +3829,57 @@ async def websocket_endpoint(websocket: WebSocket):
                         bot.execute_singularity_buy(engine_idx=e_idx)
                 elif action == "ADMIN_BOT_SELL":
                     b_target = str(msg.get("bot", "HOME")).upper()
-                    t_pos_id = str(msg.get("posId", ""))
+                    t_pos_id = str(msg.get("posId", "")).upper()
                     if b_target == "HOME":
                         for p in list(bot.active_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_sell_individual(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_sell_individual(p, force=True)
                                 break
                     elif b_target == "HYPER":
                         for p in list(bot.hyper_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_hyper_sell(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_hyper_sell(p, force=True)
                                 break
                     elif b_target == "MICRO":
                         for p in list(bot.micro_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_micro_sell(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_micro_sell(p, force=True)
                                 break
                     elif b_target == "KILLER2":
                         for p in list(bot.killer2_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_killer2_sell(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_killer2_sell(p, force=True)
                                 break
                     elif b_target == "KILLER3":
                         for p in list(bot.killer3_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_killer3_sell(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_killer3_sell(p, force=True)
                                 break
                     elif b_target == "SINGULARITY":
                         for p in list(bot.singularity_positions):
-                            if p.get("id") == t_pos_id:
-                                bot.execute_singularity_sell(p)
+                            if str(p.get("id", "")).upper() == t_pos_id:
+                                bot.execute_singularity_sell(p, force=True)
                                 break
                 elif action == "ADMIN_BOT_SELL_ALL":
                     b_target = str(msg.get("bot", "HOME")).upper()
                     if b_target == "HOME":
                         for p in list(bot.active_positions):
-                            bot.execute_sell_individual(p)
+                            bot.execute_sell_individual(p, force=True)
                     elif b_target == "HYPER":
                         for p in list(bot.hyper_positions):
-                            bot.execute_hyper_sell(p)
+                            bot.execute_hyper_sell(p, force=True)
                     elif b_target == "MICRO":
                         for p in list(bot.micro_positions):
-                            bot.execute_micro_sell(p)
+                            bot.execute_micro_sell(p, force=True)
                     elif b_target == "KILLER2":
                         for p in list(bot.killer2_positions):
-                            bot.execute_killer2_sell(p)
+                            bot.execute_killer2_sell(p, force=True)
                     elif b_target == "KILLER3":
                         for p in list(bot.killer3_positions):
-                            bot.execute_killer3_sell(p)
+                            bot.execute_killer3_sell(p, force=True)
                     elif b_target == "SINGULARITY":
                         for p in list(bot.singularity_positions):
-                            bot.execute_singularity_sell(p)
+                            bot.execute_singularity_sell(p, force=True)
                 elif action in ["MANUAL_BUY", "MANUAL_SELL", "CREATE_ORDER", "PLACE_ORDER", "ADVANCED_ORDER", "CANCEL_ORDER"]:
                     await bot.create_advanced_order(msg)
                 elif action == "CLIENT_PRICE_TICK":
