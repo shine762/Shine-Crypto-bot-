@@ -69,8 +69,15 @@ class UltraQuantSpotBot:
         self.whale_sell_vol = 0.0
         self.whale_orderflow_ratio = 50.0
         self.whale_sentiment = "NEUTRAL"
+        self.whale_boost_multiplier = 1.0
+        self.whale_dump_alert = False
+        self.cvd_net_volume = 0.0
         self.taker_fee_pct = 0.001
         self.min_net_profit_usdt = 0.02
+        self.solana_dex_mode = "MAINNET"
+        self.solana_usdt_mint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+        self.solana_wsol_mint = "So11111111111111111111111111111111111111112"
+        self.dex_last_quote_price = 0.0
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
@@ -651,30 +658,38 @@ class UltraQuantSpotBot:
             qty = float(t.get("q", 0.0))
             is_buyer_maker = t.get("m", False)
             trade_val = price * qty
-            if trade_val > 0:
+            if trade_val >= 250.0:
+                is_aggressive_buy = not is_buyer_maker
                 weight = 3.0 if trade_val >= 10000.0 else (2.0 if trade_val >= 2500.0 else 1.0)
                 self.whale_trades_window.append({
                     "val": trade_val * weight,
                     "rawVal": trade_val,
-                    "isBuy": not is_buyer_maker,
+                    "isBuy": is_aggressive_buy,
                     "time": now_ts
                 })
 
-        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 180.0]
+        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 120.0]
 
         if len(self.whale_trades_window) > 0:
             buy_vol = sum(x["val"] for x in self.whale_trades_window if x["isBuy"])
             sell_vol = sum(x["val"] for x in self.whale_trades_window if not x["isBuy"])
             total_vol = buy_vol + sell_vol
+            self.cvd_net_volume = round(buy_vol - sell_vol, 2)
             if total_vol > 0:
                 ratio = round((buy_vol / total_vol) * 100.0, 1)
                 self.whale_orderflow_ratio = ratio
-                if ratio >= 55.0:
+                if ratio >= 60.0 and self.cvd_net_volume > 5000.0:
                     self.whale_sentiment = "BULLISH"
-                elif ratio <= 45.0:
+                    self.whale_boost_multiplier = 1.30
+                    self.whale_dump_alert = False
+                elif ratio <= 38.0 and self.cvd_net_volume < -5000.0:
                     self.whale_sentiment = "BEARISH"
+                    self.whale_boost_multiplier = 0.80
+                    self.whale_dump_alert = True
                 else:
                     self.whale_sentiment = "NEUTRAL"
+                    self.whale_boost_multiplier = 1.0
+                    self.whale_dump_alert = False
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -892,6 +907,10 @@ class UltraQuantSpotBot:
             "macroVaultInvested": round(self.macro_vault_invested, 2),
             "whaleOrderflow": self.whale_orderflow_ratio,
             "whaleSentiment": self.whale_sentiment,
+            "whaleBoost": getattr(self, "whale_boost_multiplier", 1.0),
+            "whaleDumpAlert": getattr(self, "whale_dump_alert", False),
+            "cvdNetVolume": getattr(self, "cvd_net_volume", 0.0),
+            "solanaDexMode": getattr(self, "solana_dex_mode", "MAINNET"),
             "canManualTrade": True,
             "subTradeCount": self.sub_trade_count,
             "maxSubTrades": self.max_sub_trades,
@@ -988,9 +1007,11 @@ class UltraQuantSpotBot:
         if self.active_round in [9, 10]:
             return
 
+        if getattr(self, "whale_dump_alert", False) and not is_sub_trade:
+            return
         self.sync_phase_and_round()
         cur_rnd = self.active_round
-        vol_multiplier = 1.2 if self.whale_sentiment == "BULLISH" else (0.9 if self.whale_sentiment == "BEARISH" else 1.0)
+        vol_multiplier = getattr(self, "whale_boost_multiplier", 1.0)
         cfg = self.get_tier_config()
         max_allowed_slots = cfg["slots"]
 
@@ -3733,7 +3754,10 @@ class UltraQuantSpotBot:
                     self.execute_sell_individual(pos)
                     break
 
-                if gain >= 1.50:
+                if getattr(self, "whale_dump_alert", False):
+                    pullback = 0.03
+                    self.ts_stage = "EMERGENCY_LOCK"
+                elif gain >= 1.50:
                     pullback = 0.20
                     self.ts_stage = "STAGE_3"
                 elif gain >= 0.80:
