@@ -74,9 +74,9 @@ class UltraQuantSpotBot:
         self.cvd_net_volume = 0.0
         self.taker_fee_pct = 0.001
         self.min_net_profit_usdt = 0.02
-        self.solana_dex_mode = "MAINNET"
-        self.solana_usdt_mint = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
-        self.solana_wsol_mint = "So11111111111111111111111111111111111111112"
+        self.solana_dex_mode = "PANCAKESWAP_BSC"
+        self.bsc_usdt_address = "0x55d398326f99059fF775485246999027B3197955"
+        self.bsc_pancake_router = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
         self.dex_last_quote_price = 0.0
         self.round_allocations = {
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
@@ -916,7 +916,18 @@ class UltraQuantSpotBot:
             "maxSubTrades": self.max_sub_trades,
             "activePositions": self.active_positions,
             "tradesHistory": self.trades_history,
-            "spotTradesHistory": self.spot_trades_history,
+            "spotTradesHistory": [{
+                "orderId": p["id"],
+                "side": "BUY",
+                "price": float(p.get("entryPrice", 0.0)),
+                "solAmount": float(p.get("solAmount", 0.0)),
+                "fee": 0.0,
+                "profit": 0.0,
+                "isOpen": True,
+                "round": p.get("round", 1),
+                "execType": "ACTIVE_POSITION",
+                "timestamp": p.get("timestamp", datetime.now(timezone.utc).isoformat())
+            } for p in self.active_positions] + self.spot_trades_history,
             "microTradesHistory": self.micro_trades_history,
             "killer2TradesHistory": self.killer2_trades_history,
             "killer3TradesHistory": self.killer3_trades_history,
@@ -1007,8 +1018,6 @@ class UltraQuantSpotBot:
         if self.active_round in [9, 10]:
             return
 
-        if getattr(self, "whale_dump_alert", False) and not is_sub_trade:
-            return
         self.sync_phase_and_round()
         cur_rnd = self.active_round
         vol_multiplier = getattr(self, "whale_boost_multiplier", 1.0)
@@ -2419,12 +2428,7 @@ class UltraQuantSpotBot:
             else:
                 if self.live_price < self.micro_tb_lowest:
                     self.micro_tb_lowest = self.live_price
-                if self.whale_sentiment == "BEARISH":
-                    bounce_gap = 0.03
-                elif self.whale_sentiment == "BULLISH":
-                    bounce_gap = 0.01
-                else:
-                    bounce_gap = 0.02
+                bounce_gap = 0.01
                 if self.live_price >= (self.micro_tb_lowest + bounce_gap):
                     self.micro_tb_active = False
                     self.micro_tb_lowest = 0.0
@@ -3709,16 +3713,8 @@ class UltraQuantSpotBot:
                 if self.live_price < self.tb_lowest_price:
                     self.tb_lowest_price = self.live_price
 
-                if self.whale_sentiment == "BEARISH":
-                    required_bounce_pct = 0.010
-                    self.tb_stage = "1.0%"
-                elif self.whale_sentiment == "BULLISH":
-                    required_bounce_pct = 0.0025
-                    self.tb_stage = "PEAK_SNIP"
-                else:
-                    required_bounce_pct = 0.005
-                    self.tb_stage = "0.5%"
-
+                required_bounce_pct = 0.0025
+                self.tb_stage = "FAST_DIP"
                 bounce_target = self.tb_lowest_price * (1.0 + required_bounce_pct)
                 if self.live_price >= bounce_target:
                     self.tb_active = False
@@ -3754,10 +3750,7 @@ class UltraQuantSpotBot:
                     self.execute_sell_individual(pos)
                     break
 
-                if getattr(self, "whale_dump_alert", False):
-                    pullback = 0.03
-                    self.ts_stage = "EMERGENCY_LOCK"
-                elif gain >= 1.50:
+                if gain >= 1.50:
                     pullback = 0.20
                     self.ts_stage = "STAGE_3"
                 elif gain >= 0.80:
@@ -3810,7 +3803,7 @@ manager = ConnectionManager()
 
 @app.get("/")
 def home():
-    return {"status": "SHINE Ultra", "active": True}
+    return {"status": "SHINE DEX BSC Quant Engine", "network": "BNB Smart Chain", "active": True}
 
 @app.get("/status")
 def get_bot_status():
@@ -4013,8 +4006,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def run_backend_price_feed():
     endpoints = [
         "wss://stream.binance.com:9443/ws/solusdt@trade",
-        "wss://data-stream.binance.vision/ws/solusdt@trade",
-        "wss://ws-feed.exchange.coinbase.com"
+        "wss://data-stream.binance.vision/ws/solusdt@trade"
     ]
     ep_idx = 0
     while True:
@@ -4022,13 +4014,6 @@ async def run_backend_price_feed():
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(url, timeout=10.0) as ws:
-                    if "coinbase" in url:
-                        sub_msg = {
-                            "type": "subscribe",
-                            "product_ids": ["SOL-USD"],
-                            "channels": ["ticker"]
-                        }
-                        await ws.send_json(sub_msg)
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             data = json.loads(msg.data)
