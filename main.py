@@ -2165,8 +2165,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        req_h_dip = 0.15 if self.active_round == 7 else 0.20
 
-        if current_dip >= 0.20:
+        if current_dip >= req_h_dip:
             if not self.hyper_tb_active:
                 self.hyper_tb_active = True
                 self.hyper_tb_lowest = self.live_price
@@ -2174,7 +2175,8 @@ class UltraQuantSpotBot:
                 if self.live_price < self.hyper_tb_lowest:
                     self.hyper_tb_lowest = self.live_price
                 bounce_gap = 0.01
-                if self.live_price >= (self.hyper_tb_lowest + bounce_gap) or current_dip >= 0.25:
+                max_reach = (req_h_dip + 0.05)
+                if self.live_price >= (self.hyper_tb_lowest + bounce_gap) or current_dip >= max_reach:
                     self.hyper_tb_active = False
                     self.hyper_tb_lowest = 0.0
                     self.execute_hyper_buy()
@@ -2420,8 +2422,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
         self.micro_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        req_m_dip = 0.15 if self.active_round == 7 else (0.20 if self.active_round == 6 else 0.30)
 
-        if current_dip >= 0.30:
+        if current_dip >= req_m_dip:
             if not self.micro_tb_active:
                 self.micro_tb_active = True
                 self.micro_tb_lowest = self.live_price
@@ -2689,8 +2692,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         self.killer2_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        req_k2_dip = 0.30 if self.active_round == 7 else (0.45 if self.active_round == 6 else 0.60)
 
-        if current_dip >= 0.60:
+        if current_dip >= req_k2_dip:
             if not self.killer2_tb_active:
                 self.killer2_tb_active = True
                 self.killer2_tb_lowest = self.live_price
@@ -2698,7 +2702,7 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer2_tb_lowest:
                     self.killer2_tb_lowest = self.live_price
                 bounce_gap = 0.02
-                if self.live_price >= (self.killer2_tb_lowest + bounce_gap) or current_dip >= 0.65:
+                if self.live_price >= (self.killer2_tb_lowest + bounce_gap) or current_dip >= (req_k2_dip + 0.05):
                     self.killer2_tb_active = False
                     self.killer2_tb_lowest = 0.0
                     self.execute_killer2_buy()
@@ -2958,8 +2962,9 @@ class UltraQuantSpotBot:
         ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
         self.killer3_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
+        req_k3_dip = 0.50 if self.active_round == 7 else (0.70 if self.active_round == 6 else 0.90)
 
-        if current_dip >= 0.90:
+        if current_dip >= req_k3_dip:
             if not self.killer3_tb_active:
                 self.killer3_tb_active = True
                 self.killer3_tb_lowest = self.live_price
@@ -2967,7 +2972,7 @@ class UltraQuantSpotBot:
                 if self.live_price < self.killer3_tb_lowest:
                     self.killer3_tb_lowest = self.live_price
                 bounce_gap = 0.02
-                if self.live_price >= (self.killer3_tb_lowest + bounce_gap) or current_dip >= 0.95:
+                if self.live_price >= (self.killer3_tb_lowest + bounce_gap) or current_dip >= (req_k3_dip + 0.05):
                     self.killer3_tb_active = False
                     self.killer3_tb_lowest = 0.0
                     self.execute_killer3_buy()
@@ -3210,13 +3215,30 @@ class UltraQuantSpotBot:
                     self.execute_singularity_sell(pos)
                     continue
 
-        dip_thresholds = {
-            1: 1.20,
-            2: 0.20,
-            3: 0.30,
-            4: 0.60,
-            5: 0.90
-        }
+        if self.active_round == 7:
+            dip_thresholds = {
+                1: 0.50,
+                2: 0.12,
+                3: 0.15,
+                4: 0.20,
+                5: 0.30
+            }
+        elif self.active_round == 6:
+            dip_thresholds = {
+                1: 0.90,
+                2: 0.15,
+                3: 0.20,
+                4: 0.30,
+                5: 0.60
+            }
+        else:
+            dip_thresholds = {
+                1: 1.20,
+                2: 0.20,
+                3: 0.30,
+                4: 0.60,
+                5: 0.90
+            }
         
         tier_cfg = self.get_singularity_tier_config()
         for eng_idx, dip_req in dip_thresholds.items():
