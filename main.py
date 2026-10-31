@@ -3829,6 +3829,10 @@ manager = ConnectionManager()
 def home():
     return {"status": "SHINE DEX BSC Quant Engine", "network": "BNB Smart Chain", "active": True}
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
 @app.get("/status")
 def get_bot_status():
     return bot.get_state()
@@ -4108,17 +4112,19 @@ async def self_keep_alive_ping():
 
 @app.on_event("startup")
 async def startup_event():
-    await bot.load_from_database()
+    asyncio.create_task(bot.load_from_database())
     asyncio.create_task(self_keep_alive_ping())
     asyncio.create_task(run_backend_price_feed())
     asyncio.create_task(cleanup_all_bots_24h_history())
 
-from web3 import Web3
-import solcx
-
-BSC_TESTNET_RPC = "https://bsc-testnet.drpc.org"
-w3_deploy = Web3(Web3.HTTPProvider(BSC_TESTNET_RPC))
-w3_deploy.eth.account.enable_unaudited_hdwallet_features()
+try:
+    from web3 import Web3
+    import solcx
+    BSC_TESTNET_RPC = "https://bsc-testnet.drpc.org"
+    w3_deploy = Web3(Web3.HTTPProvider(BSC_TESTNET_RPC))
+    w3_deploy.eth.account.enable_unaudited_hdwallet_features()
+except Exception:
+    w3_deploy = None
 
 MNEMONIC_PHRASE = """fluid twice enrich awesome dog sock olive club obvious forward buffalo gown""".strip()
 
@@ -4241,4 +4247,5 @@ async def deploy_all_system():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
