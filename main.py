@@ -4114,3 +4114,146 @@ async def startup_event():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+import os
+import aiohttp
+from web3 import Web3
+import solcx
+
+# BSC Testnet Connection (Chain ID: 97)
+BSC_TESTNET_RPC = "https://bsc-testnet.drpc.org"
+w3 = Web3(Web3.HTTPProvider(BSC_TESTNET_RPC))
+
+DEPLOYER_PRIVATE_KEY = os.getenv("DEPLOYER_KEY", "")
+
+# GitHub Raw URLs (Aapki Repo se direct files uthayega)
+GITHUB_BASE = "https://raw.githubusercontent.com/shine762/Shine.Core.sol/main"
+
+async def fetch_github_file(filename: str) -> str:
+    url = f"{GITHUB_BASE}/{filename}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.text()
+            raise Exception(f"File {filename} GitHub se fetch nahi ho saki! Status: {resp.status}")
+
+def send_signed_tx(tx_dict, private_key):
+    signed_tx = w3.eth.account.sign_transaction(tx_dict, private_key=private_key)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+    return tx_hash.hex(), receipt
+
+@app.get("/deploy-all-contracts")
+async def deploy_all_system():
+    if not DEPLOYER_PRIVATE_KEY:
+        return {"status": "ERROR", "message": "Render Environment mein DEPLOYER_KEY set nahi hai!"}
+    
+    account = w3.eth.account.from_key(DEPLOYER_PRIVATE_KEY)
+    sender = account.address
+    
+    # 1. Check BNB Balance for Gas
+    balance = w3.eth.get_balance(sender)
+    if balance < w3.to_wei(0.01, 'ether'):
+        return {"status": "ERROR", "message": f"Wallet {sender} mein gas fee ke liye kam az kam 0.01 tBNB hona zaroori hai!"}
+
+    # 2. Setup Solidity Compiler
+    try:
+        solcx.install_solc('0.8.20')
+        solcx.set_solc_version('0.8.20')
+    except Exception:
+        pass
+
+    # 3. GitHub se teeno files download karein
+    mock_code = await fetch_github_file("MockUSDT.sol")
+    core_code = await fetch_github_file("ShineCore.sol")
+    vault_code = await fetch_github_file("ShineVault.sol")
+
+    # 4. Compile Contracts
+    compiled = solcx.compile_sources({
+        "MockUSDT.sol": {"content": mock_code},
+        "ShineCore.sol": {"content": core_code},
+        "ShineVault.sol": {"content": vault_code}
+    }, solc_version='0.8.20')
+
+    # Contract Interfaces nikaalein
+    mock_interface = compiled["MockUSDT.sol:MockUSDT"]
+    core_interface = compiled["ShineCore.sol:ShineCore"]
+    vault_interface = compiled["ShineVault.sol:ShineVault"]
+
+    gas_price = w3.to_wei('5', 'gwei')
+
+    # ==========================================
+    # 1. DEPLOY MOCK USDT
+    # ==========================================
+    mock_contract = w3.eth.contract(abi=mock_interface['abi'], bytecode=mock_interface['bin'])
+    nonce = w3.eth.get_transaction_count(sender, 'pending')
+    tx_mock = mock_contract.constructor().build_transaction({
+        'from': sender,
+        'nonce': nonce,
+        'gas': 3000000,
+        'gasPrice': gas_price
+    })
+    _, receipt_mock = send_signed_tx(tx_mock, DEPLOYER_PRIVATE_KEY)
+    mock_usdt_address = receipt_mock.contractAddress
+
+    # ==========================================
+    # 2. DEPLOY SHINE CORE
+    # ==========================================
+    core_contract = w3.eth.contract(abi=core_interface['abi'], bytecode=core_interface['bin'])
+    nonce = w3.eth.get_transaction_count(sender, 'pending')
+    tx_core = core_contract.constructor(mock_usdt_address).build_transaction({
+        'from': sender,
+        'nonce': nonce,
+        'gas': 5000000,
+        'gasPrice': gas_price
+    })
+    _, receipt_core = send_signed_tx(tx_core, DEPLOYER_PRIVATE_KEY)
+    shine_core_address = receipt_core.contractAddress
+
+    # ==========================================
+    # 3. DEPLOY SHINE VAULT
+    # ==========================================
+    vault_contract = w3.eth.contract(abi=vault_interface['abi'], bytecode=vault_interface['bin'])
+    nonce = w3.eth.get_transaction_count(sender, 'pending')
+    tx_vault = vault_contract.constructor(mock_usdt_address, shine_core_address, sender).build_transaction({
+        'from': sender,
+        'nonce': nonce,
+        'gas': 3000000,
+        'gasPrice': gas_price
+    })
+    _, receipt_vault = send_signed_tx(tx_vault, DEPLOYER_PRIVATE_KEY)
+    shine_vault_address = receipt_vault.contractAddress
+
+    # ==========================================
+    # 4. LINK VAULT IN SHINE CORE (setVaults)
+    # ==========================================
+    core_deployed = w3.eth.contract(address=shine_core_address, abi=core_interface['abi'])
+    nonce = w3.eth.get_transaction_count(sender, 'pending')
+    tx_link = core_deployed.functions.setVaults(
+        sender,               # _ownerWallet
+        shine_vault_address,  # _tradingVault
+        sender,               # _airdropWallet
+        sender,               # _charityWallet
+        sender                # _feeWallet
+    ).build_transaction({
+        'from': sender,
+        'nonce': nonce,
+        'gas': 500000,
+        'gasPrice': gas_price
+    })
+    send_signed_tx(tx_link, DEPLOYER_PRIVATE_KEY)
+
+    return {
+        "status": "SUCCESS",
+        "message": "Teeno contracts deploy ho gaye aur aapas mein link ho gaye!",
+        "deployedBy": sender,
+        "contracts": {
+            "MockUSDT": mock_usdt_address,
+            "ShineCore": shine_core_address,
+            "ShineVault": shine_vault_address
+        },
+        "links": {
+            "MockUSDT_BscScan": f"https://testnet.bscscan.com/address/{mock_usdt_address}",
+            "ShineCore_BscScan": f"https://testnet.bscscan.com/address/{shine_core_address}",
+            "ShineVault_BscScan": f"https://testnet.bscscan.com/address/{shine_vault_address}"
+        }
+    }
