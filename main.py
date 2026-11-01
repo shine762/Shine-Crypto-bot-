@@ -30,7 +30,7 @@ class UltraQuantSpotBot:
     def __init__(self):
         self.is_paused = False
         self.live_price = 0.0
-        self.usdt_balance = 100.0
+        self.usdt_balance = 0.0
         self.sol_balance = 0.0
         self.invested_amount = 0.0
         self.avg_entry_price = 0.0
@@ -84,7 +84,7 @@ class UltraQuantSpotBot:
             1: 0.01, 2: 0.02, 3: 0.04, 4: 0.06, 5: 0.10,
             6: 0.20, 7: 0.30, 8: 0.27, 9: 0.0, 10: 0.0
         }
-        self.home_pool_users = 100
+        self.home_pool_users = 1
         self.home_round_spent = {r: 0.0 for r in range(1, 11)}
         self.home_round_borrowed = {r: 0.0 for r in range(1, 11)}
         self.macro_profit_vault = 0.0
@@ -104,7 +104,7 @@ class UltraQuantSpotBot:
         self.hyper_last_ref_price = 0.0
         self.hyper_realized_pnl = 0.0
         self.hyper_total_trades = 0
-        self.micro_pool_users = 100
+        self.micro_pool_users = 1
         self.micro_positions = []
         self.micro_round_trades_done = {r: 0 for r in range(1, 11)}
         self.micro_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -115,7 +115,7 @@ class UltraQuantSpotBot:
         self.micro_last_ref_price = 0.0
         self.micro_realized_pnl = 0.0
         self.micro_total_trades = 0
-        self.killer2_pool_users = 100
+        self.killer2_pool_users = 1
         self.killer2_positions = []
         self.killer2_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer2_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -126,7 +126,7 @@ class UltraQuantSpotBot:
         self.killer2_last_ref_price = 0.0
         self.killer2_realized_pnl = 0.0
         self.killer2_total_trades = 0
-        self.killer3_pool_users = 100
+        self.killer3_pool_users = 1
         self.killer3_positions = []
         self.killer3_round_trades_done = {r: 0 for r in range(1, 11)}
         self.killer3_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -154,7 +154,7 @@ class UltraQuantSpotBot:
         self.auto_loops = []
         self.spot_realized_pnl = 0.0
         self.db_loaded = False
-        self.total_user_capital = 100.0
+        self.total_user_capital = 0.0
         self.singularity_active = True
         self.singularity_users = 1000
         self.singularity_pool_balance = 100000.0
@@ -179,24 +179,23 @@ class UltraQuantSpotBot:
 
     def get_tier_config(self, capital=None):
         cap = capital if capital is not None else self.total_user_capital
-        if cap < 100.0:
-            cap = 100.0
         net_fund = cap * 0.80
-        if cap <= 300.0:
+        if net_fund <= 240.0:
             trade_size = 10.0
         else:
             trade_size = round(net_fund / 24.0, 2)
-        return {"slots": 30, "size": max(10.0, trade_size), "net_fund": net_fund}
+        return {"slots": 24, "size": max(10.0, trade_size), "net_fund": net_fund}
 
     def get_hyper_slots(self, cap=None):
         return 30
 
     def get_singularity_tier_config(self, cap=None, target_round=None):
         r_num = target_round if target_round is not None else self.active_round
-        round_pct = self.round_allocations.get(r_num, 0.10)
-        round_fund = 100000.0 * (round_pct if round_pct > 0 else 0.10)
-        trade_size = max(10.0, round(round_fund / 150.0, 2))
-        return {"slots": 150, "trade_size": trade_size, "round_fund": round_fund}
+        trade_size = max(200.0, round(self.singularity_pool_balance / 35.0, 2))
+        if trade_size > 800.0:
+            trade_size = 800.0
+        round_fund = trade_size * 35.0
+        return {"slots": 35, "trade_size": trade_size, "round_fund": round_fund}
 
     async def load_from_database(self):
         try:
@@ -1030,71 +1029,33 @@ class UltraQuantSpotBot:
         if current_done >= max_allowed_slots:
             return
 
-        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "home_pool_users", 1) >= 100)
-        total_trading_capital = self.total_user_capital * 0.80
+        total_trading_capital = cfg["net_fund"]
+        if total_trading_capital < 10.0:
+            return
+
+        target_size = min(self.usdt_balance, max(10.0, cfg["size"] * vol_multiplier))
         borrowed_donor = 0
-        is_macro_hold = False
+        is_macro_hold = (cur_rnd == 8)
 
-        if is_pool_mode:
-            target_size = max(10.0, round((self.round_allocations.get(cur_rnd, 0.10) * total_trading_capital) / max(1, max_allowed_slots), 2))
-            round_max = self.round_allocations.get(cur_rnd, 0.0) * total_trading_capital
-            round_spent = self.home_round_spent.get(cur_rnd, 0.0)
-            round_avail = round_max - round_spent
+        round_max = (self.round_allocations.get(cur_rnd, 0.10)) * total_trading_capital
+        round_spent = self.home_round_spent.get(cur_rnd, 0.0)
 
-            if cur_rnd == 8:
-                if self.macro_vault_invested < round_max and (round_max - self.macro_vault_invested) >= target_size:
-                    is_macro_hold = True
-                    self.home_round_spent[8] = round(self.home_round_spent.get(8, 0.0) + target_size, 2)
-                else:
-                    for r_donor in range(1, 8):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
-                        d_spent = self.home_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.home_round_borrowed[8] = round(self.home_round_borrowed.get(8, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif cur_rnd == 7:
-                if round_avail >= target_size:
-                    self.home_round_spent[7] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 7):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
-                        d_spent = self.home_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.home_round_borrowed[7] = round(self.home_round_borrowed.get(7, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif cur_rnd == 6:
-                if round_avail >= target_size:
-                    self.home_round_spent[6] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 6):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_trading_capital
-                        d_spent = self.home_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.home_round_borrowed[6] = round(self.home_round_borrowed.get(6, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            else:
-                if round_avail < target_size:
-                    return
-                self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
-            invest_target = target_size
+        if (round_max - round_spent) >= target_size:
+            self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
         else:
-            invest_target = max(10.0, cfg["size"] * vol_multiplier)
-            if invest_target > self.usdt_balance:
-                invest_target = self.usdt_balance
-            if cur_rnd == 8:
-                is_macro_hold = True
+            donor_list = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != cur_rnd]
+            for r_donor in donor_list:
+                d_max = (self.round_allocations.get(r_donor, 0.10)) * total_trading_capital
+                d_spent = self.home_round_spent.get(r_donor, 0.0)
+                if (d_max - d_spent) >= target_size:
+                    borrowed_donor = r_donor
+                    self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.home_round_borrowed[cur_rnd] = round(self.home_round_borrowed.get(cur_rnd, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor == 0:
+                self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
+
+        invest_target = target_size
 
         fee = invest_target * self.taker_fee_pct
         net_invest = invest_target - fee
@@ -1972,64 +1933,33 @@ class UltraQuantSpotBot:
             return
 
         total_hyper_pool = 9999.0
-        target_size = max(10.0, round((self.round_allocations.get(h_round, 0.10) * total_hyper_pool) / max(1, allowed_hyper_slots), 2))
-        round_max = self.round_allocations.get(h_round, 0.0) * total_hyper_pool
-        round_spent = self.hyper_round_spent.get(h_round, 0.0)
-        round_avail = round_max - round_spent
-
-        borrowed_donor = 0
-        is_macro_hold = False
+        allowed_hyper_slots = 20
+        target_size = max(50.0, round(self.hyper_pool_balance / 20.0, 2))
+        if target_size > 150.0:
+            target_size = 150.0
 
         if self.hyper_pool_balance < target_size:
             return
 
-        if h_round == 8:
-            if (round_max - self.hyper_macro_profit_vault) >= target_size:
-                is_macro_hold = True
-                self.hyper_round_spent[8] = round(self.hyper_round_spent.get(8, 0.0) + target_size, 2)
-            else:
-                for r_donor in range(1, 8):
-                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
-                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
-                    if (d_alloc - d_spent) >= target_size:
-                        borrowed_donor = r_donor
-                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
-                        self.hyper_round_borrowed[8] = round(self.hyper_round_borrowed.get(8, 0.0) + target_size, 2)
-                        break
-                if borrowed_donor == 0:
-                    return
-        elif h_round == 7:
-            if round_avail >= target_size:
-                self.hyper_round_spent[7] = round(round_spent + target_size, 2)
-            else:
-                for r_donor in range(1, 7):
-                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
-                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
-                    if (d_alloc - d_spent) >= target_size:
-                        borrowed_donor = r_donor
-                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
-                        self.hyper_round_borrowed[7] = round(self.hyper_round_borrowed.get(7, 0.0) + target_size, 2)
-                        break
-                if borrowed_donor == 0:
-                    return
-        elif h_round == 6:
-            if round_avail >= target_size:
-                self.hyper_round_spent[6] = round(round_spent + target_size, 2)
-            else:
-                for r_donor in range(1, 6):
-                    d_alloc = self.round_allocations.get(r_donor, 0.0) * total_hyper_pool
-                    d_spent = self.hyper_round_spent.get(r_donor, 0.0)
-                    if (d_alloc - d_spent) >= target_size:
-                        borrowed_donor = r_donor
-                        self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
-                        self.hyper_round_borrowed[6] = round(self.hyper_round_borrowed.get(6, 0.0) + target_size, 2)
-                        break
-                if borrowed_donor == 0:
-                    return
-        else:
-            if round_avail < target_size:
-                return
+        borrowed_donor = 0
+        is_macro_hold = (h_round == 8)
+        round_max = self.round_allocations.get(h_round, 0.10) * total_hyper_pool
+        round_spent = self.hyper_round_spent.get(h_round, 0.0)
+
+        if (round_max - round_spent) >= target_size:
             self.hyper_round_spent[h_round] = round(round_spent + target_size, 2)
+        else:
+            h_donors = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != h_round]
+            for r_donor in h_donors:
+                d_alloc = self.round_allocations.get(r_donor, 0.10) * total_hyper_pool
+                d_spent = self.hyper_round_spent.get(r_donor, 0.0)
+                if (d_alloc - d_spent) >= target_size:
+                    borrowed_donor = r_donor
+                    self.hyper_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.hyper_round_borrowed[h_round] = round(self.hyper_round_borrowed.get(h_round, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor == 0:
+                self.hyper_round_spent[h_round] = round(round_spent + target_size, 2)
 
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -2142,32 +2072,32 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain = peak - entry_p
-                if gain >= 0.70:
-                    pullback = 0.12
-                elif gain >= 0.40:
+                if gain >= 0.45:
                     pullback = 0.08
-                elif gain >= 0.20:
+                elif gain >= 0.28:
                     pullback = 0.05
+                elif gain >= 0.18:
+                    pullback = 0.03
                 else:
                     pullback = 0.0
                 if pullback > 0.0 and current_p <= (peak - pullback):
                     self.execute_hyper_sell(pos)
 
-        if len(self.hyper_positions) >= 10:
+        if len(self.hyper_positions) >= 20:
             lowest_pos = min(self.hyper_positions, key=lambda p: float(p["entryPrice"]))
             if (self.live_price - float(lowest_pos["entryPrice"])) >= 0.03:
                 self.execute_hyper_sell(lowest_pos)
             self.hyper_tb_active = False
             return
 
-        if self.hyper_pool_balance < self.hyper_trade_size:
+        if self.hyper_pool_balance < 50.0:
             self.hyper_tb_active = False
             return
 
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
         current_dip = ref_p - self.live_price
-        req_h_dip = 0.15 if self.active_round == 7 else 0.20
+        req_h_dip = 0.15
 
         if current_dip >= req_h_dip:
             if not self.hyper_tb_active:
@@ -2205,76 +2135,37 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         m_round = self.active_round
         cfg = self.get_tier_config()
+        if cfg["net_fund"] < 20.0:
+            return
         max_allowed_slots = cfg["slots"]
 
         if self.micro_round_trades_done.get(m_round, 0) >= max_allowed_slots:
             return
 
-        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "micro_pool_users", 1) >= 100)
-        total_pool_budget = self.total_user_capital * 0.80
+        total_pool_budget = cfg["net_fund"]
+        target_size = min(self.usdt_balance, max(10.0, cfg["size"]))
         borrowed_donor = 0
-        is_macro_hold = False
+        is_macro_hold = (m_round == 8)
 
-        if is_pool_mode:
-            target_size = max(10.0, round((self.round_allocations.get(m_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
-            round_max = self.round_allocations.get(m_round, 0.0) * total_pool_budget
-            round_spent = self.micro_round_spent.get(m_round, 0.0)
-            round_avail = round_max - round_spent
+        round_max = (self.round_allocations.get(m_round, 0.10)) * total_pool_budget
+        round_spent = self.micro_round_spent.get(m_round, 0.0)
 
-            if m_round == 8:
-                if (round_max - self.micro_macro_profit_vault) >= target_size:
-                    is_macro_hold = True
-                    self.micro_round_spent[8] = round(self.micro_round_spent.get(8, 0.0) + target_size, 2)
-                else:
-                    for r_donor in range(1, 8):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.micro_round_borrowed[8] = round(self.micro_round_borrowed.get(8, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif m_round == 7:
-                if round_avail >= target_size:
-                    self.micro_round_spent[7] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 7):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.micro_round_borrowed[7] = round(self.micro_round_borrowed.get(7, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif m_round == 6:
-                if round_avail >= target_size:
-                    self.micro_round_spent[6] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 6):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.micro_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.micro_round_borrowed[6] = round(self.micro_round_borrowed.get(6, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            else:
-                if round_avail < target_size:
-                    return
-                self.micro_round_spent[m_round] = round(round_spent + target_size, 2)
-            invest_target = target_size
+        if (round_max - round_spent) >= target_size:
+            self.micro_round_spent[m_round] = round(round_spent + target_size, 2)
         else:
-            invest_target = max(10.0, cfg["size"])
-            if invest_target > self.usdt_balance:
-                invest_target = self.usdt_balance
-            if m_round == 8:
-                is_macro_hold = True
+            m_donors = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != m_round]
+            for r_donor in m_donors:
+                d_alloc = (self.round_allocations.get(r_donor, 0.10)) * total_pool_budget
+                d_spent = self.micro_round_spent.get(r_donor, 0.0)
+                if (d_alloc - d_spent) >= target_size:
+                    borrowed_donor = r_donor
+                    self.micro_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.micro_round_borrowed[m_round] = round(self.micro_round_borrowed.get(m_round, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor == 0:
+                self.micro_round_spent[m_round] = round(round_spent + target_size, 2)
+
+        invest_target = target_size
 
         fee = invest_target * self.taker_fee_pct
         net_invest = invest_target - fee
@@ -2476,76 +2367,37 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
+        if cfg["net_fund"] < 80.0:
+            return
         max_allowed_slots = cfg["slots"]
 
         if self.killer2_round_trades_done.get(k_round, 0) >= max_allowed_slots:
             return
 
-        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "killer2_pool_users", 1) >= 100)
-        total_pool_budget = self.total_user_capital * 0.80
+        total_pool_budget = cfg["net_fund"]
+        target_size = min(self.usdt_balance, max(10.0, cfg["size"]))
         borrowed_donor = 0
-        is_macro_hold = False
+        is_macro_hold = (k_round == 8)
 
-        if is_pool_mode:
-            target_size = max(10.0, round((self.round_allocations.get(k_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
-            round_max = self.round_allocations.get(k_round, 0.0) * total_pool_budget
-            round_spent = self.killer2_round_spent.get(k_round, 0.0)
-            round_avail = round_max - round_spent
+        round_max = (self.round_allocations.get(k_round, 0.10)) * total_pool_budget
+        round_spent = self.killer2_round_spent.get(k_round, 0.0)
 
-            if k_round == 8:
-                if (round_max - self.killer2_macro_profit_vault) >= target_size:
-                    is_macro_hold = True
-                    self.killer2_round_spent[8] = round(self.killer2_round_spent.get(8, 0.0) + target_size, 2)
-                else:
-                    for r_donor in range(1, 8):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer2_round_borrowed[8] = round(self.killer2_round_borrowed.get(8, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif k_round == 7:
-                if round_avail >= target_size:
-                    self.killer2_round_spent[7] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 7):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer2_round_borrowed[7] = round(self.killer2_round_borrowed.get(7, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif k_round == 6:
-                if round_avail >= target_size:
-                    self.killer2_round_spent[6] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 6):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer2_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer2_round_borrowed[6] = round(self.killer2_round_borrowed.get(6, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            else:
-                if round_avail < target_size:
-                    return
-                self.killer2_round_spent[k_round] = round(round_spent + target_size, 2)
-            invest_target = target_size
+        if (round_max - round_spent) >= target_size:
+            self.killer2_round_spent[k_round] = round(round_spent + target_size, 2)
         else:
-            invest_target = max(10.0, cfg["size"])
-            if invest_target > self.usdt_balance:
-                invest_target = self.usdt_balance
-            if k_round == 8:
-                is_macro_hold = True
+            k2_donors = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != k_round]
+            for r_donor in k2_donors:
+                d_alloc = (self.round_allocations.get(r_donor, 0.10)) * total_pool_budget
+                d_spent = self.killer2_round_spent.get(r_donor, 0.0)
+                if (d_alloc - d_spent) >= target_size:
+                    borrowed_donor = r_donor
+                    self.killer2_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.killer2_round_borrowed[k_round] = round(self.killer2_round_borrowed.get(k_round, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor == 0:
+                self.killer2_round_spent[k_round] = round(round_spent + target_size, 2)
+
+        invest_target = target_size
 
         fee = invest_target * self.taker_fee_pct
         net_invest = invest_target - fee
@@ -2746,76 +2598,37 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
+        if cfg["net_fund"] < 120.0:
+            return
         max_allowed_slots = cfg["slots"]
 
         if self.killer3_round_trades_done.get(k_round, 0) >= max_allowed_slots:
             return
 
-        is_pool_mode = (self.total_user_capital >= 1000.0 or getattr(self, "killer3_pool_users", 1) >= 100)
-        total_pool_budget = self.total_user_capital * 0.80
+        total_pool_budget = cfg["net_fund"]
+        target_size = min(self.usdt_balance, max(10.0, cfg["size"]))
         borrowed_donor = 0
-        is_macro_hold = False
+        is_macro_hold = (k_round == 8)
 
-        if is_pool_mode:
-            target_size = max(10.0, round((self.round_allocations.get(k_round, 0.10) * total_pool_budget) / max(1, max_allowed_slots), 2))
-            round_max = self.round_allocations.get(k_round, 0.0) * total_pool_budget
-            round_spent = self.killer3_round_spent.get(k_round, 0.0)
-            round_avail = round_max - round_spent
+        round_max = (self.round_allocations.get(k_round, 0.10)) * total_pool_budget
+        round_spent = self.killer3_round_spent.get(k_round, 0.0)
 
-            if k_round == 8:
-                if (round_max - self.killer3_macro_profit_vault) >= target_size:
-                    is_macro_hold = True
-                    self.killer3_round_spent[8] = round(self.killer3_round_spent.get(8, 0.0) + target_size, 2)
-                else:
-                    for r_donor in range(1, 8):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer3_round_borrowed[8] = round(self.killer3_round_borrowed.get(8, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif k_round == 7:
-                if round_avail >= target_size:
-                    self.killer3_round_spent[7] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 7):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer3_round_borrowed[7] = round(self.killer3_round_borrowed.get(7, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            elif k_round == 6:
-                if round_avail >= target_size:
-                    self.killer3_round_spent[6] = round(round_spent + target_size, 2)
-                else:
-                    for r_donor in range(1, 6):
-                        d_alloc = self.round_allocations.get(r_donor, 0.0) * total_pool_budget
-                        d_spent = self.killer3_round_spent.get(r_donor, 0.0)
-                        if (d_alloc - d_spent) >= target_size:
-                            borrowed_donor = r_donor
-                            self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
-                            self.killer3_round_borrowed[6] = round(self.killer3_round_borrowed.get(6, 0.0) + target_size, 2)
-                            break
-                    if borrowed_donor == 0:
-                        return
-            else:
-                if round_avail < target_size:
-                    return
-                self.killer3_round_spent[k_round] = round(round_spent + target_size, 2)
-            invest_target = target_size
+        if (round_max - round_spent) >= target_size:
+            self.killer3_round_spent[k_round] = round(round_spent + target_size, 2)
         else:
-            invest_target = max(10.0, cfg["size"])
-            if invest_target > self.usdt_balance:
-                invest_target = self.usdt_balance
-            if k_round == 8:
-                is_macro_hold = True
+            k3_donors = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != k_round]
+            for r_donor in k3_donors:
+                d_alloc = (self.round_allocations.get(r_donor, 0.10)) * total_pool_budget
+                d_spent = self.killer3_round_spent.get(r_donor, 0.0)
+                if (d_alloc - d_spent) >= target_size:
+                    borrowed_donor = r_donor
+                    self.killer3_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.killer3_round_borrowed[k_round] = round(self.killer3_round_borrowed.get(k_round, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor == 0:
+                self.killer3_round_spent[k_round] = round(round_spent + target_size, 2)
+
+        invest_target = target_size
 
         fee = invest_target * self.taker_fee_pct
         net_invest = invest_target - fee
@@ -2997,47 +2810,24 @@ class UltraQuantSpotBot:
         if self.singularity_pool_balance < target_size:
             return
 
-        round_max_fund = (self.round_allocations.get(cur_rnd, 0.0)) * 100000.0
-        round_spent_now = self.singularity_round_spent.get(cur_rnd, 0.0)
-        round_remaining = round_max_fund - round_spent_now
-
         borrowed_donor_round = 0
-        is_macro_vault_hold = False
+        round_max_fund = (self.round_allocations.get(cur_rnd, 0.10)) * 100000.0
+        round_spent_now = self.singularity_round_spent.get(cur_rnd, 0.0)
 
-        if cur_rnd == 8:
-            if self.singularity_macro_invested < round_max_fund and (round_max_fund - self.singularity_macro_invested) >= target_size:
-                is_macro_vault_hold = True
-                self.singularity_round_spent[8] = round(self.singularity_round_spent.get(8, 0.0) + target_size, 2)
-            else:
-                for r_donor in range(1, 8):
-                    d_alloc = (self.round_allocations.get(r_donor, 0.0)) * 100000.0
-                    d_spent = self.singularity_round_spent.get(r_donor, 0.0)
-                    if (d_alloc - d_spent) >= target_size:
-                        borrowed_donor_round = r_donor
-                        self.singularity_round_spent[r_donor] = round(d_spent + target_size, 2)
-                        self.singularity_round_borrowed[8] = round(self.singularity_round_borrowed.get(8, 0.0) + target_size, 2)
-                        break
-                if borrowed_donor_round == 0:
-                    return
-        elif cur_rnd in [6, 7]:
-            if round_remaining >= target_size:
-                self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
-            else:
-                donor_range = range(1, 6) if cur_rnd == 6 else range(1, 7)
-                for r_donor in donor_range:
-                    d_alloc = (self.round_allocations.get(r_donor, 0.0)) * 100000.0
-                    d_spent = self.singularity_round_spent.get(r_donor, 0.0)
-                    if (d_alloc - d_spent) >= target_size:
-                        borrowed_donor_round = r_donor
-                        self.singularity_round_spent[r_donor] = round(d_spent + target_size, 2)
-                        self.singularity_round_borrowed[cur_rnd] = round(self.singularity_round_borrowed.get(cur_rnd, 0.0) + target_size, 2)
-                        break
-                if borrowed_donor_round == 0:
-                    return
-        else:
-            if round_remaining < target_size:
-                return
+        if (round_max_fund - round_spent_now) >= target_size:
             self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
+        else:
+            donor_list = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != cur_rnd]
+            for r_donor in donor_list:
+                d_max = (self.round_allocations.get(r_donor, 0.10)) * 100000.0
+                d_spent = self.singularity_round_spent.get(r_donor, 0.0)
+                if (d_max - d_spent) >= target_size:
+                    borrowed_donor_round = r_donor
+                    self.singularity_round_spent[r_donor] = round(d_spent + target_size, 2)
+                    self.singularity_round_borrowed[cur_rnd] = round(self.singularity_round_borrowed.get(cur_rnd, 0.0) + target_size, 2)
+                    break
+            if borrowed_donor_round == 0:
+                self.singularity_round_spent[cur_rnd] = round(round_spent_now + target_size, 2)
 
         fee = target_size * self.taker_fee_pct
         net_invest = target_size - fee
@@ -3057,12 +2847,14 @@ class UltraQuantSpotBot:
         }
         eng_name = engine_labels.get(engine_idx, "FUSION")
 
+        is_macro_vault_hold = (cur_rnd == 8)
+        quick_target = round(self.live_price + 2.50, 2) if is_macro_vault_hold else 0.0
+
         if is_macro_vault_hold:
             self.singularity_macro_sol += sol_amt
             self.singularity_macro_invested += target_size
-            avg_m = self.singularity_macro_invested / self.singularity_macro_sol if self.singularity_macro_sol > 0 else 0.0
-            self.singularity_macro_target = round(max(200.0, avg_m * 2.0), 2)
-            pos_label = f"SINGULARITY R8 MACRO VAULT (#{trade_num})"
+            self.singularity_macro_target = quick_target
+            pos_label = f"SINGULARITY R8 CASH-COW (#{trade_num})"
         elif borrowed_donor_round > 0:
             pos_label = f"SINGULARITY [{eng_name}] R{cur_rnd} (LOAN R{borrowed_donor_round})"
         else:
@@ -3078,7 +2870,7 @@ class UltraQuantSpotBot:
             "solAmount": round(sol_amt, 4),
             "invested": round(target_size, 2),
             "isMacro": is_macro_vault_hold,
-            "targetPrice": self.singularity_macro_target if is_macro_vault_hold else 0.0,
+            "targetPrice": quick_target,
             "borrowedFrom": borrowed_donor_round,
             "ts_high": round(self.live_price, 2),
             "timestamp": datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -3193,54 +2985,37 @@ class UltraQuantSpotBot:
                 pullback = 0.0
                 
                 if eng_idx == 1:
-                    if gain >= 1.50: pullback = 0.20
-                    elif gain >= 0.80: pullback = 0.15
-                    elif gain >= 0.40: pullback = 0.10
+                    if gain >= 0.60: pullback = 0.10
+                    elif gain >= 0.35: pullback = 0.06
+                    elif gain >= 0.20: pullback = 0.04
                 elif eng_idx == 2:
-                    if gain >= 0.70: pullback = 0.12
-                    elif gain >= 0.40: pullback = 0.08
-                    elif gain >= 0.20: pullback = 0.05
+                    if gain >= 0.45: pullback = 0.08
+                    elif gain >= 0.30: pullback = 0.05
+                    elif gain >= 0.18: pullback = 0.03
                 elif eng_idx == 3:
-                    if gain >= 0.80: pullback = 0.15
-                    elif gain >= 0.55: pullback = 0.12
-                    elif gain >= 0.35: pullback = 0.08
+                    if gain >= 0.50: pullback = 0.09
+                    elif gain >= 0.32: pullback = 0.06
+                    elif gain >= 0.20: pullback = 0.04
                 elif eng_idx == 4:
-                    if gain >= 1.20: pullback = 0.25
-                    elif gain >= 0.80: pullback = 0.20
-                    elif gain >= 0.50: pullback = 0.15
+                    if gain >= 0.70: pullback = 0.12
+                    elif gain >= 0.45: pullback = 0.08
+                    elif gain >= 0.25: pullback = 0.05
                 elif eng_idx == 5:
-                    if gain >= 1.50: pullback = 0.03
-                    elif gain >= 1.00: pullback = round(peak * 0.005, 2)
-                    elif gain >= 0.60: pullback = round(peak * 0.010, 2)
+                    if gain >= 0.90: pullback = 0.15
+                    elif gain >= 0.55: pullback = 0.10
+                    elif gain >= 0.30: pullback = 0.06
                     
                 if pullback > 0.0 and current_p <= (peak - pullback):
                     self.execute_singularity_sell(pos)
                     continue
 
-        if self.active_round == 7:
-            dip_thresholds = {
-                1: 0.50,
-                2: 0.12,
-                3: 0.15,
-                4: 0.20,
-                5: 0.30
-            }
-        elif self.active_round == 6:
-            dip_thresholds = {
-                1: 0.90,
-                2: 0.15,
-                3: 0.20,
-                4: 0.30,
-                5: 0.60
-            }
-        else:
-            dip_thresholds = {
-                1: 1.20,
-                2: 0.20,
-                3: 0.30,
-                4: 0.60,
-                5: 0.90
-            }
+        dip_thresholds = {
+            1: 0.25,
+            2: 0.20,
+            3: 0.22,
+            4: 0.30,
+            5: 0.40
+        }
         
         tier_cfg = self.get_singularity_tier_config()
         for eng_idx, dip_req in dip_thresholds.items():
@@ -3851,9 +3626,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = True
                 elif action == "RESUME":
                     bot.is_paused = False
-                elif action == "UPGRADE_CAPITAL":
-                    new_cap = float(msg.get("totalCapital", 100.0))
+                elif action in ["UPGRADE_CAPITAL", "USER_LEVEL_UP"]:
+                    new_cap = float(msg.get("totalCapital", 0.0))
+                    users_cnt = int(msg.get("userCount", 1))
                     bot.total_user_capital = new_cap
+                    bot.home_pool_users = users_cnt
+                    bot.micro_pool_users = users_cnt
+                    bot.killer2_pool_users = users_cnt
+                    bot.killer3_pool_users = users_cnt
                     net_trading = new_cap * 0.80
                     bot.usdt_balance = round(net_trading, 2)
                     asyncio.create_task(bot.db_sync_state())
