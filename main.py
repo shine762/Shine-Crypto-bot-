@@ -422,8 +422,13 @@ class UltraQuantSpotBot:
                             self.macro_vault_sol = sum(p["solAmount"] for p in macro_pos)
                             self.macro_vault_invested = sum(p["invested"] for p in macro_pos)
                             total_active_cost = self.invested_amount + self.macro_vault_invested
-                            if total_active_cost > 0:
-                                self.usdt_balance = max(0.0, round(100.0 + self.realized_pnl - total_active_cost, 2))
+                            base_cap = self.total_user_capital * 0.80
+                            if base_cap <= 0:
+                                self.usdt_balance = 0.0
+                            elif total_active_cost > 0:
+                                self.usdt_balance = max(0.0, round(base_cap + self.realized_pnl - total_active_cost, 2))
+                            else:
+                                self.usdt_balance = round(base_cap, 2)
                             self.avg_entry_price = round(self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0, 2)
                             self.sub_trade_count = len(regular_pos)
                             self.round_trades_done = {r: 0 for r in range(1, 11)}
