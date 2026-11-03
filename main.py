@@ -179,12 +179,33 @@ class UltraQuantSpotBot:
 
     def get_tier_config(self, capital=None):
         cap = capital if capital is not None else self.total_user_capital
-        net_fund = cap * 0.80
-        if net_fund <= 240.0:
+        net_fund = cap
+        if net_fund <= 300.0:
             trade_size = 10.0
         else:
             trade_size = round(net_fund / 24.0, 2)
         return {"slots": 24, "size": max(10.0, trade_size), "net_fund": net_fund}
+
+    def check_and_trigger_fund_tiers(self):
+        if self.is_paused or self.live_price <= 0:
+            return
+        fund = self.total_user_capital
+        if fund >= 10.0 and len(self.micro_positions) < 1 and self.usdt_balance >= 10.0:
+            self.execute_micro_buy()
+        if fund >= 20.0 and len(self.micro_positions) < 2 and self.usdt_balance >= 10.0:
+            self.execute_micro_buy()
+        if fund >= 30.0 and len(self.micro_positions) < 3 and self.usdt_balance >= 10.0:
+            self.execute_micro_buy()
+        if fund >= 40.0 and len(self.active_positions) < 1 and self.usdt_balance >= 10.0:
+            self.execute_buy(is_sub_trade=False)
+        if fund >= 50.0 and len(self.active_positions) < 2 and self.usdt_balance >= 10.0:
+            self.execute_buy(is_sub_trade=True)
+        if fund >= 60.0 and len(self.killer2_positions) < 1 and self.usdt_balance >= 10.0:
+            self.execute_killer2_buy()
+        if fund >= 70.0 and len(self.killer2_positions) < 2 and self.usdt_balance >= 10.0:
+            self.execute_killer2_buy()
+        if fund >= 80.0 and len(self.killer3_positions) < 1 and self.usdt_balance >= 10.0:
+            self.execute_killer3_buy()
 
     def get_hyper_slots(self, cap=None):
         return 30
@@ -1026,6 +1047,8 @@ class UltraQuantSpotBot:
             return
 
         self.sync_phase_and_round()
+        if self.total_user_capital < 40.0:
+            return
         cur_rnd = self.active_round
         vol_multiplier = getattr(self, "whale_boost_multiplier", 1.0)
         cfg = self.get_tier_config()
@@ -2119,7 +2142,7 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         m_round = self.active_round
         cfg = self.get_tier_config()
-        if cfg["net_fund"] < 20.0:
+        if self.total_user_capital < 10.0:
             return
         max_allowed_slots = cfg["slots"]
 
@@ -2351,7 +2374,7 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
-        if cfg["net_fund"] < 80.0:
+        if self.total_user_capital < 60.0:
             return
         max_allowed_slots = cfg["slots"]
 
@@ -2582,7 +2605,7 @@ class UltraQuantSpotBot:
         self.sync_phase_and_round()
         k_round = self.active_round
         cfg = self.get_tier_config()
-        if cfg["net_fund"] < 120.0:
+        if self.total_user_capital < 80.0:
             return
         max_allowed_slots = cfg["slots"]
 
@@ -3100,6 +3123,7 @@ class UltraQuantSpotBot:
         if self.is_paused:
             return
 
+        self.check_and_trigger_fund_tiers()
         self.run_hyper_titan_tick()
         self.run_micro_scalper_tick()
         self.run_killer2_scalper_tick()
@@ -3618,8 +3642,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.total_user_capital = effective_fund
                     bot.usdt_balance = round(effective_fund, 2)
                     asyncio.create_task(bot.db_sync_state())
-                    if not bot.is_paused and bot.usdt_balance >= 10.0 and len(bot.active_positions) == 0:
-                        bot.execute_buy(is_sub_trade=False)
+                    bot.check_and_trigger_fund_tiers()
                 elif action == "ADMIN_BOT_BUY":
                     b_target = str(msg.get("bot", "HOME")).upper()
                     if b_target == "HOME":
