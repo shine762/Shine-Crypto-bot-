@@ -43,7 +43,7 @@ class UltraQuantSpotBot:
         self.active_phase = 1
         self.active_round = 1
         self.sub_trade_count = 0
-        self.max_sub_trades = 30
+        self.max_sub_trades = 24
         self.round_trades_done = {r: 0 for r in range(1, 11)}
         self.realized_pnl = 0.0
         self.cooldown_remaining = 0
@@ -557,6 +557,7 @@ class UltraQuantSpotBot:
             return
         try:
             payload = {
+                "total_user_capital": round(self.total_user_capital, 2),
                 "usdt_balance": round(self.usdt_balance, 2),
                 "wallet_balance": round(self.manual_test_balance, 2),
                 "manual_realized_pnl": round(self.manual_realized_pnl, 4),
@@ -1096,7 +1097,7 @@ class UltraQuantSpotBot:
             if borrowed_donor > 0:
                 pos_label = f"R{cur_rnd} (LOAN R{borrowed_donor} #{self.sub_trade_count})"
             else:
-                pos_label = f"R{cur_rnd} (Trade {self.sub_trade_count}/30)"
+                pos_label = f"R{cur_rnd} (Trade {self.sub_trade_count}/24)"
             pos = {
                 "id": pos_id,
                 "round": cur_rnd,
@@ -3523,8 +3524,9 @@ class UltraQuantSpotBot:
                 if self.live_price >= bounce_target:
                     self.tb_active = False
                     self.tb_stage = "IDLE"
-                    active_count = len([p for p in regular_positions if p.get("round") == self.active_round])
-                    if active_count < 10:
+                    active_count = len(regular_positions)
+                    cfg_check = self.get_tier_config()
+                    if active_count < cfg_check["slots"]:
                         self.execute_buy(is_sub_trade=True)
                         return
 
@@ -3633,15 +3635,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     bot.is_paused = False
                 elif action in ["UPGRADE_CAPITAL", "USER_LEVEL_UP"]:
                     new_cap = float(msg.get("totalCapital", 0.0))
-                    users_cnt = int(msg.get("userCount", 1))
-                    bot.total_user_capital = new_cap
-                    bot.home_pool_users = users_cnt
-                    bot.micro_pool_users = users_cnt
-                    bot.killer2_pool_users = users_cnt
-                    bot.killer3_pool_users = users_cnt
-                    net_trading = new_cap * 0.80
-                    bot.usdt_balance = round(net_trading, 2)
+                    bot_share = float(msg.get("botShare", 0.0))
+                    if bot_share <= 0.0 and new_cap > 0.0:
+                        bot_share = new_cap * 0.80
+                    bot.total_user_capital = max(bot.total_user_capital, new_cap)
+                    bot.usdt_balance = round(max(bot.usdt_balance, bot_share), 2)
                     asyncio.create_task(bot.db_sync_state())
+                    if not bot.is_paused and bot.usdt_balance >= 10.0 and len(bot.active_positions) == 0:
+                        bot.execute_buy(is_sub_trade=False)
                 elif action == "ADMIN_BOT_BUY":
                     b_target = str(msg.get("bot", "HOME")).upper()
                     if b_target == "HOME":
