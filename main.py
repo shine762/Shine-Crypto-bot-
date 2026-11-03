@@ -190,21 +190,13 @@ class UltraQuantSpotBot:
         if self.is_paused or self.live_price <= 0:
             return
         fund = self.total_user_capital
-        if fund >= 10.0 and len(self.micro_positions) < 1 and self.usdt_balance >= 10.0:
+        if fund >= 10.0 and len(self.micro_positions) == 0 and self.usdt_balance >= 10.0:
             self.execute_micro_buy()
-        if fund >= 20.0 and len(self.micro_positions) < 2 and self.usdt_balance >= 10.0:
-            self.execute_micro_buy()
-        if fund >= 30.0 and len(self.micro_positions) < 3 and self.usdt_balance >= 10.0:
-            self.execute_micro_buy()
-        if fund >= 40.0 and len(self.active_positions) < 1 and self.usdt_balance >= 10.0:
+        if fund >= 40.0 and len(self.active_positions) == 0 and self.usdt_balance >= 10.0:
             self.execute_buy(is_sub_trade=False)
-        if fund >= 50.0 and len(self.active_positions) < 2 and self.usdt_balance >= 10.0:
-            self.execute_buy(is_sub_trade=True)
-        if fund >= 60.0 and len(self.killer2_positions) < 1 and self.usdt_balance >= 10.0:
+        if fund >= 60.0 and len(self.killer2_positions) == 0 and self.usdt_balance >= 10.0:
             self.execute_killer2_buy()
-        if fund >= 70.0 and len(self.killer2_positions) < 2 and self.usdt_balance >= 10.0:
-            self.execute_killer2_buy()
-        if fund >= 80.0 and len(self.killer3_positions) < 1 and self.usdt_balance >= 10.0:
+        if fund >= 80.0 and len(self.killer3_positions) == 0 and self.usdt_balance >= 10.0:
             self.execute_killer3_buy()
 
     def get_hyper_slots(self, cap=None):
@@ -2315,7 +2307,9 @@ class UltraQuantSpotBot:
                     self.execute_micro_sell(pos)
 
         idle_fund = self.get_scavenged_idle_fund()
-        if idle_fund < 10.0 or self.usdt_balance < 10.0 or len(self.micro_positions) >= 10:
+        fund = self.total_user_capital
+        max_m_trades = 1 if fund < 20.0 else (2 if fund < 30.0 else (3 if fund < 80.0 else 24))
+        if idle_fund < 10.0 or self.usdt_balance < 10.0 or len(self.micro_positions) >= max_m_trades:
             self.micro_tb_active = False
             return
 
@@ -2546,7 +2540,9 @@ class UltraQuantSpotBot:
                 if pullback > 0.0 and current_p <= (peak - pullback):
                     self.execute_killer2_sell(pos)
 
-        if self.usdt_balance < 10.0 or len(self.killer2_positions) >= 10:
+        fund = self.total_user_capital
+        max_k2_trades = 1 if fund < 70.0 else (2 if fund < 80.0 else 24)
+        if self.usdt_balance < 10.0 or len(self.killer2_positions) >= max_k2_trades:
             self.killer2_tb_active = False
             return
 
@@ -2777,7 +2773,9 @@ class UltraQuantSpotBot:
                 if pullback > 0.0 and current_p <= (peak - pullback):
                     self.execute_killer3_sell(pos)
 
-        if self.usdt_balance < 10.0 or len(self.killer3_positions) >= 10:
+        fund = self.total_user_capital
+        max_k3_trades = 24 if fund >= 80.0 else 0
+        if self.usdt_balance < 10.0 or len(self.killer3_positions) >= max_k3_trades:
             self.killer3_tb_active = False
             return
 
@@ -3527,8 +3525,9 @@ class UltraQuantSpotBot:
                     self.tb_active = False
                     self.tb_stage = "IDLE"
                     active_count = len(regular_positions)
-                    cfg_check = self.get_tier_config()
-                    if active_count < cfg_check["slots"]:
+                    fund = self.total_user_capital
+                    max_home_trades = 1 if fund < 50.0 else (2 if fund < 80.0 else 24)
+                    if active_count < max_home_trades:
                         self.execute_buy(is_sub_trade=True)
                         return
 
