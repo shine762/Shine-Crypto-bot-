@@ -1035,32 +1035,10 @@ class UltraQuantSpotBot:
         if current_done >= max_allowed_slots:
             return
 
-        total_trading_capital = cfg["net_fund"]
-        if total_trading_capital < 10.0:
-            return
-
-        target_size = min(self.usdt_balance, max(10.0, cfg["size"] * vol_multiplier))
+        target_size = min(self.usdt_balance, 10.0)
         borrowed_donor = 0
         is_macro_hold = (cur_rnd == 8)
-
-        round_max = (self.round_allocations.get(cur_rnd, 0.10)) * total_trading_capital
-        round_spent = self.home_round_spent.get(cur_rnd, 0.0)
-
-        if (round_max - round_spent) >= target_size:
-            self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
-        else:
-            donor_list = [r for r in [8, 7, 6, 5, 4, 3, 2, 1] if r != cur_rnd]
-            for r_donor in donor_list:
-                d_max = (self.round_allocations.get(r_donor, 0.10)) * total_trading_capital
-                d_spent = self.home_round_spent.get(r_donor, 0.0)
-                if (d_max - d_spent) >= target_size:
-                    borrowed_donor = r_donor
-                    self.home_round_spent[r_donor] = round(d_spent + target_size, 2)
-                    self.home_round_borrowed[cur_rnd] = round(self.home_round_borrowed.get(cur_rnd, 0.0) + target_size, 2)
-                    break
-            if borrowed_donor == 0:
-                self.home_round_spent[cur_rnd] = round(round_spent + target_size, 2)
-
+        self.home_round_spent[cur_rnd] = round(self.home_round_spent.get(cur_rnd, 0.0) + target_size, 2)
         invest_target = target_size
 
         fee = invest_target * self.taker_fee_pct
@@ -3634,12 +3612,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 elif action == "RESUME":
                     bot.is_paused = False
                 elif action in ["UPGRADE_CAPITAL", "USER_LEVEL_UP"]:
-                    new_cap = float(msg.get("totalCapital", 0.0))
                     bot_share = float(msg.get("botShare", 0.0))
-                    if bot_share <= 0.0 and new_cap > 0.0:
-                        bot_share = new_cap * 0.80
-                    bot.total_user_capital = max(bot.total_user_capital, new_cap)
-                    bot.usdt_balance = round(max(bot.usdt_balance, bot_share), 2)
+                    new_cap = float(msg.get("totalCapital", 0.0))
+                    effective_fund = bot_share if bot_share > 0.0 else (new_cap if new_cap > 0.0 else 24.0)
+                    bot.total_user_capital = effective_fund
+                    bot.usdt_balance = round(effective_fund, 2)
                     asyncio.create_task(bot.db_sync_state())
                     if not bot.is_paused and bot.usdt_balance >= 10.0 and len(bot.active_positions) == 0:
                         bot.execute_buy(is_sub_trade=False)
