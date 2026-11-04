@@ -5874,22 +5874,29 @@ input:checked + .tw-slider:before {
                     <span id="serviceFeeDisplay">1 USDT</span>
                 </div>
 
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                <div id="netCheckRow" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                     <div style="display: flex; align-items: center; gap: 12px;">
-                        <div style="width: 24px; height: 24px; background: transparent; border: 1px solid #4CAF50; border-radius: 50%; display: flex; align-items: center; justify-content: center;"><i class="material-icons" style="font-size: 16px; color: #4CAF50;">done</i></div>
-                        <span style="color: #4CAF50; font-weight: 500;">Network check (Smart chain)</span>
+                        <div id="netCheckIconBox" style="width: 24px; height: 24px; background: transparent; border: 1px solid #718096; border-radius: 50%; display: flex; align-items: center; justify-content: center;"><i id="netCheckIconLeft" class="material-icons" style="font-size: 16px; color: #718096;">hourglass_empty</i></div>
+                        <span id="netCheckText" style="color: #718096; font-weight: 500;">Network check (Smart Chain)</span>
                     </div>
-                    <i class="material-icons" style="color: #4CAF50;">check_circle</i>
+                    <i id="netCheckIconRight" class="material-icons" style="color: #718096;">radio_button_unchecked</i>
                 </div>
-                <div id="balCheckRow" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+                <div id="balCheckRow" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                     <div style="display: flex; align-items: center; gap: 12px;">
-                        <div id="balCheckIconBox" style="width: 24px; height: 24px; background: transparent; border: 1px solid #4CAF50; border-radius: 50%; display: flex; align-items: center; justify-content: center;"><i id="balCheckIconLeft" class="material-icons" style="font-size: 16px; color: #4CAF50;">done</i></div>
-                        <span id="balCheckText" style="color: #4CAF50; font-weight: 500;">Balance check <span id="balCheckAmt">11</span> USDT</span>
+                        <div id="balCheckIconBox" style="width: 24px; height: 24px; background: transparent; border: 1px solid #718096; border-radius: 50%; display: flex; align-items: center; justify-content: center;"><i id="balCheckIconLeft" class="material-icons" style="font-size: 16px; color: #718096;">hourglass_empty</i></div>
+                        <span id="balCheckText" style="color: #718096; font-weight: 500;">Balance check <span id="balCheckAmt">--</span> USDT</span>
                     </div>
-                    <i id="balCheckIconRight" class="material-icons" style="color: #4CAF50;">check_circle</i>
+                    <i id="balCheckIconRight" class="material-icons" style="color: #718096;">radio_button_unchecked</i>
+                </div>
+                <div id="bnbCheckRow" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <div id="bnbCheckIconBox" style="width: 24px; height: 24px; background: transparent; border: 1px solid #718096; border-radius: 50%; display: flex; align-items: center; justify-content: center;"><i id="bnbCheckIconLeft" class="material-icons" style="font-size: 16px; color: #718096;">hourglass_empty</i></div>
+                        <span id="bnbCheckText" style="color: #718096; font-weight: 500;">Gas fee check <span id="bnbCheckAmt">--</span> BNB</span>
+                    </div>
+                    <i id="bnbCheckIconRight" class="material-icons" style="color: #718096;">radio_button_unchecked</i>
                 </div>
 
-                <button class="save-profile-btn" onclick="executeLevelUpgrade()" style="margin-top: 0; background: #2563eb; color: #ffffff; cursor: pointer; font-weight: 900;">CONFIRM & ACTIVATE LEVEL</button>
+                <button id="btnConfirmActivate" class="save-profile-btn" onclick="executeLevelUpgrade()" disabled style="margin-top: 0; background: #333344; color: #718096; cursor: not-allowed; font-weight: 900;">CONFIRM & ACTIVATE LEVEL</button>
             </div>
         </div>
     </div>
@@ -6069,29 +6076,14 @@ input:checked + .tw-slider:before {
                 return;
             }
 
-            const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
-            const availUsdt = window.userWalletUsdtBalance || liveOnChainWallet.usdt || 0.0;
-            const availBnb = window.userWalletBnbBalance || liveOnChainWallet.gas || 0.0;
-
-            if (availBnb < 0.001) {
-                alert("Insufficient tBNB balance! You need at least 0.002 tBNB for gas fees.");
-                return;
-            }
-
-            if (availUsdt < currentTotalReq) {
-                alert(`Insufficient USDT balance! Required: ${currentTotalReq} USDT, Available: ${availUsdt.toFixed(2)} USDT.`);
-                return;
-            }
-
+            const confirmBtn = document.getElementById("btnConfirmActivate");
             if (confirmBtn) {
                 confirmBtn.disabled = true;
-                confirmBtn.style.opacity = "0.6";
-                confirmBtn.style.pointerEvents = "none";
-                confirmBtn.innerText = "PROCESSING TX...";
+                confirmBtn.style.opacity = "0.7";
+                confirmBtn.innerText = "CONFIRM IN WALLET...";
             }
 
             isUpgradingInProgress = true;
-            showBcLoader("Confirm in Wallet...");
 
             try {
                 const web3Prov = new ethers.providers.Web3Provider(activeProvider);
@@ -6117,25 +6109,16 @@ input:checked + .tw-slider:before {
                     web3Signer
                 );
 
-                let tx;
-                try {
-                    const currentAllowance = await usdtContract.allowance(userWallet, SHINE_CONTRACT_ADDRESS);
-                    if (currentAllowance.lt(requiredUnits)) {
-                        showBcLoader("Approve USDT in Wallet...");
-                        const appTx = await usdtContract.approve(SHINE_CONTRACT_ADDRESS, ethers.constants.MaxUint256, { gasLimit: 80000 });
-                        await appTx.wait(1);
-                    }
-                    showBcLoader("Upgrading Slot on Chain...");
-                    tx = await shineContract.buyLevel(progNum, lvlIndex, { gasLimit: 250000 });
-                } catch (contractErr) {
-                    showBcLoader("Routing Transfer to Vault...");
-                    tx = await usdtContract.transfer(SHINE_VAULT_ADDRESS, requiredUnits, { gasLimit: 90000 });
+                const currentAllowance = await usdtContract.allowance(userWallet, SHINE_CONTRACT_ADDRESS);
+                if (currentAllowance.lt(requiredUnits)) {
+                    if (confirmBtn) confirmBtn.innerText = "APPROVE USDT...";
+                    const appTx = await usdtContract.approve(SHINE_CONTRACT_ADDRESS, ethers.constants.MaxUint256);
+                    await appTx.wait(1);
                 }
 
-                const receipt = await tx.wait(1);
-                if (!receipt || receipt.status !== 1) {
-                    throw new Error("Blockchain transaction failed.");
-                }
+                if (confirmBtn) confirmBtn.innerText = "CONFIRM UPGRADE...";
+                const tx = await shineContract.buyLevel(progNum, lvlIndex);
+                await tx.wait(1);
 
                 await markSlotAsActivated(prog, lvl, exactSlotCost);
 
@@ -6150,8 +6133,7 @@ input:checked + .tw-slider:before {
                     }
                 });
 
-                const botTradingShare = sumActivatedCost * 0.80;
-                currentTotalUserCapital = botTradingShare;
+                currentTotalUserCapital = sumActivatedCost * 0.80;
                 localStorage.setItem("shine_user_total_capital", currentTotalUserCapital.toString());
 
                 const portUsdtEl = document.getElementById("port-usdt");
@@ -6166,33 +6148,23 @@ input:checked + .tw-slider:before {
                         program: prog,
                         level: lvl,
                         slotCost: exactSlotCost,
-                        botShare: botTradingShare,
+                        botShare: currentTotalUserCapital,
                         totalCapital: currentTotalUserCapital
                     }));
                 }
 
-                showBcLoader("Upgraded ✅", true);
                 closeUpgrade();
-
-                setTimeout(() => {
-                    closeBcLoaderModal();
-                    isUpgradingInProgress = false;
-                    if (confirmBtn) {
-                        confirmBtn.disabled = false;
-                        confirmBtn.style.opacity = "1";
-                        confirmBtn.style.pointerEvents = "auto";
-                        confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
-                    }
-                }, 1000);
-
-                refreshExchangeBalances();
-            } catch (err) {
                 isUpgradingInProgress = false;
-                closeBcLoaderModal();
                 if (confirmBtn) {
                     confirmBtn.disabled = false;
                     confirmBtn.style.opacity = "1";
-                    confirmBtn.style.pointerEvents = "auto";
+                    confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
+                }
+            } catch (err) {
+                isUpgradingInProgress = false;
+                if (confirmBtn) {
+                    confirmBtn.disabled = false;
+                    confirmBtn.style.opacity = "1";
                     confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
                 }
                 if (err.code === 4001 || err.code === "ACTION_REJECTED" || (err.message && err.message.includes("User rejected"))) {
@@ -6535,51 +6507,8 @@ input:checked + .tw-slider:before {
                 pLink.href = fullRefUrl;
             }
 
-            fetchRealWeb3WalletBalances(addr);
+            enterDashboard();
             await syncOnChainActiveLevels();
-            await handleForsageWalletRegisterFlow(addr);
-        }
-
-        async function handleForsageWalletRegisterFlow(walletAddr) {
-            let isAlreadyReg = false;
-            const activeProvider = (window.trustwallet && window.trustwallet.ethereum) || window.ethereum;
-            if (activeProvider) {
-                try {
-                    const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-                    const shineContract = new ethers.Contract(SHINE_CONTRACT_ADDRESS, SHINE_ABI, web3Prov);
-                    const userStruct = await shineContract.users(walletAddr);
-                    if (userStruct && userStruct.isRegistered) {
-                        isAlreadyReg = true;
-                    }
-                } catch (e) {}
-            }
-
-            const regKey = "shine_registered_" + walletAddr.toLowerCase();
-            if (localStorage.getItem(regKey)) isAlreadyReg = true;
-
-            if (isAlreadyReg) {
-                showBcLoader("Wallet Ready ✅", true);
-                setTimeout(() => {
-                    closeBcLoaderModal();
-                    enterDashboard();
-                }, 800);
-            } else {
-                localStorage.setItem(regKey, "true");
-                if (window.supabase) {
-                    try {
-                        const client = window.supabase.createClient(MAIN_SUPABASE_URL, MAIN_SUPABASE_KEY);
-                        await client.from('user_registrations').upsert({
-                            wallet_address: walletAddr.toLowerCase(),
-                            registered_at: new Date().toISOString()
-                        });
-                    } catch(dbE) {}
-                }
-                showBcLoader("Connected ✅", true);
-                setTimeout(() => {
-                    closeBcLoaderModal();
-                    enterDashboard();
-                }, 800);
-            }
         }
 
         async function syncOnChainUserData() {
@@ -6982,51 +6911,6 @@ function toggleProfileEdit() {
     const overlay = document.getElementById('profileEditOverlay');
     overlay.classList.toggle('active');
 }
-async function verifyWalletNetworkAndBalance(requiredUsdt) {
-    const activeProvider = (window.trustwallet && window.trustwallet.ethereum) || window.ethereum;
-    if (!activeProvider || !userWallet) {
-        openWalletSelection();
-        return false;
-    }
-
-    try {
-        const chainCheckPromise = activeProvider.request({ method: 'eth_chainId' });
-        const timeoutPromise = new Promise(resolve => setTimeout(() => resolve(BSC_TESTNET_CHAIN_ID), 1200));
-        const currentChain = await Promise.race([chainCheckPromise, timeoutPromise]);
-
-        if (currentChain !== BSC_TESTNET_CHAIN_ID && currentChain !== "97" && currentChain !== "0x61") {
-            try {
-                await activeProvider.request({
-                    method: 'wallet_switchEthereumChain',
-                    params: [{ chainId: BSC_TESTNET_CHAIN_ID }]
-                });
-            } catch (err) {}
-        }
-    } catch (e) {}
-
-    const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-    let bnbBal = 0.05;
-    let usdtBal = requiredUsdt;
-
-    try {
-        const balanceTimeout = new Promise(resolve => setTimeout(() => resolve(null), 1500));
-        const bnbPromise = web3Prov.getBalance(userWallet);
-        const bnbBalRaw = await Promise.race([bnbPromise, balanceTimeout]);
-        if (bnbBalRaw) {
-            bnbBal = parseFloat(ethers.utils.formatEther(bnbBalRaw));
-        }
-
-        const usdtContract = new ethers.Contract(REAL_USDT_CONTRACT, ERC20_ABI, web3Prov);
-        const usdtPromise = usdtContract.balanceOf(userWallet);
-        const usdtBalRaw = await Promise.race([usdtPromise, balanceTimeout]);
-        if (usdtBalRaw) {
-            usdtBal = parseFloat(ethers.utils.formatEther(usdtBalRaw));
-        }
-    } catch (e) {}
-
-    return { bnbBal, usdtBal, hasEnough: true };
-}
-
 async function openUpgrade(prog, lvl, price) {
     window.currentSelectedProg = prog;
     window.currentSelectedLvl = lvl;
@@ -7055,64 +6939,171 @@ async function openUpgrade(prog, lvl, price) {
     const bnbEst = (totalPrice * 0.0015).toFixed(4);
     document.getElementById('upgBnb').innerText = bnbEst;
 
+    const netBox = document.getElementById('netCheckIconBox');
+    const netIconL = document.getElementById('netCheckIconLeft');
+    const netIconR = document.getElementById('netCheckIconRight');
+    const netText = document.getElementById('netCheckText');
+
+    const balBox = document.getElementById('balCheckIconBox');
     const balIconL = document.getElementById('balCheckIconLeft');
     const balIconR = document.getElementById('balCheckIconRight');
     const balText = document.getElementById('balCheckText');
-    const balBox = document.getElementById('balCheckIconBox');
-    const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
 
-    let currentUsdt = liveOnChainWallet.usdt || 0.0;
-    let currentBnb = liveOnChainWallet.gas || 0.0;
+    const bnbBox = document.getElementById('bnbCheckIconBox');
+    const bnbIconL = document.getElementById('bnbCheckIconLeft');
+    const bnbIconR = document.getElementById('bnbCheckIconRight');
+    const bnbText = document.getElementById('bnbCheckText');
 
-    const activeProvider = (window.trustwallet && window.trustwallet.ethereum) || window.ethereum;
-    if (activeProvider && userWallet) {
-        try {
-            const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-            const usdtC = new ethers.Contract(REAL_USDT_CONTRACT, ["function balanceOf(address) view returns (uint256)"], web3Prov);
-            const [rawBnb, rawUsdt] = await Promise.all([
-                web3Prov.getBalance(userWallet),
-                usdtC.balanceOf(userWallet)
-            ]);
-            currentBnb = parseFloat(ethers.utils.formatEther(rawBnb));
-            currentUsdt = parseFloat(ethers.utils.formatUnits(rawUsdt, 18));
-            liveOnChainWallet.usdt = currentUsdt;
-            liveOnChainWallet.gas = currentBnb;
-        } catch (e) {}
+    const confirmBtn = document.getElementById('btnConfirmActivate');
+
+    netBox.style.borderColor = "#718096";
+    netIconL.style.color = "#718096";
+    netIconL.innerText = "hourglass_empty";
+    netText.style.color = "#718096";
+    netText.innerText = "Network check (Smart Chain)";
+    netIconR.style.color = "#718096";
+    netIconR.innerText = "radio_button_unchecked";
+
+    balBox.style.borderColor = "#718096";
+    balIconL.style.color = "#718096";
+    balIconL.innerText = "hourglass_empty";
+    balText.style.color = "#718096";
+    balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT`;
+    balIconR.style.color = "#718096";
+    balIconR.innerText = "radio_button_unchecked";
+
+    bnbBox.style.borderColor = "#718096";
+    bnbIconL.style.color = "#718096";
+    bnbIconL.innerText = "hourglass_empty";
+    bnbText.style.color = "#718096";
+    bnbText.innerHTML = `Gas fee check <span id="bnbCheckAmt">0.002</span> BNB`;
+    bnbIconR.style.color = "#718096";
+    bnbIconR.innerText = "radio_button_unchecked";
+
+    confirmBtn.disabled = true;
+    confirmBtn.style.background = "#333344";
+    confirmBtn.style.color = "#718096";
+    confirmBtn.style.cursor = "not-allowed";
+    confirmBtn.innerText = "CHECKING REQUIREMENTS...";
+
+    document.getElementById('upgradeOverlay').classList.add('active');
+
+    let activeProvider = null;
+    if (window.ethereum) {
+        if (window.ethereum.providers && Array.isArray(window.ethereum.providers)) {
+            activeProvider = window.ethereum.providers.find(p => p.isMetaMask) || window.ethereum.providers[0];
+        } else {
+            activeProvider = window.ethereum;
+        }
+    } else if (window.trustwallet && window.trustwallet.ethereum) {
+        activeProvider = window.trustwallet.ethereum;
     }
 
-    window.userWalletUsdtBalance = currentUsdt;
-    window.userWalletBnbBalance = currentBnb;
-    const hasEnough = currentUsdt >= totalPrice && currentBnb >= 0.001;
+    if (!activeProvider || !userWallet) {
+        netBox.style.borderColor = "#E8755B";
+        netIconL.style.color = "#E8755B";
+        netIconL.innerText = "priority_high";
+        netText.style.color = "#E8755B";
+        netText.innerText = "Wallet Not Connected";
+        netIconR.style.color = "#E8755B";
+        netIconR.innerText = "error_outline";
+        confirmBtn.innerText = "CONNECT WALLET FIRST";
+        return;
+    }
 
-    if (balBox && balIconL && balIconR && balText) {
-        if (hasEnough) {
+    try {
+        const chainIdHex = await activeProvider.request({ method: 'eth_chainId' });
+        const chainId = parseInt(chainIdHex, 16);
+        const isBsc = (chainId === 97 || chainId === 56);
+
+        if (isBsc) {
+            netBox.style.borderColor = "#4CAF50";
+            netIconL.style.color = "#4CAF50";
+            netIconL.innerText = "done";
+            netText.style.color = "#4CAF50";
+            netText.innerText = chainId === 97 ? "Network check (BSC Testnet)" : "Network check (BSC Mainnet)";
+            netIconR.style.color = "#4CAF50";
+            netIconR.innerText = "check_circle";
+        } else {
+            netBox.style.borderColor = "#E8755B";
+            netIconL.style.color = "#E8755B";
+            netIconL.innerText = "priority_high";
+            netText.style.color = "#E8755B";
+            netText.innerText = "Wrong Network (Switch to BSC)";
+            netIconR.style.color = "#E8755B";
+            netIconR.innerText = "error_outline";
+            confirmBtn.innerText = "SWITCH TO BSC NETWORK";
+            return;
+        }
+
+        const web3Prov = new ethers.providers.Web3Provider(activeProvider);
+        const usdtC = new ethers.Contract(REAL_USDT_CONTRACT, ["function balanceOf(address) view returns (uint256)"], web3Prov);
+
+        const [rawBnb, rawUsdt] = await Promise.all([
+            web3Prov.getBalance(userWallet),
+            usdtC.balanceOf(userWallet)
+        ]);
+
+        const currentBnb = parseFloat(ethers.utils.formatEther(rawBnb));
+        const currentUsdt = parseFloat(ethers.utils.formatUnits(rawUsdt, 18));
+        window.userWalletUsdtBalance = currentUsdt;
+        window.userWalletBnbBalance = currentBnb;
+
+        const hasUsdt = currentUsdt >= totalPrice;
+        if (hasUsdt) {
             balBox.style.borderColor = "#4CAF50";
             balIconL.style.color = "#4CAF50";
             balIconL.innerText = "done";
             balText.style.color = "#4CAF50";
-            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT (${currentUsdt.toFixed(2)} USDT Avail)`;
+            balText.innerHTML = `Balance check ${totalPrice} USDT (${currentUsdt.toFixed(2)} Avail)`;
             balIconR.style.color = "#4CAF50";
             balIconR.innerText = "check_circle";
-            if (confirmBtn) {
-                confirmBtn.style.background = "#2563eb";
-                confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
-            }
         } else {
             balBox.style.borderColor = "#E8755B";
             balIconL.style.color = "#E8755B";
             balIconL.innerText = "priority_high";
             balText.style.color = "#E8755B";
-            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT (${currentUsdt.toFixed(2)} USDT Avail)`;
+            balText.innerHTML = `Insufficient USDT (${currentUsdt.toFixed(2)} / ${totalPrice})`;
             balIconR.style.color = "#E8755B";
             balIconR.innerText = "error_outline";
-            if (confirmBtn) {
-                confirmBtn.style.background = "#333344";
-                confirmBtn.innerText = "INSUFFICIENT BALANCE";
-            }
         }
-    }
 
-    document.getElementById('upgradeOverlay').classList.add('active');
+        const hasBnb = currentBnb >= 0.002;
+        if (hasBnb) {
+            bnbBox.style.borderColor = "#4CAF50";
+            bnbIconL.style.color = "#4CAF50";
+            bnbIconL.innerText = "done";
+            bnbText.style.color = "#4CAF50";
+            bnbText.innerHTML = `Gas fee check (${currentBnb.toFixed(4)} BNB Avail)`;
+            bnbIconR.style.color = "#4CAF50";
+            bnbIconR.innerText = "check_circle";
+        } else {
+            bnbBox.style.borderColor = "#E8755B";
+            bnbIconL.style.color = "#E8755B";
+            bnbIconL.innerText = "priority_high";
+            bnbText.style.color = "#E8755B";
+            bnbText.innerHTML = `Insufficient BNB for Gas (${currentBnb.toFixed(4)} BNB)`;
+            bnbIconR.style.color = "#E8755B";
+            bnbIconR.innerText = "error_outline";
+        }
+
+        if (isBsc && hasUsdt && hasBnb) {
+            confirmBtn.disabled = false;
+            confirmBtn.style.background = "#2563eb";
+            confirmBtn.style.color = "#ffffff";
+            confirmBtn.style.cursor = "pointer";
+            confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
+        } else {
+            confirmBtn.disabled = true;
+            confirmBtn.style.background = "#333344";
+            confirmBtn.style.color = "#718096";
+            confirmBtn.style.cursor = "not-allowed";
+            confirmBtn.innerText = !hasUsdt ? "INSUFFICIENT USDT" : "INSUFFICIENT BNB GAS";
+        }
+    } catch (err) {
+        confirmBtn.disabled = true;
+        confirmBtn.innerText = "NETWORK ERROR";
+    }
 }
 function openWalletSelectionSafe() {
     openWalletSelection();
@@ -9607,7 +9598,6 @@ let liveOnChainWallet = { usdt: 0.0, gas: 0.0, trx: 0.0, totalUsd: 0.0 };
                         if (latestBackendState) {
                             latestBackendState.price = p;
                             latestBackendState.livePrice = p;
-                            refreshExchangeBalances();
                         }
 
                     }
