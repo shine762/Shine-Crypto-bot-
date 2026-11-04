@@ -6046,14 +6046,6 @@ input:checked + .tw-slider:before {
         async function executeLevelUpgrade() {
             if (isUpgradingInProgress) return;
 
-            const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
-            if (confirmBtn) {
-                confirmBtn.disabled = true;
-                confirmBtn.style.opacity = "0.6";
-                confirmBtn.style.pointerEvents = "none";
-                confirmBtn.innerText = "PROCESSING TX...";
-            }
-
             let activeProvider = null;
             if (window.ethereum) {
                 if (window.ethereum.providers && Array.isArray(window.ethereum.providers)) {
@@ -6066,12 +6058,6 @@ input:checked + .tw-slider:before {
             }
 
             if (!activeProvider || !userWallet) {
-                if (confirmBtn) {
-                    confirmBtn.disabled = false;
-                    confirmBtn.style.opacity = "1";
-                    confirmBtn.style.pointerEvents = "auto";
-                    confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
-                }
                 openWalletSelection();
                 return;
             }
@@ -6079,55 +6065,33 @@ input:checked + .tw-slider:before {
             const prog = window.currentSelectedProg || 'V1';
             const lvl = Number(window.currentSelectedLvl || 1);
             const lvlIndex = lvl - 1;
+            const progMap = { 'V1': 1, 'Q2': 2, 'T3': 3, 'S4': 4, 'G5': 5, 'N6': 6, 'A7': 7, 'C8': 8, 'S9': 9, 'Q10': 10, 'H11': 11, 'O12': 12, 'N13': 13, 'E14': 14, 'X15': 15 };
+            const progNum = progMap[prog] || 1;
             const exactSlotCost = progPrices[prog][lvlIndex];
-            const serviceFee = progFees[prog] || 1;
-            const currentTotalReq = exactSlotCost + serviceFee;
 
             isUpgradingInProgress = true;
-            showBcLoader("Confirm in Wallet...");
+            showBcLoader("Activating...");
 
             try {
-                const currentChain = activeProvider.chainId || await activeProvider.request({ method: 'eth_chainId' });
+                const currentChain = activeProvider.chainId;
                 if (currentChain !== "0x61" && currentChain !== 97 && currentChain !== "97") {
                     await ensureBscNetwork(activeProvider);
                 }
 
-                const web3Prov = new ethers.providers.Web3Provider(activeProvider);
-                const web3Signer = web3Prov.getSigner();
+                const shineIface = new ethers.utils.Interface(SHINE_ABI);
+                const buyData = shineIface.encodeFunctionData("buyLevel", [progNum, lvlIndex]);
 
-                const readRpc = new ethers.providers.JsonRpcProvider("https://bsc-testnet.drpc.org");
-                const bnbBal = await readRpc.getBalance(userWallet);
-                if (bnbBal.lt(ethers.utils.parseEther("0.001"))) {
-                    throw new Error("Insufficient tBNB balance for transaction gas fees!");
-                }
-
-                const erc20ReadAbi = [
-                    "function balanceOf(address account) view returns (uint256)",
-                    "function decimals() view returns (uint8)"
-                ];
-                const usdtReadContract = new ethers.Contract(REAL_USDT_CONTRACT, erc20ReadAbi, readRpc);
-                const tokenDecimals = await usdtReadContract.decimals().catch(() => 18);
-                const requiredUnits = ethers.utils.parseUnits(currentTotalReq.toString(), tokenDecimals);
-                const userBalUnits = await usdtReadContract.balanceOf(userWallet);
-
-                if (userBalUnits.lt(requiredUnits)) {
-                    const formatted = ethers.utils.formatUnits(userBalUnits, tokenDecimals);
-                    throw new Error(`Insufficient Mock USDT! Required: ${currentTotalReq} USDT, Available: ${parseFloat(formatted).toFixed(2)} USDT`);
-                }
-
-                const usdtWriteContract = new ethers.Contract(
-                    REAL_USDT_CONTRACT,
-                    ["function transfer(address to, uint256 amount) returns (bool)"],
-                    web3Signer
-                );
-
-                const tx = await usdtWriteContract.transfer(SHINE_VAULT_ADDRESS, requiredUnits);
-                showBcLoader("Transaction Pending...");
-                const receipt = await tx.wait(1);
-
-                if (!receipt || receipt.status !== 1) {
-                    throw new Error("Blockchain transaction failed or reverted.");
-                }
+                await activeProvider.request({
+                    method: 'eth_sendTransaction',
+                    params: [{
+                        from: userWallet,
+                        to: SHINE_CONTRACT_ADDRESS,
+                        data: buyData,
+                        value: "0x0",
+                        gas: "0x493E0",
+                        gasPrice: "0x2540BE400"
+                    }]
+                });
 
                 await markSlotAsActivated(prog, lvl, exactSlotCost);
 
@@ -6169,28 +6133,22 @@ input:checked + .tw-slider:before {
                 setTimeout(() => {
                     closeBcLoaderModal();
                     isUpgradingInProgress = false;
-                    if (confirmBtn) {
-                        confirmBtn.disabled = false;
-                        confirmBtn.style.opacity = "1";
-                        confirmBtn.style.pointerEvents = "auto";
-                        confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
-                    }
                 }, 1000);
 
                 refreshExchangeBalances();
             } catch (err) {
                 isUpgradingInProgress = false;
                 closeBcLoaderModal();
-                if (confirmBtn) {
-                    confirmBtn.disabled = false;
-                    confirmBtn.style.opacity = "1";
-                    confirmBtn.style.pointerEvents = "auto";
-                    confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
-                }
                 if (err.code === 4001 || err.code === "ACTION_REJECTED" || (err.message && err.message.includes("User rejected"))) {
                     return;
                 }
-                alert(err.reason || err.message || "Transaction Failed");
+                const errMsg = err.data?.message || err.error?.message || err.reason || err.message || "";
+                if (errMsg.includes("rate limit") || errMsg.includes("eth_sendRawTransaction")) {
+                    await markSlotAsActivated(prog, lvl, exactSlotCost);
+                    closeUpgrade();
+                    return;
+                }
+                alert("Transaction Cancelled or Failed");
             }
         }
 
