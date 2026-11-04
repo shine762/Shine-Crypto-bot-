@@ -6046,6 +6046,13 @@ input:checked + .tw-slider:before {
         async function executeLevelUpgrade() {
             if (isUpgradingInProgress) return;
 
+            const prog = window.currentSelectedProg || 'V1';
+            const lvl = Number(window.currentSelectedLvl || 1);
+            const lvlIndex = lvl - 1;
+            const exactSlotCost = progPrices[prog][lvlIndex];
+            const serviceFee = progFees[prog] || 1;
+            const currentTotalReq = exactSlotCost + serviceFee;
+
             let activeProvider = null;
             if (window.ethereum) {
                 if (window.ethereum.providers && Array.isArray(window.ethereum.providers)) {
@@ -6062,36 +6069,87 @@ input:checked + .tw-slider:before {
                 return;
             }
 
-            const prog = window.currentSelectedProg || 'V1';
-            const lvl = Number(window.currentSelectedLvl || 1);
-            const lvlIndex = lvl - 1;
-            const progMap = { 'V1': 1, 'Q2': 2, 'T3': 3, 'S4': 4, 'G5': 5, 'N6': 6, 'A7': 7, 'C8': 8, 'S9': 9, 'Q10': 10, 'H11': 11, 'O12': 12, 'N13': 13, 'E14': 14, 'X15': 15 };
-            const progNum = progMap[prog] || 1;
-            const exactSlotCost = progPrices[prog][lvlIndex];
-
-            isUpgradingInProgress = true;
-            showBcLoader("Activating...");
+            const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
+            const web3Prov = new ethers.providers.Web3Provider(activeProvider);
+            const web3Signer = web3Prov.getSigner();
 
             try {
-                const currentChain = activeProvider.chainId;
-                if (currentChain !== "0x61" && currentChain !== 97 && currentChain !== "97") {
-                    await ensureBscNetwork(activeProvider);
+                const bnbBal = await web3Prov.getBalance(userWallet);
+                if (bnbBal.lt(ethers.utils.parseEther("0.0015"))) {
+                    alert("Insufficient tBNB balance! Please deposit at least 0.002 tBNB to cover blockchain gas fee.");
+                    return;
                 }
 
-                const shineIface = new ethers.utils.Interface(SHINE_ABI);
-                const buyData = shineIface.encodeFunctionData("buyLevel", [progNum, lvlIndex]);
+                const usdtContract = new ethers.Contract(
+                    REAL_USDT_CONTRACT,
+                    [
+                        "function balanceOf(address) view returns (uint256)",
+                        "function allowance(address, address) view returns (uint256)",
+                        "function approve(address, uint256) returns (bool)",
+                        "function transfer(address, uint256) returns (bool)"
+                    ],
+                    web3Signer
+                );
 
-                await activeProvider.request({
-                    method: 'eth_sendTransaction',
-                    params: [{
-                        from: userWallet,
-                        to: SHINE_CONTRACT_ADDRESS,
-                        data: buyData,
-                        value: "0x0",
-                        gas: "0x493E0",
-                        gasPrice: "0x2540BE400"
-                    }]
-                });
+                const requiredUnits = ethers.utils.parseUnits(currentTotalReq.toString(), 18);
+                const userBalUnits = await usdtContract.balanceOf(userWallet);
+
+                if (userBalUnits.lt(requiredUnits)) {
+                    const availFormatted = parseFloat(ethers.utils.formatUnits(userBalUnits, 18)).toFixed(2);
+                    alert(`Insufficient USDT balance! Required: ${currentTotalReq} USDT, Available: ${availFormatted} USDT.`);
+                    return;
+                }
+
+                if (confirmBtn) {
+                    confirmBtn.disabled = true;
+                    confirmBtn.style.opacity = "0.6";
+                    confirmBtn.style.pointerEvents = "none";
+                    confirmBtn.innerText = "PROCESSING TX...";
+                }
+
+                isUpgradingInProgress = true;
+                showBcLoader("Confirm in Wallet...");
+
+                const currentAllowance = await usdtContract.allowance(userWallet, SHINE_CONTRACT_ADDRESS);
+                if (currentAllowance.lt(requiredUnits)) {
+                    showBcLoader("Approve USDT in Wallet...");
+                    const approveTx = await usdtContract.approve(SHINE_CONTRACT_ADDRESS, ethers.constants.MaxUint256);
+                    await approveTx.wait(1);
+                }
+
+                showBcLoader("Upgrading Slot on Chain...");
+                const progMap = { 'V1': 1, 'Q2': 2, 'T3': 3, 'S4': 4, 'G5': 5, 'N6': 6, 'A7': 7, 'C8': 8, 'S9': 9, 'Q10': 10, 'H11': 11, 'O12': 12, 'N13': 13, 'E14': 14, 'X15': 15 };
+                const progNum = progMap[prog] || 1;
+
+                const shineContract = new ethers.Contract(
+                    SHINE_CONTRACT_ADDRESS,
+                    [
+                        "function buyLevel(uint8 _program, uint8 _level) external",
+                        "function users(address) view returns (uint256 id, address upline, uint256 partnersCount, uint256 joinDate, bool isRegistered)",
+                        "function register(address _upline) external",
+                        "function rootOwner() view returns (address)"
+                    ],
+                    web3Signer
+                );
+
+                let isUserRegisteredOnChain = false;
+                try {
+                    const uData = await shineContract.users(userWallet);
+                    isUserRegisteredOnChain = uData.isRegistered;
+                } catch (e) {}
+
+                let mainTx;
+                if (!isUserRegisteredOnChain) {
+                    const root = await shineContract.rootOwner().catch(() => "0x204e8c521aCa3621DB585829667759433aBb70d3");
+                    mainTx = await shineContract.register(root);
+                } else {
+                    mainTx = await shineContract.buyLevel(progNum, lvlIndex);
+                }
+
+                const receipt = await mainTx.wait(1);
+                if (!receipt || receipt.status !== 1) {
+                    throw new Error("Blockchain transaction failed.");
+                }
 
                 await markSlotAsActivated(prog, lvl, exactSlotCost);
 
@@ -6133,25 +6191,30 @@ input:checked + .tw-slider:before {
                 setTimeout(() => {
                     closeBcLoaderModal();
                     isUpgradingInProgress = false;
+                    if (confirmBtn) {
+                        confirmBtn.disabled = false;
+                        confirmBtn.style.opacity = "1";
+                        confirmBtn.style.pointerEvents = "auto";
+                        confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
+                    }
                 }, 1000);
 
                 refreshExchangeBalances();
             } catch (err) {
                 isUpgradingInProgress = false;
                 closeBcLoaderModal();
+                if (confirmBtn) {
+                    confirmBtn.disabled = false;
+                    confirmBtn.style.opacity = "1";
+                    confirmBtn.style.pointerEvents = "auto";
+                    confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
+                }
                 if (err.code === 4001 || err.code === "ACTION_REJECTED" || (err.message && err.message.includes("User rejected"))) {
                     return;
                 }
-                const errMsg = err.data?.message || err.error?.message || err.reason || err.message || "";
-                if (errMsg.includes("rate limit") || errMsg.includes("eth_sendRawTransaction")) {
-                    await markSlotAsActivated(prog, lvl, exactSlotCost);
-                    closeUpgrade();
-                    return;
-                }
-                alert("Transaction Cancelled or Failed");
+                alert(err.reason || err.message || "Transaction Failed");
             }
         }
-
         async function markSlotAsActivated(prog, lvl, cost) {
             const slotKey = `${prog}_${lvl}`;
             activeUserLevels[slotKey] = true;
@@ -7003,37 +7066,64 @@ async function openUpgrade(prog, lvl, price) {
     const bnbEst = (totalPrice * 0.0015).toFixed(4);
     document.getElementById('upgBnb').innerText = bnbEst;
 
-    const balRow = document.getElementById('balCheckRow');
     const balIconL = document.getElementById('balCheckIconLeft');
     const balIconR = document.getElementById('balCheckIconRight');
     const balText = document.getElementById('balCheckText');
-    const balAmt = document.getElementById('balCheckAmt');
-
-    let currentAvailableUsdt = liveOnChainWallet.usdt || 0.0;
-    if (currentAvailableUsdt <= 0 && latestBackendState && latestBackendState.manualTestBalance !== undefined) {
-        currentAvailableUsdt = parseFloat(latestBackendState.manualTestBalance);
-    }
-    window.userWalletUsdtBalance = currentAvailableUsdt;
-    let isAffordable = currentAvailableUsdt >= totalPrice || !userWallet;
-
     const balBox = document.getElementById('balCheckIconBox');
-    if (balRow && balIconL && balIconR && balText && balAmt) {
+    const confirmBtn = document.querySelector("#upgradeOverlay .save-profile-btn");
+
+    let userUsdtOnChain = 0.0;
+    let userBnbOnChain = 0.0;
+
+    const activeProvider = (window.trustwallet && window.trustwallet.ethereum) || window.ethereum;
+    if (activeProvider && userWallet) {
+        try {
+            const web3Prov = new ethers.providers.Web3Provider(activeProvider);
+            const rawBnb = await web3Prov.getBalance(userWallet);
+            userBnbOnChain = parseFloat(ethers.utils.formatEther(rawBnb));
+            const usdtContract = new ethers.Contract(REAL_USDT_CONTRACT, ["function balanceOf(address) view returns (uint256)"], web3Prov);
+            const rawUsdt = await usdtContract.balanceOf(userWallet);
+            userUsdtOnChain = parseFloat(ethers.utils.formatUnits(rawUsdt, 18));
+            liveOnChainWallet.usdt = userUsdtOnChain;
+            liveOnChainWallet.gas = userBnbOnChain;
+        } catch (e) {
+            userUsdtOnChain = liveOnChainWallet.usdt || 0.0;
+            userBnbOnChain = liveOnChainWallet.gas || 0.0;
+        }
+    } else {
+        userUsdtOnChain = liveOnChainWallet.usdt || 0.0;
+        userBnbOnChain = liveOnChainWallet.gas || 0.0;
+    }
+
+    window.userWalletUsdtBalance = userUsdtOnChain;
+    window.userWalletBnbBalance = userBnbOnChain;
+    const isAffordable = userUsdtOnChain >= totalPrice && userBnbOnChain >= 0.0015;
+
+    if (balBox && balIconL && balIconR && balText) {
         if (isAffordable) {
-            if (balBox) balBox.style.borderColor = "#4CAF50";
+            balBox.style.borderColor = "#4CAF50";
             balIconL.style.color = "#4CAF50";
             balIconL.innerText = "done";
             balText.style.color = "#4CAF50";
-            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT`;
+            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT (${userUsdtOnChain.toFixed(2)} Avail)`;
             balIconR.style.color = "#4CAF50";
             balIconR.innerText = "check_circle";
+            if (confirmBtn) {
+                confirmBtn.style.background = "#2563eb";
+                confirmBtn.innerText = "CONFIRM & ACTIVATE LEVEL";
+            }
         } else {
-            if (balBox) balBox.style.borderColor = "#E8755B";
+            balBox.style.borderColor = "#E8755B";
             balIconL.style.color = "#E8755B";
             balIconL.innerText = "priority_high";
-            balText.style.color = "#757575";
-            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT`;
+            balText.style.color = "#E8755B";
+            balText.innerHTML = `Balance check <span id="balCheckAmt">${totalPrice}</span> USDT (${userUsdtOnChain.toFixed(2)} Avail)`;
             balIconR.style.color = "#E8755B";
             balIconR.innerText = "error_outline";
+            if (confirmBtn) {
+                confirmBtn.style.background = "#333344";
+                confirmBtn.innerText = "INSUFFICIENT BALANCE";
+            }
         }
     }
 
