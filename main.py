@@ -4,7 +4,7 @@ import uuid
 import os
 from datetime import datetime, timezone, timedelta
 import aiohttp
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -78,7 +78,7 @@ class UltraQuantSpotBot:
         self.bsc_usdt_address = "0xEC09EBf252cc6d0FE4DaCAF8CeC5F7A66b0aaf12"
         self.shine_vault_address = "0x204e8c521aCa3621DB585829667759433aBb70d3"
         self.shine_core_address = "0xEEe011D9d6Cb0C5A382C5baffE8E05c384631159"
-        self.root_owner_address = "0x99b23c8039e98a119eaed74e4f3fe5d68ff1abba"
+        self.root_owner_address = "0x1bcb5a7d8a987eadbe7fe63b4746e51bb5b01138"
         self.bsc_pancake_router = "0x10ED43C718714eb63d5aA57B78B54704E256024E"
         self.dex_last_quote_price = 0.0
         self.round8_hold_pct = 0.07
@@ -179,8 +179,9 @@ class UltraQuantSpotBot:
         self.singularity_tb_lowest = 0.0
         self.singularity_last_ref_price = 0.0
         self.owner_real_capital = 0.0
-        self.showcase_capital = 80000.0
-        self.showcase_usdt = 80000.0
+        self.showcase_capital = 100000.0
+        self.showcase_usdt = 100000.0
+        self.showcase_wins = 0
         self.showcase_positions = []
         self.showcase_trades_history = []
         self.showcase_realized_pnl = 0.0
@@ -199,7 +200,7 @@ class UltraQuantSpotBot:
     def verify_user_slot_onchain(self, wallet_addr, prog_code="V1", level_num=1):
         if not w3_deploy or not wallet_addr:
             return True
-        prog_map = {"V1": 1, "Q2": 2, "T3": 3, "S4": 4, "G5": 5, "N6": 6, "A7": 7, "C8": 8, "S9": 9, "Q10": 10}
+        prog_map = {"V1": 1, "Q2": 2, "T3": 3, "S4": 4, "G5": 5, "N6": 6, "A7": 7, "C8": 8, "S9": 9, "K10": 10}
         p_idx = prog_map.get(str(prog_code).upper(), 1)
         l_idx = max(0, int(level_num) - 1)
         try:
@@ -215,7 +216,7 @@ class UltraQuantSpotBot:
                 state_row = {
                     "id": "ID1_STATE",
                     "round": 0,
-                    "sub_trade": 0,
+                    "sub_trade": int(self.showcase_wins),
                     "label": "ID1_STATE",
                     "entry_price": round(self.showcase_capital, 2),
                     "sol_amount": round(self.showcase_macro_sol, 4),
@@ -306,6 +307,8 @@ class UltraQuantSpotBot:
             self.showcase_macro_invested = max(0.0, round(self.showcase_macro_invested - inv, 2))
         self.showcase_usdt = round(self.showcase_usdt + net_ret, 2)
         self.showcase_realized_pnl = round(self.showcase_realized_pnl + profit, 4)
+        if profit >= 0:
+            self.showcase_wins += 1
         if pos in self.showcase_positions:
             self.showcase_positions.remove(pos)
         t_rec = {
@@ -326,7 +329,7 @@ class UltraQuantSpotBot:
         asyncio.create_task(self.db_save_showcase_state())
 
     def run_showcase_tick(self):
-        if self.live_price <= 0 or not getattr(self, "db_loaded", False):
+        if self.owner_real_capital > 0 or self.live_price <= 0 or not getattr(self, "db_loaded", False):
             return
         cur_p = float(self.live_price)
         self.sync_phase_and_round()
@@ -442,6 +445,7 @@ class UltraQuantSpotBot:
             "pnl": s_unreal,
             "pnlPct": s_pct,
             "realizedPnl": round(self.showcase_realized_pnl, 4),
+            "totalTrades": int(self.showcase_wins),
             "macroSol": round(self.showcase_macro_sol, 4),
             "macroInvested": round(self.showcase_macro_invested, 2),
             "tsHigh": round(self.showcase_ts_high, 2),
@@ -484,7 +488,7 @@ class UltraQuantSpotBot:
         return {"slots": 24, "trade_size": cfg["size"], "round_fund": cfg["net_fund"]}
 
     async def fetch_real_vault_capital_from_slots(self, session):
-        root_owner_lower = "0x99b23c8039e98a119eaed74e4f3fe5d68ff1abba"
+        root_owner_lower = self.root_owner_address
         try:
             async with session.get(f"{SUPABASE_URL}/rest/v1/user_activated_slots?select=wallet_address,program,level,cost") as s_resp:
                 if s_resp.status == 200:
@@ -590,6 +594,22 @@ class UltraQuantSpotBot:
                                 if p_id == "ID1_STATE":
                                     self.showcase_realized_pnl = float(p.get("invested") or 0.0)
                                     self.showcase_macro_target = float(p.get("target_price") or 0.0)
+                                    self.showcase_wins = int(p.get("sub_trade") or 0)
+                                elif p_id.startswith("AIR_"):
+                                    w_air = p_id[4:].lower()
+                                    extra = {}
+                                    try:
+                                        extra = json.loads(lbl_raw) if lbl_raw.startswith("{") else {}
+                                    except Exception:
+                                        extra = {}
+                                    airdrop_user_store[w_air] = {
+                                        "success": True,
+                                        "shineBalance": float(p.get("invested") or 0.0),
+                                        "holdings": extra.get("holdings", []),
+                                        "ordersHistory": extra.get("ordersHistory", []),
+                                        "realizedProfit": float(p.get("sol_amount") or 0.0),
+                                        "profit24h": float(p.get("entry_price") or 0.0)
+                                    }
                                 elif p_id.startswith("ID1_"):
                                     self.showcase_positions.append(pos_obj)
                                     r_idx = pos_obj["round"]
@@ -821,6 +841,27 @@ class UltraQuantSpotBot:
 
                             sc_inv_total = sum(float(p.get("invested", 0.0)) for p in self.showcase_positions)
                             self.showcase_usdt = max(0.0, round(self.showcase_capital + self.showcase_realized_pnl - sc_inv_total, 2))
+                            owner_air = airdrop_user_store.get(self.root_owner_address)
+                            if not owner_air or float(owner_air.get("shineBalance", 0.0)) <= 0.0:
+                                airdrop_user_store[self.root_owner_address] = {
+                                    "success": True,
+                                    "shineBalance": 100000.0,
+                                    "holdings": owner_air.get("holdings", []) if owner_air else [],
+                                    "ordersHistory": owner_air.get("ordersHistory", []) if owner_air else [],
+                                    "realizedProfit": owner_air.get("realizedProfit", 0.0) if owner_air else 0.0,
+                                    "profit24h": owner_air.get("profit24h", 0.0) if owner_air else 0.0
+                                }
+                                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json={
+                                    "id": f"AIR_{self.root_owner_address}",
+                                    "round": 0,
+                                    "sub_trade": 0,
+                                    "label": json.dumps({"holdings": airdrop_user_store[self.root_owner_address]["holdings"], "ordersHistory": airdrop_user_store[self.root_owner_address]["ordersHistory"]}),
+                                    "entry_price": airdrop_user_store[self.root_owner_address]["profit24h"],
+                                    "sol_amount": airdrop_user_store[self.root_owner_address]["realizedProfit"],
+                                    "invested": 100000.0,
+                                    "is_macro": False,
+                                    "target_price": 0.0
+                                })
 
                 async with session.get(f"{SUPABASE_URL}/rest/v1/trades_history?order=created_at.desc&limit=500") as resp:
                     if resp.status == 200:
@@ -1191,21 +1232,21 @@ class UltraQuantSpotBot:
         ai_thoughts = ""
         regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
         if self.is_paused:
-            ai_thoughts = "Main abhi paused hoon. Aap jab chaho RUNNING button daba kar mujhe market scan karne ki ijazat de sakte ho."
+            ai_thoughts = "Engine is paused. Tap RUNNING to resume automated market scan and execution."
         elif self.cooldown_remaining > 0:
-            ai_thoughts = f"Pichla profit kamyabi se book ho gaya hai! Main abhi {self.cooldown_remaining} seconds ke cool-down par hoon taake jaldbaazi mein galat trade na le loon."
+            ai_thoughts = f"Previous profit secured! Engine is cooling down for {self.cooldown_remaining}s before next entry."
         elif len(regular_pos) == 0:
             if self.whale_sentiment == "BEARISH":
-                ai_thoughts = f"Market mein barhay sellers (Whales) dabao daal rahay hain ({self.whale_orderflow_ratio}% sell volume). Is liye main safe side par baith kar entry roak raha hoon."
+                ai_thoughts = f"Institutional selling pressure detected ({self.whale_orderflow_ratio}% sell volume). Holding dry powder safely."
             else:
                 target_dip_val = round(self.live_price * 0.982, 2)
-                ai_thoughts = f"Scanning orderbook: Current price is ${round(self.live_price, 2)} with {self.whale_orderflow_ratio}% Buy Volume. Waiting for dip confirmation near ${target_dip_val} to trigger safety buy."
+                ai_thoughts = f"Scanning orderbook: Current price is ${round(self.live_price, 2)} with {self.whale_orderflow_ratio}% Buy Volume. Waiting for dip confirmation near ${target_dip_val}."
         else:
             last_entry = regular_pos[-1]["entryPrice"]
             if self.live_price > self.avg_entry_price:
-                ai_thoughts = f"Zabardast! Trade munafay mein hai. Entry ${round(self.avg_entry_price, 2)} thi aur ab price ${round(self.live_price, 2)} hai. Trailing Stop active hai taake zyada se zyada faida lock kiya ja sakay."
+                ai_thoughts = f"Position in profit! Avg entry ${round(self.avg_entry_price, 2)}, live price ${round(self.live_price, 2)}. Dynamic Trailing Stop tracking peak."
             else:
-                ai_thoughts = f"Market meri entry price (${last_entry}) se thora neechay chal rahi hai. Main panic nahi kar raha, mera DCA Trailing buy order tayyar hai jaise hi bounce confirm hoga agla level execute ho jaye ga."
+                ai_thoughts = f"Market trading below entry (${last_entry}). DCA Trailing Buy radar armed for confirmed rebound."
 
         positions_list = []
         for p in self.wallet_active_positions:
@@ -4042,6 +4083,8 @@ manager = ConnectionManager()
 
 
 
+airdrop_user_store = {}
+
 @app.get("/")
 def home():
     return {"status": "SHINE DEX BSC Quant Engine", "network": "BNB Smart Chain", "active": True}
@@ -4053,6 +4096,138 @@ def health():
 @app.get("/status")
 def get_bot_status():
     return bot.get_state()
+
+@app.post("/api/airdrop/save")
+async def save_airdrop_data(request: Request):
+    try:
+        body = await request.json()
+        wallet = str(body.get("wallet") or "").lower().strip()
+        if not wallet:
+            return {"success": False, "error": "Wallet required"}
+        s_bal = float(body.get("shineBalance", 0.0))
+        holdings = body.get("holdings", [])
+        orders_hist = body.get("ordersHistory", [])
+        r_prof = float(body.get("realizedProfit", 0.0))
+        p_24h = float(body.get("profit24h", 0.0))
+        airdrop_user_store[wallet] = {
+            "success": True,
+            "shineBalance": s_bal,
+            "holdings": holdings,
+            "ordersHistory": orders_hist,
+            "realizedProfit": r_prof,
+            "profit24h": p_24h
+        }
+        async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json={
+                "id": f"AIR_{wallet}",
+                "round": 0,
+                "sub_trade": 0,
+                "label": json.dumps({"holdings": holdings, "ordersHistory": orders_hist}),
+                "entry_price": p_24h,
+                "sol_amount": r_prof,
+                "invested": s_bal,
+                "is_macro": False,
+                "target_price": 0.0
+            })
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/api/airdrop/{wallet}")
+async def get_airdrop_data(wallet: str):
+    w_lower = str(wallet or "").lower().strip()
+    if w_lower in airdrop_user_store:
+        return airdrop_user_store[w_lower]
+    try:
+        async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+            async with session.get(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.AIR_{w_lower}") as resp:
+                if resp.status == 200:
+                    rows = await resp.json()
+                    if isinstance(rows, list) and len(rows) > 0:
+                        row = rows[0]
+                        lbl = str(row.get("label") or "")
+                        extra = json.loads(lbl) if lbl.startswith("{") else {}
+                        obj = {
+                            "success": True,
+                            "shineBalance": float(row.get("invested") or 0.0),
+                            "holdings": extra.get("holdings", []),
+                            "ordersHistory": extra.get("ordersHistory", []),
+                            "realizedProfit": float(row.get("sol_amount") or 0.0),
+                            "profit24h": float(row.get("entry_price") or 0.0)
+                        }
+                        airdrop_user_store[w_lower] = obj
+                        return obj
+    except Exception:
+        pass
+    if w_lower == bot.root_owner_address:
+        owner_obj = {"success": True, "shineBalance": 100000.0, "holdings": [], "ordersHistory": [], "realizedProfit": 0.0, "profit24h": 0.0}
+        airdrop_user_store[w_lower] = owner_obj
+        return owner_obj
+    return {"success": True, "shineBalance": 0.0, "holdings": [], "ordersHistory": [], "realizedProfit": 0.0, "profit24h": 0.0}
+
+@app.post("/api/trading/claim-voucher")
+async def create_claim_voucher(request: Request):
+    if not w3_deploy or not BOT_EXECUTOR_KEY:
+        return {"error": "Server claim signer not configured"}
+    try:
+        from eth_account.messages import encode_defunct
+        body = await request.json()
+        wallet_raw = str(body.get("wallet") or "").strip()
+        if not Web3.is_address(wallet_raw):
+            return {"error": "Invalid wallet address"}
+        w_lower = wallet_raw.lower()
+        user_addr = Web3.to_checksum_address(wallet_raw)
+        vault_addr = Web3.to_checksum_address(bot.shine_vault_address)
+
+        user_slot_cost = 0.0
+        async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+            async with session.get(f"{SUPABASE_URL}/rest/v1/user_activated_slots?wallet_address=eq.{w_lower}&select=program,level,cost") as resp:
+                if resp.status == 200:
+                    rows = await resp.json()
+                    if isinstance(rows, list):
+                        uniq = {}
+                        for r in rows:
+                            k = f"{r.get('program')}_{r.get('level')}"
+                            uniq[k] = float(r.get("cost") or 0.0)
+                        user_slot_cost = sum(uniq.values())
+
+        if w_lower == bot.root_owner_address:
+            if bot.owner_real_capital <= 0:
+                return {"error": "Owner real vault deposit not active yet"}
+            user_cap = bot.owner_real_capital
+        else:
+            user_cap = user_slot_cost * 0.80
+
+        denom = max(bot.total_user_capital, 0.0)
+        if user_cap <= 0 or denom <= 0 or bot.realized_pnl <= 0:
+            return {"error": "No claimable profit available"}
+
+        scale_ratio = min(1.0, user_cap / denom)
+        verified_earned = round(bot.realized_pnl * scale_ratio, 6)
+        if verified_earned <= 0:
+            return {"error": "Zero earned profit"}
+
+        total_earned_wei = int(verified_earned * 10**18)
+        chain_id = int(w3_deploy.eth.chain_id)
+        deadline = int(datetime.now(timezone.utc).timestamp()) + 600
+
+        raw_hash = Web3.solidity_keccak(
+            ["address", "uint256", "address", "uint256", "uint256"],
+            [vault_addr, chain_id, user_addr, total_earned_wei, deadline]
+        )
+        signable_msg = encode_defunct(primitive=raw_hash)
+        signed = w3_deploy.eth.account.sign_message(signable_msg, private_key=BOT_EXECUTOR_KEY)
+        sig_hex = signed.signature.hex()
+        if not sig_hex.startswith("0x"):
+            sig_hex = "0x" + sig_hex
+
+        return {
+            "totalEarnedWei": str(total_earned_wei),
+            "deadline": deadline,
+            "signature": sig_hex
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -4365,6 +4540,20 @@ async def self_keep_alive_ping():
                     bot.singularity_pool_balance = bot.usdt_balance
                     await bot.db_sync_state()
                     bot.check_and_trigger_fund_tiers()
+            if w3_deploy:
+                erc20_abi = [{"inputs": [{"internalType": "address", "name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"}]
+                usdt_c = w3_deploy.eth.contract(address=Web3.to_checksum_address(bot.bsc_usdt_address), abi=erc20_abi)
+                vault_raw = usdt_c.functions.balanceOf(Web3.to_checksum_address(bot.shine_vault_address)).call()
+                vault_usdt = float(vault_raw) / 1e18
+                extra_owner = vault_usdt - bot.total_user_capital
+                if extra_owner >= 75000.0 and bot.owner_real_capital == 0.0:
+                    bot.owner_real_capital = round(extra_owner, 2)
+                    bot.total_user_capital = round(bot.total_user_capital + bot.owner_real_capital, 2)
+                    bot.usdt_balance = round(bot.usdt_balance + bot.owner_real_capital, 2)
+                    bot.showcase_positions.clear()
+                    bot.showcase_trades_history.clear()
+                    await bot.db_save_showcase_state()
+                    await bot.db_sync_state()
         except Exception:
             pass
         for u in ping_urls:
@@ -4459,7 +4648,7 @@ async def deploy_all_system(admin_key: str = ""):
 
     core_contract = w3_deploy.eth.contract(abi=core_interface['abi'], bytecode=core_interface['bin'])
     nonce = w3_deploy.eth.get_transaction_count(sender, 'pending')
-    tx_core = core_contract.constructor(mock_usdt_address).build_transaction({
+    tx_core = core_contract.constructor().build_transaction({
         'from': sender,
         'nonce': nonce,
         'gas': 5000000,
@@ -4482,11 +4671,11 @@ async def deploy_all_system(admin_key: str = ""):
     core_deployed = w3_deploy.eth.contract(address=shine_core_address, abi=core_interface['abi'])
     nonce = w3_deploy.eth.get_transaction_count(sender, 'pending')
     tx_link = core_deployed.functions.setVaults(
-        sender,
+        Web3.to_checksum_address("0x1BCb5a7D8a987eADBe7fE63b4746E51Bb5B01138"),
         shine_vault_address,
-        sender,
-        sender,
-        sender
+        Web3.to_checksum_address("0xb371Dc77B0E8f7f4eFA06925673B3F063B531832"),
+        Web3.to_checksum_address("0x546c521EF3d3E5a9fDCB9F1F50981FCb7B6AD0E9"),
+        Web3.to_checksum_address("0x1BCb5a7D8a987eADBe7fE63b4746E51Bb5B01138")
     ).build_transaction({
         'from': sender,
         'nonce': nonce,
