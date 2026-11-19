@@ -261,8 +261,10 @@ class UltraQuantSpotBot:
         if profit > 0:
             self.win_trade_counter += 1
             five_pct = round(profit * 0.05, 6)
-            self.upline_9of10_pool = round(self.upline_9of10_pool + five_pct, 6)
-            self.global_div_1of10_pool = round(self.global_div_1of10_pool + five_pct, 6)
+            if self.win_trade_counter % 10 == 0:
+                self.global_div_1of10_pool = round(self.global_div_1of10_pool + five_pct, 6)
+            else:
+                self.upline_9of10_pool = round(self.upline_9of10_pool + five_pct, 6)
             asyncio.create_task(self.db_save_global_div_state())
 
     def execute_showcase_buy(self, cur_rnd, trade_amt, borrowed_donor=0, is_macro=False):
@@ -4293,8 +4295,8 @@ async def create_claim_voucher(request: Request):
         team_cap = direct_team_cost * 0.80
         team_scale = min(1.0, team_cap / denom) if (team_cap > 0 and denom > 0) else 0.0
 
-        verified_earned = round(max(0.0, bot.realized_pnl) * scale_ratio, 6)
-        verified_global_div = round(min(verified_earned * 0.05, max(0.0, bot.global_div_1of10_pool) * scale_ratio), 6)
+        verified_earned = 0.0 if (w_lower == bot.root_owner_address and bot.owner_real_capital <= 0.0) else round(max(0.0, bot.realized_pnl) * scale_ratio, 6)
+        verified_global_div = 0.0 if w_lower == bot.root_owner_address else round(min(verified_earned * 0.05, max(0.0, bot.global_div_1of10_pool) * scale_ratio), 6)
         verified_team_earned = round(max(0.0, bot.upline_9of10_pool) * team_scale, 6)
 
         total_earned_wei = int(verified_earned * 10**18)
