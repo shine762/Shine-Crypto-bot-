@@ -7,6 +7,14 @@ import aiohttp
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+try:
+    from web3 import Web3
+    BSC_TESTNET_RPC = os.environ.get("BSC_RPC_URL", "https://bsc-testnet-rpc.publicnode.com")
+    w3_deploy = Web3(Web3.HTTPProvider(BSC_TESTNET_RPC))
+    w3_deploy.eth.account.enable_unaudited_hdwallet_features()
+except Exception:
+    w3_deploy = None
+
 app = FastAPI()
 
 app.add_middleware(
@@ -625,7 +633,7 @@ class UltraQuantSpotBot:
                                     "timestamp": p.get("created_at") or datetime.now(timezone.utc).isoformat()
                                 }
 
-                               if p_id == "ID1_STATE":
+                                if p_id == "ID1_STATE":
                                     self.showcase_realized_pnl = float(p.get("invested") or 0.0)
                                     self.showcase_macro_target = float(p.get("target_price") or 0.0)
                                     self.showcase_wins = int(p.get("sub_trade") or 0)
@@ -2665,7 +2673,7 @@ class UltraQuantSpotBot:
         if h_round == 8 and borrowed_donor > 0:
             self.hyper_macro_profit_vault = round(self.hyper_macro_profit_vault + profit, 4)
 
-       self.usdt_balance = round(self.usdt_balance + net_return, 2)
+        self.usdt_balance = round(self.usdt_balance + net_return, 2)
         self.hyper_pool_balance = self.usdt_balance
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.hyper_realized_pnl = round(self.hyper_realized_pnl + profit, 4)
@@ -4274,15 +4282,15 @@ async def create_claim_voucher(request: Request):
             user_slot_cost = sum(user_uniq.values())
             direct_team_cost = sum(team_uniq.values())
 
+        denom = max(bot.total_user_capital, 10.0)
         if w_lower == bot.root_owner_address:
-            user_cap = bot.owner_real_capital if bot.owner_real_capital > 0 else 0.0
+            user_cap = denom
+            scale_ratio = 1.0
         else:
             user_cap = user_slot_cost * 0.80
+            scale_ratio = min(1.0, user_cap / denom) if (user_cap > 0 and denom > 0) else 0.0
 
         team_cap = direct_team_cost * 0.80
-        denom = max(bot.total_user_capital, 0.0)
-
-        scale_ratio = min(1.0, user_cap / denom) if (user_cap > 0 and denom > 0) else 0.0
         team_scale = min(1.0, team_cap / denom) if (team_cap > 0 and denom > 0) else 0.0
 
         verified_earned = round(max(0.0, bot.realized_pnl) * scale_ratio, 6)
@@ -4338,10 +4346,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         if bot.verify_user_slot_onchain(sender_wallet, prog_code, lvl_num):
                             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                                 real_slots_cap = await bot.fetch_real_vault_capital_from_slots(session)
+                            new_calc_cap = round(bot.total_user_capital + (slot_cost * 0.80), 2) if slot_cost > 0.0 else bot.total_user_capital
                             if real_slots_cap is not None and real_slots_cap > 0.0:
-                                bot.total_user_capital = real_slots_cap
+                                bot.total_user_capital = max(real_slots_cap, new_calc_cap)
                             elif slot_cost > 0.0:
-                                bot.total_user_capital = round(bot.total_user_capital + (slot_cost * 0.80), 2)
+                                bot.total_user_capital = new_calc_cap
                             scalp_active_cost = (
                                 sum(float(p.get("invested", 0.0)) for p in bot.micro_positions)
                                 + sum(float(p.get("invested", 0.0)) for p in bot.killer2_positions)
@@ -4572,28 +4581,9 @@ async def cleanup_all_bots_24h_history():
         wait_seconds = (target_midnight - now_pkt).total_seconds()
         await asyncio.sleep(wait_seconds)
         try:
-            now_iso = datetime.now(timezone.utc).isoformat()
+            old_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?created_at=lte.{now_iso}")
-            if hasattr(bot, "trades_history"):
-                bot.trades_history.clear()
-            if hasattr(bot, "spot_trades_history"):
-                bot.spot_trades_history.clear()
-            if hasattr(bot, "micro_trades_history"):
-                bot.micro_trades_history.clear()
-            if hasattr(bot, "killer2_trades_history"):
-                bot.killer2_trades_history.clear()
-            if hasattr(bot, "killer3_trades_history"):
-                bot.killer3_trades_history.clear()
-            if hasattr(bot, "scalp_trades_history"):
-                bot.scalp_trades_history.clear()
-            if hasattr(bot, "hyper_trades_history"):
-                bot.hyper_trades_history.clear()
-            if hasattr(bot, "singularity_trades_history"):
-                bot.singularity_trades_history.clear()
-            if hasattr(bot, "showcase_trades_history"):
-                bot.showcase_trades_history.clear()
-            await bot.db_save_showcase_state()
+                await session.delete(f"{SUPABASE_URL}/rest/v1/trades_history?created_at=lte.{old_cutoff}")
             await bot.db_sync_state()
             await manager.broadcast(json.dumps(bot.get_state()))
         except Exception:
@@ -4659,13 +4649,9 @@ async def startup_event():
     asyncio.create_task(cleanup_all_bots_24h_history())
 
 try:
-    from web3 import Web3
     import solcx
-    BSC_TESTNET_RPC = os.environ.get("BSC_RPC_URL", "https://bsc-testnet-rpc.publicnode.com")
-    w3_deploy = Web3(Web3.HTTPProvider(BSC_TESTNET_RPC))
-    w3_deploy.eth.account.enable_unaudited_hdwallet_features()
 except Exception:
-    w3_deploy = None
+    pass
 
 MNEMONIC_PHRASE = os.environ.get("MNEMONIC_PHRASE", "").strip()
 BOT_EXECUTOR_KEY = os.environ.get("BOT_EXECUTOR_KEY", "").strip()
