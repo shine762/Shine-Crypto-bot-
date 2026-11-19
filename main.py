@@ -46,6 +46,9 @@ class UltraQuantSpotBot:
         self.max_sub_trades = 24
         self.round_trades_done = {r: 0 for r in range(1, 11)}
         self.realized_pnl = 0.0
+        self.win_trade_counter = 0
+        self.upline_9of10_pool = 0.0
+        self.global_div_1of10_pool = 0.0
         self.cooldown_remaining = 0
         self.active_positions = []
         self.trades_history = []
@@ -227,6 +230,32 @@ class UltraQuantSpotBot:
                 await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
         except Exception:
             pass
+
+    async def db_save_global_div_state(self):
+        try:
+            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
+                state_row = {
+                    "id": "GLOBAL_DIV_STATE",
+                    "round": 0,
+                    "sub_trade": int(self.win_trade_counter),
+                    "label": "GLOBAL_DIV_STATE",
+                    "entry_price": round(self.upline_9of10_pool, 6),
+                    "sol_amount": 0.0,
+                    "invested": round(self.global_div_1of10_pool, 6),
+                    "is_macro": False,
+                    "target_price": 0.0
+                }
+                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
+        except Exception:
+            pass
+
+    def record_upline_or_global_div_trade(self, profit):
+        if profit > 0:
+            self.win_trade_counter += 1
+            five_pct = round(profit * 0.05, 6)
+            self.upline_9of10_pool = round(self.upline_9of10_pool + five_pct, 6)
+            self.global_div_1of10_pool = round(self.global_div_1of10_pool + five_pct, 6)
+            asyncio.create_task(self.db_save_global_div_state())
 
     def execute_showcase_buy(self, cur_rnd, trade_amt, borrowed_donor=0, is_macro=False):
         cur_p = float(self.live_price)
@@ -457,10 +486,15 @@ class UltraQuantSpotBot:
     def get_tier_config(self, capital=None):
         cap = capital if capital is not None else self.total_user_capital
         net_fund = cap
-        if net_fund <= 300.0:
-            trade_size = 10.0
+        cur_r = getattr(self, "active_round", 1)
+        if cur_r == 8:
+            trade_size = round(max(25.0, net_fund / 8.0), 2)
+        elif cur_r == 7:
+            trade_size = round(max(15.0, net_fund / 12.0), 2)
+        elif cur_r in [5, 6]:
+            trade_size = round(max(12.0, net_fund / 16.0), 2)
         else:
-            trade_size = round(net_fund / 24.0, 2)
+            trade_size = round(max(10.0, net_fund / 24.0), 2)
         return {"slots": 24, "size": max(10.0, trade_size), "net_fund": net_fund}
 
     def check_and_trigger_fund_tiers(self):
@@ -591,10 +625,14 @@ class UltraQuantSpotBot:
                                     "timestamp": p.get("created_at") or datetime.now(timezone.utc).isoformat()
                                 }
 
-                                if p_id == "ID1_STATE":
+                               if p_id == "ID1_STATE":
                                     self.showcase_realized_pnl = float(p.get("invested") or 0.0)
                                     self.showcase_macro_target = float(p.get("target_price") or 0.0)
                                     self.showcase_wins = int(p.get("sub_trade") or 0)
+                                elif p_id == "GLOBAL_DIV_STATE":
+                                    self.win_trade_counter = int(p.get("sub_trade") or 0)
+                                    self.upline_9of10_pool = float(p.get("entry_price") or 0.0)
+                                    self.global_div_1of10_pool = float(p.get("invested") or 0.0)
                                 elif p_id.startswith("AIR_"):
                                     w_air = p_id[4:].lower()
                                     extra = {}
@@ -988,6 +1026,17 @@ class UltraQuantSpotBot:
                             summed_all = round(self.spot_realized_pnl + self.micro_realized_pnl + self.killer2_realized_pnl + self.killer3_realized_pnl + self.hyper_realized_pnl + self.singularity_realized_pnl, 4)
                             if summed_all != 0.0 or self.realized_pnl == 0.0:
                                 self.realized_pnl = summed_all
+                            if self.win_trade_counter == 0 and self.realized_pnl > 0.0:
+                                bot_sells = [x for x in reversed(all_logs) if str(x.get("side", "")).upper() == "SELL" and not str(x.get("orderId", "")).startswith(("MAN_", "ATL_", "ORD_", "COPY_", "CPOS_", "BOT_", "ID1_")) and float(x.get("profit", 0.0)) > 0.0]
+                                for bs in bot_sells:
+                                    self.win_trade_counter += 1
+                                    fp = round(float(bs.get("profit", 0.0)) * 0.05, 6)
+                                    if self.win_trade_counter % 10 == 0:
+                                        self.global_div_1of10_pool = round(self.global_div_1of10_pool + fp, 6)
+                                    else:
+                                        self.upline_9of10_pool = round(self.upline_9of10_pool + fp, 6)
+                                if self.win_trade_counter > 0:
+                                    asyncio.create_task(self.db_save_global_div_state())
 
                             total_active_cost = self.invested_amount + self.macro_vault_invested + self.round8_hold_invested
                             if self.total_user_capital <= 0:
@@ -1378,6 +1427,9 @@ class UltraQuantSpotBot:
             "allocationPct": str(alloc_pct),
             "spotRealizedPnl": round(self.spot_realized_pnl, 2),
             "realizedPnl": round(self.realized_pnl, 2),
+            "winTradeCounter": int(self.win_trade_counter),
+            "upline9of10Pool": round(self.upline_9of10_pool, 6),
+            "globalDiv1of10Pool": round(self.global_div_1of10_pool, 6),
             "cooldownRemaining": self.cooldown_remaining,
             "macroVaultSol": round(self.macro_vault_sol, 4),
             "macroVaultInvested": round(self.macro_vault_invested, 2),
@@ -1500,8 +1552,14 @@ class UltraQuantSpotBot:
         return phase_max - ((round_num - 1) * round_step)
 
     def get_eligible_donor_rounds(self, cur_rnd):
-        if cur_rnd in [5, 6, 7, 8]:
-            return list(range(1, cur_rnd))
+        if cur_rnd == 8:
+            return [1, 2, 3, 4, 5, 6, 7]
+        elif cur_rnd == 7:
+            return [1, 2, 3, 4, 5, 6]
+        elif cur_rnd == 6:
+            return [1, 2, 3, 4, 5]
+        elif cur_rnd == 5:
+            return [1, 2, 3, 4]
         return []
 
     def allocate_round_budget(self, spent_dict, borrowed_dict, cur_rnd, target_size, total_pool_budget):
@@ -1579,6 +1637,8 @@ class UltraQuantSpotBot:
                             self.execute_singularity_sell(p)
 
                 if r_chk == 8:
+                    r8_target_fund = round(self.round_allocations.get(8, 0.27) * self.total_user_capital, 2)
+                    r8_existing_sol_inv = sum(float(p["invested"]) for p in self.active_positions if p.get("round") == 8 and p.get("borrowedFrom", 0) == 0)
                     for p in list(self.active_positions):
                         if p.get("round") == 8 and p.get("borrowedFrom", 0) == 0 and not p.get("isMacro", False):
                             p["isMacro"] = True
@@ -1587,73 +1647,73 @@ class UltraQuantSpotBot:
                             p_inv = float(p["invested"])
                             self.sol_balance = max(0.0, self.sol_balance - p_sol)
                             self.invested_amount = max(0.0, self.invested_amount - p_inv)
-                            self.macro_vault_sol += p_sol
-                            self.macro_vault_invested += p_inv
+                            self.macro_vault_sol = round(self.macro_vault_sol + p_sol, 4)
+                            self.macro_vault_invested = round(self.macro_vault_invested + p_inv, 2)
                             self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else cur_p
                             self.macro_target_price = round(max(200.0, self.macro_vault_entry * 2.0), 2)
                             p["targetPrice"] = self.macro_target_price
                             self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
-                            asyncio.create_task(self.db_save_buy(p, {
-                                "order_id": p["id"] + "_HOLD",
-                                "side": "HOLD",
-                                "price": round(cur_p, 2),
-                                "sol_amount": 0.0,
-                                "fee": 0.0,
-                                "profit": 0.0,
-                                "round": 8,
-                                "exec_type": "R8_TRANSITION_HOLD"
-                            }))
-                    if self.total_user_capital >= 40.0 and self.usdt_balance >= 10.0:
-                        r8_own_max = round(self.round_allocations.get(8, 0.27) * self.total_user_capital, 2)
-                        r8_own_active = sum(float(p["invested"]) for p in self.active_positions if p.get("round") == 8 and p.get("borrowedFrom", 0) == 0)
-                        r8_own_rem = round(r8_own_max - r8_own_active, 2)
-                        if r8_own_rem >= 10.0:
-                            invest_target = min(self.usdt_balance, r8_own_rem)
-                            fee = invest_target * self.taker_fee_pct
-                            net_invest = invest_target - fee
-                            sol_bought = net_invest / cur_p
-                            self.usdt_balance = round(self.usdt_balance - invest_target, 2)
-                            self.home_round_spent[8] = round(self.home_round_spent.get(8, 0.0) + invest_target, 2)
-                            self.macro_vault_sol += sol_bought
-                            self.macro_vault_invested += invest_target
-                            self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else cur_p
-                            self.macro_target_price = round(max(200.0, self.macro_vault_entry * 2.0), 2)
-                            pos_id = str(uuid.uuid4())[:8].upper()
-                            hold_pos = {
-                                "id": pos_id,
-                                "round": 8,
-                                "subTrade": 1,
-                                "label": "R8 HOLD VAULT",
-                                "entryPrice": round(cur_p, 2),
-                                "solAmount": round(sol_bought, 4),
-                                "invested": round(invest_target, 2),
-                                "isMacro": True,
-                                "borrowedFrom": 0,
-                                "targetPrice": self.macro_target_price,
-                                "timestamp": datetime.now(timezone.utc).isoformat()
-                            }
-                            self.active_positions.append(hold_pos)
-                            asyncio.create_task(self.db_save_buy(hold_pos, {
-                                "order_id": pos_id + "_B",
-                                "side": "BUY",
-                                "price": round(cur_p, 2),
-                                "sol_amount": round(sol_bought, 4),
-                                "fee": round(fee, 4),
-                                "profit": 0.0,
-                                "round": 8,
-                                "exec_type": "R8_END_SOL_HOLD"
-                            }))
+                    deficit = round(r8_target_fund - r8_existing_sol_inv, 2)
+                    if deficit >= 10.0 and self.usdt_balance >= 10.0:
+                        buy_amt = min(self.usdt_balance, deficit)
+                        fee = buy_amt * self.taker_fee_pct
+                        net_buy = buy_amt - fee
+                        sol_bought = net_buy / cur_p
+                        self.usdt_balance = round(self.usdt_balance - buy_amt, 2)
+                        self.home_round_spent[8] = round(self.home_round_spent.get(8, 0.0) + buy_amt, 2)
+                        self.macro_vault_sol = round(self.macro_vault_sol + sol_bought, 4)
+                        self.macro_vault_invested = round(self.macro_vault_invested + buy_amt, 2)
+                        self.macro_vault_entry = self.macro_vault_invested / self.macro_vault_sol if self.macro_vault_sol > 0 else cur_p
+                        self.macro_target_price = round(max(200.0, self.macro_vault_entry * 2.0), 2)
+                        pos_id = str(uuid.uuid4())[:8].upper()
+                        hold_pos = {
+                            "id": pos_id,
+                            "round": 8,
+                            "subTrade": 1,
+                            "label": "R8 HOLD VAULT",
+                            "entryPrice": round(cur_p, 2),
+                            "solAmount": round(sol_bought, 4),
+                            "invested": round(buy_amt, 2),
+                            "isMacro": True,
+                            "borrowedFrom": 0,
+                            "targetPrice": self.macro_target_price,
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                        self.active_positions.append(hold_pos)
+                        asyncio.create_task(self.db_save_buy(hold_pos, {
+                            "order_id": pos_id + "_B",
+                            "side": "BUY",
+                            "price": round(cur_p, 2),
+                            "sol_amount": round(sol_bought, 4),
+                            "fee": round(fee, 4),
+                            "profit": 0.0,
+                            "round": 8,
+                            "exec_type": "R8_USDT_TO_SOL_HOLD"
+                        }))
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
-        if self.is_paused or self.usdt_balance < 10.0 or self.live_price <= 0:
+        if self.is_paused or self.live_price <= 0:
             return
-        if self.active_round in [9, 10]:
-            return
-
         self.sync_phase_and_round()
+        cur_rnd = self.active_round
+        if cur_rnd in [9, 10]:
+            return
+        if cur_rnd == 8 and self.macro_vault_sol > 0:
+            for p in list(self.active_positions):
+                if p.get("isMacro", False) and p.get("round") == 8:
+                    p["isMacro"] = False
+                    p["label"] = "R8 WORKING SOL"
+                    p_sol = float(p.get("solAmount", 0.0))
+                    p_inv = float(p.get("invested", 0.0))
+                    self.macro_vault_sol = max(0.0, round(self.macro_vault_sol - p_sol, 4))
+                    self.macro_vault_invested = max(0.0, round(self.macro_vault_invested - p_inv, 2))
+                    self.sol_balance = round(self.sol_balance + p_sol, 4)
+                    self.invested_amount = round(self.invested_amount + p_inv, 2)
+                    self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
+        if self.usdt_balance < 10.0:
+            return
         if self.total_user_capital < 40.0:
             return
-        cur_rnd = self.active_round
         cfg = self.get_tier_config()
         max_allowed_slots = cfg["slots"]
 
@@ -1661,7 +1721,7 @@ class UltraQuantSpotBot:
         if current_done >= max_allowed_slots:
             return
 
-        target_size = min(self.usdt_balance, 10.0)
+        target_size = min(self.usdt_balance, cfg["size"])
         allowed, borrowed_donor = self.allocate_round_budget(self.home_round_spent, self.home_round_borrowed, cur_rnd, target_size, self.total_user_capital)
         if not allowed:
             return
@@ -2474,6 +2534,7 @@ class UltraQuantSpotBot:
         self.usdt_balance += net_return
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.spot_realized_pnl = round(self.spot_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.sol_balance = max(0.0, self.sol_balance - sol_amt)
         self.invested_amount = max(0.0, self.invested_amount - invested)
         self.avg_entry_price = self.invested_amount / self.sol_balance if self.sol_balance > 0 else 0.0
@@ -2604,10 +2665,11 @@ class UltraQuantSpotBot:
         if h_round == 8 and borrowed_donor > 0:
             self.hyper_macro_profit_vault = round(self.hyper_macro_profit_vault + profit, 4)
 
-        self.usdt_balance = round(self.usdt_balance + net_return, 2)
+       self.usdt_balance = round(self.usdt_balance + net_return, 2)
         self.hyper_pool_balance = self.usdt_balance
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.hyper_realized_pnl = round(self.hyper_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.hyper_total_trades += 1
 
         if self.hyper_round_trades_done.get(h_round, 0) > 0:
@@ -2798,6 +2860,7 @@ class UltraQuantSpotBot:
         self.usdt_balance = round(self.usdt_balance + net_return, 2)
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.micro_realized_pnl = round(self.micro_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.micro_total_trades += 1
 
         if self.micro_round_trades_done.get(m_round, 0) > 0:
@@ -3017,6 +3080,7 @@ class UltraQuantSpotBot:
         self.usdt_balance = round(self.usdt_balance + net_return, 2)
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.killer2_realized_pnl = round(self.killer2_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.killer2_total_trades += 1
 
         if self.killer2_round_trades_done.get(k_round, 0) > 0:
@@ -3235,6 +3299,7 @@ class UltraQuantSpotBot:
         self.usdt_balance = round(self.usdt_balance + net_return, 2)
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.killer3_realized_pnl = round(self.killer3_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.killer3_total_trades += 1
 
         if self.killer3_round_trades_done.get(k_round, 0) > 0:
@@ -3420,6 +3485,7 @@ class UltraQuantSpotBot:
         self.singularity_pool_balance = self.usdt_balance
         self.realized_pnl = round(self.realized_pnl + profit, 4)
         self.singularity_realized_pnl = round(self.singularity_realized_pnl + profit, 4)
+        self.record_upline_or_global_div_trade(profit)
         self.singularity_total_trades += 1
 
         if self.singularity_round_trades_done.get(r_num, 0) > 0:
@@ -4180,40 +4246,58 @@ async def create_claim_voucher(request: Request):
         vault_addr = Web3.to_checksum_address(bot.shine_vault_address)
 
         user_slot_cost = 0.0
+        direct_team_cost = 0.0
         async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-            async with session.get(f"{SUPABASE_URL}/rest/v1/user_activated_slots?wallet_address=eq.{w_lower}&select=program,level,cost") as resp:
-                if resp.status == 200:
-                    rows = await resp.json()
-                    if isinstance(rows, list):
-                        uniq = {}
-                        for r in rows:
-                            k = f"{r.get('program')}_{r.get('level')}"
-                            uniq[k] = float(r.get("cost") or 0.0)
-                        user_slot_cost = sum(uniq.values())
+            async with session.get(f"{SUPABASE_URL}/rest/v1/user_activated_slots?select=wallet_address,program,level,cost") as resp_s:
+                all_slot_rows = await resp_s.json() if resp_s.status == 200 else []
+            async with session.get(f"{SUPABASE_URL}/rest/v1/shine_members?upline_address=eq.{w_lower}&select=wallet_address") as resp_m:
+                direct_rows = await resp_m.json() if resp_m.status == 200 else []
+
+            direct_wallets = set()
+            if isinstance(direct_rows, list):
+                for dm in direct_rows:
+                    dw = str(dm.get("wallet_address") or "").lower().strip()
+                    if dw and dw != w_lower:
+                        direct_wallets.add(dw)
+
+            user_uniq = {}
+            team_uniq = {}
+            if isinstance(all_slot_rows, list):
+                for r in all_slot_rows:
+                    rw = str(r.get("wallet_address") or "").lower().strip()
+                    sk = f"{rw}_{r.get('program')}_{r.get('level')}"
+                    c_val = float(r.get("cost") or 0.0)
+                    if rw == w_lower:
+                        user_uniq[sk] = c_val
+                    elif rw in direct_wallets:
+                        team_uniq[sk] = c_val
+            user_slot_cost = sum(user_uniq.values())
+            direct_team_cost = sum(team_uniq.values())
 
         if w_lower == bot.root_owner_address:
-            if bot.owner_real_capital <= 0:
-                return {"error": "Owner real vault deposit not active yet"}
-            user_cap = bot.owner_real_capital
+            user_cap = bot.owner_real_capital if bot.owner_real_capital > 0 else 0.0
         else:
             user_cap = user_slot_cost * 0.80
 
+        team_cap = direct_team_cost * 0.80
         denom = max(bot.total_user_capital, 0.0)
-        if user_cap <= 0 or denom <= 0 or bot.realized_pnl <= 0:
-            return {"error": "No claimable profit available"}
 
-        scale_ratio = min(1.0, user_cap / denom)
-        verified_earned = round(bot.realized_pnl * scale_ratio, 6)
-        if verified_earned <= 0:
-            return {"error": "Zero earned profit"}
+        scale_ratio = min(1.0, user_cap / denom) if (user_cap > 0 and denom > 0) else 0.0
+        team_scale = min(1.0, team_cap / denom) if (team_cap > 0 and denom > 0) else 0.0
+
+        verified_earned = round(max(0.0, bot.realized_pnl) * scale_ratio, 6)
+        verified_global_div = round(min(verified_earned * 0.05, max(0.0, bot.global_div_1of10_pool) * scale_ratio), 6)
+        verified_team_earned = round(max(0.0, bot.upline_9of10_pool) * team_scale, 6)
 
         total_earned_wei = int(verified_earned * 10**18)
+        total_team_wei = int(verified_team_earned * 10**18)
+        total_global_div_wei = int(verified_global_div * 10**18)
         chain_id = int(w3_deploy.eth.chain_id)
         deadline = int(datetime.now(timezone.utc).timestamp()) + 600
 
         raw_hash = Web3.solidity_keccak(
-            ["address", "uint256", "address", "uint256", "uint256"],
-            [vault_addr, chain_id, user_addr, total_earned_wei, deadline]
+            ["address", "uint256", "address", "uint256", "uint256", "uint256", "uint256"],
+            [vault_addr, chain_id, user_addr, total_earned_wei, total_team_wei, total_global_div_wei, deadline]
         )
         signable_msg = encode_defunct(primitive=raw_hash)
         signed = w3_deploy.eth.account.sign_message(signable_msg, private_key=BOT_EXECUTOR_KEY)
@@ -4223,6 +4307,8 @@ async def create_claim_voucher(request: Request):
 
         return {
             "totalEarnedWei": str(total_earned_wei),
+            "totalTeamEarnedWei": str(total_team_wei),
+            "totalGlobalDivWei": str(total_global_div_wei),
             "deadline": deadline,
             "signature": sig_hex
         }
