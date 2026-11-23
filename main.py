@@ -104,8 +104,8 @@ class UltraQuantSpotBot:
         self.min_net_profit_usdt = 0.001
         self.solana_dex_mode = os.environ.get("DEX_MODE", "PANCAKESWAP_BSC_TESTNET")
         self.bsc_usdt_address = os.environ.get("BSC_USDT_ADDRESS", "0xEC09EBf252cc6d0FE4DaCAF8CeC5F7A66b0aaf12")
-        self.shine_vault_address = os.environ.get("SHINE_VAULT_ADDRESS", "0x204e8c521aCa3621DB585829667759433aBb70d3")
-        self.shine_core_address = os.environ.get("SHINE_CORE_ADDRESS", "0xEEe011D9d6Cb0C5A382C5baffE8E05c384631159")
+        self.shine_vault_address = os.environ.get("SHINE_VAULT_ADDRESS", "0x8A10FB6121BD30Dc2AB0db7cC21e424A861f4964")
+        self.shine_core_address = os.environ.get("SHINE_CORE_ADDRESS", "0xED58e4E7Ba1f4655F3c86b8B520828C4B2BbbEd7")
         self.root_owner_address = os.environ.get("ROOT_OWNER_ADDRESS", "0x1bcb5a7d8a987eadbe7fe63b4746e51bb5b01138").lower()
         self.bsc_pancake_router = os.environ.get("BSC_PANCAKE_ROUTER", "0x10ED43C718714eb63d5aA57B78B54704E256024E")
         self.home_last_ref_price = 0.0
@@ -3018,15 +3018,13 @@ class UltraQuantSpotBot:
             return
 
         if len(self.hyper_positions) == 0:
-            if self.hyper_last_ref_price <= 0 and not self.whale_dump_alert:
-                self.execute_hyper_buy()
-                return
-            ref_p = self.hyper_last_ref_price if self.hyper_last_ref_price > 0 else self.live_price
-            req_dip = 0.65 if self.whale_dump_alert else 0.45
-        else:
-            ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
-            self.hyper_last_ref_price = ref_p
-            req_dip = 1.30 if self.whale_dump_alert else 0.90
+            self.hyper_tb_active = False
+            self.hyper_tb_lowest = 0.0
+            self.execute_hyper_buy()
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
+        self.hyper_last_ref_price = ref_p
+        req_dip = 1.30 if self.whale_dump_alert else 0.90
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3219,15 +3217,13 @@ class UltraQuantSpotBot:
             return
 
         if len(self.micro_positions) == 0:
-            if self.micro_last_ref_price <= 0 and not self.whale_dump_alert:
-                self.execute_micro_buy()
-                return
-            ref_p = self.micro_last_ref_price if self.micro_last_ref_price > 0 else self.live_price
-            req_dip = 0.20 if self.whale_dump_alert else 0.12
-        else:
-            ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
-            self.micro_last_ref_price = ref_p
-            req_dip = 0.35 if self.whale_dump_alert else 0.20
+            self.micro_tb_active = False
+            self.micro_tb_lowest = 0.0
+            self.execute_micro_buy()
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
+        self.micro_last_ref_price = ref_p
+        req_dip = 0.35 if self.whale_dump_alert else 0.20
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3418,15 +3414,13 @@ class UltraQuantSpotBot:
             return
 
         if len(self.killer2_positions) == 0:
-            if self.killer2_last_ref_price <= 0 and not self.whale_dump_alert:
-                self.execute_killer2_buy()
-                return
-            ref_p = self.killer2_last_ref_price if self.killer2_last_ref_price > 0 else self.live_price
-            req_dip = 0.30 if self.whale_dump_alert else 0.18
-        else:
-            ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
-            self.killer2_last_ref_price = ref_p
-            req_dip = 0.50 if self.whale_dump_alert else 0.30
+            self.killer2_tb_active = False
+            self.killer2_tb_lowest = 0.0
+            self.execute_killer2_buy()
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
+        self.killer2_last_ref_price = ref_p
+        req_dip = 0.50 if self.whale_dump_alert else 0.30
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3617,15 +3611,13 @@ class UltraQuantSpotBot:
             return
 
         if len(self.killer3_positions) == 0:
-            if self.killer3_last_ref_price <= 0 and not self.whale_dump_alert:
-                self.execute_killer3_buy()
-                return
-            ref_p = self.killer3_last_ref_price if self.killer3_last_ref_price > 0 else self.live_price
-            req_dip = 0.50 if self.whale_dump_alert else 0.30
-        else:
-            ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
-            self.killer3_last_ref_price = ref_p
-            req_dip = 0.90 if self.whale_dump_alert else 0.60
+            self.killer3_tb_active = False
+            self.killer3_tb_lowest = 0.0
+            self.execute_killer3_buy()
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
+        self.killer3_last_ref_price = ref_p
+        req_dip = 0.90 if self.whale_dump_alert else 0.60
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3808,15 +3800,13 @@ class UltraQuantSpotBot:
             return
 
         if len(self.singularity_positions) == 0:
-            if self.singularity_last_ref_price <= 0 and not self.whale_dump_alert:
-                self.execute_singularity_buy()
-                return
-            ref_p = self.singularity_last_ref_price if self.singularity_last_ref_price > 0 else self.live_price
-            req_dip = 0.90 if self.whale_dump_alert else 0.60
-        else:
-            ref_p = min(float(p["entryPrice"]) for p in self.singularity_positions)
-            self.singularity_last_ref_price = ref_p
-            req_dip = 1.60 if self.whale_dump_alert else 1.20
+            self.singularity_tb_active = False
+            self.singularity_tb_lowest = 0.0
+            self.execute_singularity_buy()
+            return
+        ref_p = min(float(p["entryPrice"]) for p in self.singularity_positions)
+        self.singularity_last_ref_price = ref_p
+        req_dip = 1.60 if self.whale_dump_alert else 1.20
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -4638,19 +4628,13 @@ class UltraQuantSpotBot:
         macro_positions = [p for p in self.active_positions if p.get("isMacro", False)]
 
         if len(regular_positions) == 0:
+            self.tb_active = False
+            self.tb_stage = "IDLE"
             if self.total_user_capital >= 40.0 and self.usdt_balance >= min_ord:
-                if self.home_last_ref_price <= 0 and not self.whale_dump_alert:
-                    self.execute_buy(is_sub_trade=False, escalate_round=False)
-                    return
-                last_entry = self.home_last_ref_price if self.home_last_ref_price > 0 else self.live_price
-                req_dip = 0.45 if self.whale_dump_alert else 0.25
-            else:
-                self.tb_active = False
-                self.tb_stage = "IDLE"
-                return
-        else:
-            last_entry = min(float(p["entryPrice"]) for p in regular_positions)
-            req_dip = 0.50 if self.whale_dump_alert else 0.30
+                self.execute_buy(is_sub_trade=False, escalate_round=False)
+            return
+        last_entry = min(float(p["entryPrice"]) for p in regular_positions)
+        req_dip = 0.50 if self.whale_dump_alert else 0.30
 
         dip_usd = last_entry - self.live_price
         if dip_usd < req_dip:
