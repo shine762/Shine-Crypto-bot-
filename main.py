@@ -81,6 +81,18 @@ class UltraQuantSpotBot:
         self.whale_boost_multiplier = 1.0
         self.whale_dump_alert = False
         self.cvd_net_volume = 0.0
+        self.whale_fast_ratio = 50.0
+        self.whale_fast_cvd = 0.0
+        self.quant_prices = []
+        self.quant_last_sample_ts = 0.0
+        self.quant_rsi = 50.0
+        self.quant_trend = "NEUTRAL"
+        self.quant_dip_mult = 1.0
+        self.quant_size_mult = 1.0
+        self.quant_trail_mult = 1.0
+        self.orderbook_bid_ratio = 50.0
+        self.http_session = None
+        self.last_db_sync_ts = 0.0
         self.taker_fee_pct = 0.001
         self.dex_actual_fee_pct = 0.0005
         self.owner_fee_pool = 0.0
@@ -119,8 +131,8 @@ class UltraQuantSpotBot:
         self.charity_tb_lowest = 0.0
         self.charity_last_ref_price = 0.0
         self.round_allocations = {
-            1: 0.05, 2: 0.06, 3: 0.08, 4: 0.10, 5: 0.14,
-            6: 0.18, 7: 0.22, 8: 0.17, 9: 0.0, 10: 0.0
+            1: 0.12, 2: 0.12, 3: 0.13, 4: 0.13, 5: 0.14,
+            6: 0.14, 7: 0.12, 8: 0.10, 9: 0.0, 10: 0.0
         }
         self.home_pool_users = 1
         self.home_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -265,69 +277,76 @@ class UltraQuantSpotBot:
         if target_w == str(self.connected_wallet_address or "").lower().strip():
             self.manual_test_balance = calc_bal
 
+    async def get_http_session(self):
+        if self.http_session is None or self.http_session.closed:
+            connector = aiohttp.TCPConnector(limit=30, keepalive_timeout=60)
+            timeout = aiohttp.ClientTimeout(total=10)
+            self.http_session = aiohttp.ClientSession(headers=SUPABASE_HEADERS, connector=connector, timeout=timeout)
+        return self.http_session
+
     async def db_save_showcase_state(self):
         try:
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                state_row = {
-                    "id": "ID1_STATE",
-                    "round": 0,
-                    "sub_trade": int(self.showcase_wins),
-                    "label": "ID1_STATE",
-                    "entry_price": round(self.showcase_capital, 2),
-                    "sol_amount": round(self.showcase_macro_sol, 4),
-                    "invested": round(self.showcase_realized_pnl, 4),
-                    "is_macro": False,
-                    "target_price": round(self.showcase_macro_target, 2)
-                }
-                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
+            session = await self.get_http_session()
+            state_row = {
+                "id": "ID1_STATE",
+                "round": 0,
+                "sub_trade": int(self.showcase_wins),
+                "label": "ID1_STATE",
+                "entry_price": round(self.showcase_capital, 2),
+                "sol_amount": round(self.showcase_macro_sol, 4),
+                "invested": round(self.showcase_realized_pnl, 4),
+                "is_macro": False,
+                "target_price": round(self.showcase_macro_target, 2)
+            }
+            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
         except Exception:
             pass
 
     async def db_save_global_div_state(self):
         try:
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                state_row = {
-                    "id": "GLOBAL_DIV_STATE",
-                    "round": 0,
-                    "sub_trade": int(self.win_trade_counter),
-                    "label": json.dumps({
-                        "owner": round(self.owner_profit_5pct_pool, 6),
-                        "airdrop": round(self.airdrop_5pct_pool, 6),
-                        "charity": round(self.charity_5pct_pool, 6),
-                        "shineFee": round(self.owner_shine_fee_pool, 6)
-                    }),
-                    "entry_price": round(self.upline_9of10_pool, 6),
-                    "sol_amount": 0.0,
-                    "invested": round(self.global_div_1of10_pool, 6),
-                    "is_macro": False,
-                    "target_price": 0.0
-                }
-                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
+            session = await self.get_http_session()
+            state_row = {
+                "id": "GLOBAL_DIV_STATE",
+                "round": 0,
+                "sub_trade": int(self.win_trade_counter),
+                "label": json.dumps({
+                    "owner": round(self.owner_profit_5pct_pool, 6),
+                    "airdrop": round(self.airdrop_5pct_pool, 6),
+                    "charity": round(self.charity_5pct_pool, 6),
+                    "shineFee": round(self.owner_shine_fee_pool, 6)
+                }),
+                "entry_price": round(self.upline_9of10_pool, 6),
+                "sol_amount": 0.0,
+                "invested": round(self.global_div_1of10_pool, 6),
+                "is_macro": False,
+                "target_price": 0.0
+            }
+            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
         except Exception:
             pass
 
     async def db_save_ref_prices(self):
         try:
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                ref_row = {
-                    "id": "REF_PRICE_STATE",
-                    "round": 0,
-                    "sub_trade": 0,
-                    "label": json.dumps({
-                        "home": round(self.home_last_ref_price, 2),
-                        "micro": round(self.micro_last_ref_price, 2),
-                        "k2": round(self.killer2_last_ref_price, 2),
-                        "k3": round(self.killer3_last_ref_price, 2),
-                        "hyper": round(self.hyper_last_ref_price, 2),
-                        "sng": round(self.singularity_last_ref_price, 2)
-                    }),
-                    "entry_price": 0.0,
-                    "sol_amount": 0.0,
-                    "invested": 0.0,
-                    "is_macro": False,
-                    "target_price": 0.0
-                }
-                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=ref_row)
+            session = await self.get_http_session()
+            ref_row = {
+                "id": "REF_PRICE_STATE",
+                "round": 0,
+                "sub_trade": 0,
+                "label": json.dumps({
+                    "home": round(self.home_last_ref_price, 2),
+                    "micro": round(self.micro_last_ref_price, 2),
+                    "k2": round(self.killer2_last_ref_price, 2),
+                    "k3": round(self.killer3_last_ref_price, 2),
+                    "hyper": round(self.hyper_last_ref_price, 2),
+                    "sng": round(self.singularity_last_ref_price, 2)
+                }),
+                "entry_price": 0.0,
+                "sol_amount": 0.0,
+                "invested": 0.0,
+                "is_macro": False,
+                "target_price": 0.0
+            }
+            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=ref_row)
         except Exception:
             pass
 
@@ -585,7 +604,7 @@ class UltraQuantSpotBot:
         return 10.0
 
     def get_round_eligible_pct(self, round_num):
-        elig_map = {1: 0.05, 2: 0.11, 3: 0.19, 4: 0.29, 5: 0.43, 6: 0.61, 7: 0.83, 8: 1.00}
+        elig_map = {1: 0.12, 2: 0.24, 3: 0.37, 4: 0.50, 5: 0.64, 6: 0.78, 7: 0.90, 8: 1.00}
         return elig_map.get(round_num, 0.0)
 
     def get_tier_config(self, capital=None):
@@ -595,14 +614,16 @@ class UltraQuantSpotBot:
         bot_total_fund = round(cap / active_bots, 2)
         min_ord = self.get_min_order_size(cap)
         max_slots_by_fund = max(1, int(bot_total_fund // min_ord)) if bot_total_fund >= min_ord else 1
-        slots_per_bot = max(1, min(24 // active_bots, max_slots_by_fund))
+        slots_per_bot = max_slots_by_fund
         elig_pct = self.get_round_eligible_pct(cur_r)
         round_total_fund = round(cap * elig_pct, 2)
-        slot_cap = round(bot_total_fund / slots_per_bot, 2)
+        size_mult = getattr(self, "quant_size_mult", 1.0)
+        target_grid_splits = max(10.0, active_bots * 10.0)
         if cap < 240.0:
-            trade_size = round(max(min_ord, min(slot_cap, round_total_fund / max(1, active_bots * slots_per_bot))), 2)
+            trade_size = round(min(bot_total_fund, max(min_ord, min_ord * size_mult)), 2)
         else:
-            trade_size = round(max(min_ord, round_total_fund / 24.0), 2)
+            base_sz = min(bot_total_fund / 10.0, round_total_fund / target_grid_splits)
+            trade_size = round(max(min_ord, min(bot_total_fund / 8.0, base_sz * size_mult)), 2)
         return {"slots": slots_per_bot, "size": trade_size, "net_fund": round_total_fund, "bot_fund": bot_total_fund}
 
     def check_and_trigger_fund_tiers(self):
@@ -644,6 +665,7 @@ class UltraQuantSpotBot:
         return None
 
     async def load_from_database(self):
+        regular_pos = []
         try:
             async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
                 real_slots_cap = await self.fetch_real_vault_capital_from_slots(session)
@@ -1214,9 +1236,13 @@ class UltraQuantSpotBot:
             print(f"DATABASE LOAD ERROR: {e}")
             return
 
-    async def db_sync_state(self):
+    async def db_sync_state(self, force=False):
         if not getattr(self, "db_loaded", False) or self.live_price <= 0:
             return
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if not force and (now_ts - self.last_db_sync_ts) < 2.0:
+            return
+        self.last_db_sync_ts = now_ts
         try:
             payload = {
                 "total_user_capital": round(self.total_user_capital, 2),
@@ -1240,39 +1266,45 @@ class UltraQuantSpotBot:
                 "sub_trade_count": self.sub_trade_count,
                 "updated_at": datetime.now(timezone.utc).isoformat()
             }
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload)
-            await self.db_save_ref_prices()
+            session = await self.get_http_session()
+            await asyncio.gather(
+                session.patch(f"{SUPABASE_URL}/rest/v1/bot_state?id=eq.1", json=payload),
+                self.db_save_ref_prices(),
+                return_exceptions=True
+            )
         except Exception:
             pass
 
     async def db_save_buy(self, pos, trade_data):
         try:
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                pos_row = {
-                    "id": pos["id"],
-                    "round": pos["round"],
-                    "sub_trade": pos["subTrade"],
-                    "label": pos["label"],
-                    "entry_price": pos["entryPrice"],
-                    "sol_amount": pos["solAmount"],
-                    "invested": pos["invested"],
-                    "is_macro": pos.get("isMacro", False),
-                    "target_price": pos.get("targetPrice", 0.0)
-                }
-                db_trade_row = {
-                    "order_id": str(trade_data.get("order_id") or trade_data.get("orderId")),
-                    "side": str(trade_data.get("side", "BUY")),
-                    "price": float(trade_data.get("price", 0.0)),
-                    "sol_amount": float(trade_data.get("sol_amount") or trade_data.get("solAmount", 0.0)),
-                    "fee": float(trade_data.get("fee", 0.0)),
-                    "profit": float(trade_data.get("profit", 0.0)),
-                    "round": int(trade_data.get("round", 0)),
-                    "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "BUY")),
-                    "created_at": trade_data.get("created_at") or trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
-                }
-                await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=pos_row)
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_trade_row)
+            session = await self.get_http_session()
+            pos_row = {
+                "id": pos["id"],
+                "round": pos["round"],
+                "sub_trade": pos["subTrade"],
+                "label": pos["label"],
+                "entry_price": pos["entryPrice"],
+                "sol_amount": pos["solAmount"],
+                "invested": pos["invested"],
+                "is_macro": pos.get("isMacro", False),
+                "target_price": pos.get("targetPrice", 0.0)
+            }
+            db_trade_row = {
+                "order_id": str(trade_data.get("order_id") or trade_data.get("orderId")),
+                "side": str(trade_data.get("side", "BUY")),
+                "price": float(trade_data.get("price", 0.0)),
+                "sol_amount": float(trade_data.get("sol_amount") or trade_data.get("solAmount", 0.0)),
+                "fee": float(trade_data.get("fee", 0.0)),
+                "profit": float(trade_data.get("profit", 0.0)),
+                "round": int(trade_data.get("round", 0)),
+                "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "BUY")),
+                "created_at": trade_data.get("created_at") or trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            }
+            await asyncio.gather(
+                session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=pos_row),
+                session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_trade_row),
+                return_exceptions=True
+            )
             await self.db_sync_state()
         except Exception:
             pass
@@ -1290,9 +1322,12 @@ class UltraQuantSpotBot:
                 "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "SELL")),
                 "created_at": trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
             }
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.{pos_id}")
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
+            session = await self.get_http_session()
+            await asyncio.gather(
+                session.delete(f"{SUPABASE_URL}/rest/v1/active_positions?id=eq.{pos_id}"),
+                session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row),
+                return_exceptions=True
+            )
             await self.db_sync_state()
         except Exception:
             pass
@@ -1310,8 +1345,8 @@ class UltraQuantSpotBot:
                 "exec_type": str(trade_data.get("exec_type") or trade_data.get("execType", "ENGINE")),
                 "created_at": trade_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
             }
-            async with aiohttp.ClientSession(headers=SUPABASE_HEADERS) as session:
-                await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
+            session = await self.get_http_session()
+            await session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_row)
             await self.db_sync_state()
         except Exception:
             pass
@@ -1345,14 +1380,20 @@ class UltraQuantSpotBot:
             sell_vol = sum(x["val"] for x in self.whale_trades_window if not x["isBuy"])
             total_vol = buy_vol + sell_vol
             self.cvd_net_volume = round(buy_vol - sell_vol, 2)
+            fast_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 15.0]
+            f_buy = sum(x["val"] for x in fast_window if x["isBuy"])
+            f_sell = sum(x["val"] for x in fast_window if not x["isBuy"])
+            f_tot = f_buy + f_sell
+            self.whale_fast_cvd = round(f_buy - f_sell, 2)
+            self.whale_fast_ratio = round((f_buy / f_tot) * 100.0, 1) if f_tot > 0 else 50.0
             if total_vol > 0:
                 ratio = round((buy_vol / total_vol) * 100.0, 1)
                 self.whale_orderflow_ratio = ratio
-                if ratio >= 60.0 and self.cvd_net_volume > 5000.0:
+                if (ratio >= 58.0 and self.cvd_net_volume > 4000.0) or (self.whale_fast_ratio >= 66.0 and self.whale_fast_cvd > 3000.0):
                     self.whale_sentiment = "BULLISH"
                     self.whale_boost_multiplier = 1.30
                     self.whale_dump_alert = False
-                elif ratio <= 38.0 and self.cvd_net_volume < -5000.0:
+                elif (ratio <= 40.0 and self.cvd_net_volume < -4000.0) or (self.whale_fast_ratio <= 34.0 and self.whale_fast_cvd < -3000.0):
                     self.whale_sentiment = "BEARISH"
                     self.whale_boost_multiplier = 0.80
                     self.whale_dump_alert = True
@@ -1360,6 +1401,71 @@ class UltraQuantSpotBot:
                     self.whale_sentiment = "NEUTRAL"
                     self.whale_boost_multiplier = 1.0
                     self.whale_dump_alert = False
+
+    def update_quant_indicators(self, new_price):
+        if new_price <= 0:
+            return
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if (now_ts - self.quant_last_sample_ts) >= 2.0 or len(self.quant_prices) == 0:
+            self.quant_last_sample_ts = now_ts
+            self.quant_prices.append(float(new_price))
+            if len(self.quant_prices) > 100:
+                self.quant_prices.pop(0)
+        if len(self.quant_prices) >= 15:
+            gains = []
+            losses = []
+            recent = self.quant_prices[-15:]
+            for idx in range(1, len(recent)):
+                diff = recent[idx] - recent[idx - 1]
+                if diff > 0:
+                    gains.append(diff)
+                    losses.append(0.0)
+                else:
+                    gains.append(0.0)
+                    losses.append(abs(diff))
+            avg_g = sum(gains) / 14.0
+            avg_l = sum(losses) / 14.0
+            if avg_l == 0:
+                self.quant_rsi = 100.0 if avg_g > 0 else 50.0
+            else:
+                rs = avg_g / avg_l
+                self.quant_rsi = round(100.0 - (100.0 / (1.0 + rs)), 2)
+        if len(self.quant_prices) >= 21:
+            def calc_ema(vals, span):
+                k = 2.0 / (span + 1.0)
+                e = vals[0]
+                for v in vals[1:]:
+                    e = (v * k) + (e * (1.0 - k))
+                return e
+            ema7 = calc_ema(self.quant_prices[-21:], 7)
+            ema21 = calc_ema(self.quant_prices[-21:], 21)
+            if ema7 > ema21 * 1.0008:
+                self.quant_trend = "UP"
+            elif ema7 < ema21 * 0.9992:
+                self.quant_trend = "DOWN"
+            else:
+                self.quant_trend = "NEUTRAL"
+        if self.quant_rsi <= 32.0 or self.orderbook_bid_ratio >= 68.0 or (self.whale_fast_ratio >= 65.0 and self.whale_fast_cvd > 2500.0):
+            self.quant_dip_mult = 0.75
+            self.quant_size_mult = 1.25
+        elif self.quant_rsi >= 72.0 or self.whale_dump_alert or self.orderbook_bid_ratio <= 32.0:
+            self.quant_dip_mult = 1.45
+            self.quant_size_mult = 0.85
+        else:
+            self.quant_dip_mult = 1.0
+            self.quant_size_mult = 1.0
+        if self.quant_trend == "UP" or self.whale_sentiment == "BULLISH" or self.orderbook_bid_ratio >= 65.0:
+            self.quant_trail_mult = 1.25
+        elif self.quant_rsi >= 74.0 or self.whale_sentiment == "BEARISH" or self.orderbook_bid_ratio <= 35.0:
+            self.quant_trail_mult = 0.75
+        else:
+            self.quant_trail_mult = 1.0
+
+    def process_book_ticker(self, bid_qty, ask_qty):
+        tot = bid_qty + ask_qty
+        if tot > 0:
+            raw_ratio = (bid_qty / tot) * 100.0
+            self.orderbook_bid_ratio = round((self.orderbook_bid_ratio * 0.7) + (raw_ratio * 0.3), 1)
 
     def sync_phase_and_round(self):
         if self.live_price <= 0:
@@ -1439,11 +1545,11 @@ class UltraQuantSpotBot:
             stop_val = max(round(p_entry * floor_mult, 2), round(p_peak * (1.0 - pb_pct), 2)) if pb_pct > 0.0 else 0.0
             return round(p_peak, 2), stop_val, stg
 
-        h_ts_h, h_ts_l, h_stg = calc_bot_ts_state(self.hyper_positions, [(0.0250, 0.0035, "STAGE_3"), (0.0165, 0.0025, "STAGE_2"), (0.0095, 0.0018, "STAGE_1")], 1.0055)
-        m_ts_h, m_ts_l, m_stg = calc_bot_ts_state(self.micro_positions, [(0.0100, 0.0018, "STAGE_3"), (0.0065, 0.0012, "STAGE_2"), (0.0038, 0.0008, "STAGE_1")], 1.0026)
-        k2_ts_h, k2_ts_l, k2_stg = calc_bot_ts_state(self.killer2_positions, [(0.0145, 0.0022, "STAGE_3"), (0.0090, 0.0015, "STAGE_2"), (0.0050, 0.0010, "STAGE_1")], 1.0032)
-        k3_ts_h, k3_ts_l, k3_stg = calc_bot_ts_state(self.killer3_positions, [(0.0210, 0.0030, "STAGE_3"), (0.0135, 0.0022, "STAGE_2"), (0.0075, 0.0015, "STAGE_1")], 1.0045)
-        sng_ts_h, sng_ts_l, sng_stg = calc_bot_ts_state(self.singularity_positions, [(0.0300, 0.0038, "STAGE_3"), (0.0200, 0.0028, "STAGE_2"), (0.0115, 0.0020, "STAGE_1")], 1.0065)
+        h_ts_h, h_ts_l, h_stg = calc_bot_ts_state(self.hyper_positions, [(0.0320, 0.0038, "STAGE_3"), (0.0210, 0.0028, "STAGE_2"), (0.0120, 0.0020, "STAGE_1")], 1.0085)
+        m_ts_h, m_ts_l, m_stg = calc_bot_ts_state(self.micro_positions, [(0.0150, 0.0022, "STAGE_3"), (0.0095, 0.0018, "STAGE_2"), (0.0055, 0.0012, "STAGE_1")], 1.0040)
+        k2_ts_h, k2_ts_l, k2_stg = calc_bot_ts_state(self.killer2_positions, [(0.0210, 0.0026, "STAGE_3"), (0.0130, 0.0020, "STAGE_2"), (0.0075, 0.0014, "STAGE_1")], 1.0052)
+        k3_ts_h, k3_ts_l, k3_stg = calc_bot_ts_state(self.killer3_positions, [(0.0275, 0.0032, "STAGE_3"), (0.0175, 0.0025, "STAGE_2"), (0.0100, 0.0018, "STAGE_1")], 1.0070)
+        sng_ts_h, sng_ts_l, sng_stg = calc_bot_ts_state(self.singularity_positions, [(0.0380, 0.0042, "STAGE_3"), (0.0250, 0.0032, "STAGE_2"), (0.0145, 0.0024, "STAGE_1")], 1.0100)
 
         ai_thoughts = ""
         regular_pos = [p for p in self.active_positions if not p.get("isMacro", False)]
@@ -3007,9 +3113,10 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
-                pb_pct = 0.0035 if gain_pct >= 0.0250 else (0.0025 if gain_pct >= 0.0165 else (0.0018 if gain_pct >= 0.0095 else 0.0))
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                pb_pct = (0.0038 if gain_pct >= 0.0320 else (0.0028 if gain_pct >= 0.0210 else (0.0020 if gain_pct >= 0.0120 else 0.0))) * t_mult
                 if pb_pct > 0.0:
-                    stop_lvl = max(round(entry_p * 1.0055, 2), round(peak * (1.0 - pb_pct), 2))
+                    stop_lvl = max(round(entry_p * 1.0085, 2), round(peak * (1.0 - pb_pct), 2))
                     if current_p <= stop_lvl:
                         self.execute_hyper_sell(pos)
 
@@ -3024,7 +3131,7 @@ class UltraQuantSpotBot:
             return
         ref_p = min(float(p["entryPrice"]) for p in self.hyper_positions)
         self.hyper_last_ref_price = ref_p
-        req_dip = 1.30 if self.whale_dump_alert else 0.90
+        req_dip = round((1.30 if self.whale_dump_alert else 0.90) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3206,9 +3313,10 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
-                pb_pct = 0.0018 if gain_pct >= 0.0100 else (0.0012 if gain_pct >= 0.0065 else (0.0008 if gain_pct >= 0.0038 else 0.0))
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                pb_pct = (0.0022 if gain_pct >= 0.0150 else (0.0018 if gain_pct >= 0.0095 else (0.0012 if gain_pct >= 0.0055 else 0.0))) * t_mult
                 if pb_pct > 0.0:
-                    stop_lvl = max(round(entry_p * 1.0026, 2), round(peak * (1.0 - pb_pct), 2))
+                    stop_lvl = max(round(entry_p * 1.0040, 2), round(peak * (1.0 - pb_pct), 2))
                     if current_p <= stop_lvl:
                         self.execute_micro_sell(pos)
 
@@ -3223,7 +3331,7 @@ class UltraQuantSpotBot:
             return
         ref_p = min(float(p["entryPrice"]) for p in self.micro_positions)
         self.micro_last_ref_price = ref_p
-        req_dip = 0.35 if self.whale_dump_alert else 0.20
+        req_dip = round((0.35 if self.whale_dump_alert else 0.20) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3403,9 +3511,10 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
-                pb_pct = 0.0022 if gain_pct >= 0.0145 else (0.0015 if gain_pct >= 0.0090 else (0.0010 if gain_pct >= 0.0050 else 0.0))
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                pb_pct = (0.0026 if gain_pct >= 0.0210 else (0.0020 if gain_pct >= 0.0130 else (0.0014 if gain_pct >= 0.0075 else 0.0))) * t_mult
                 if pb_pct > 0.0:
-                    stop_lvl = max(round(entry_p * 1.0032, 2), round(peak * (1.0 - pb_pct), 2))
+                    stop_lvl = max(round(entry_p * 1.0052, 2), round(peak * (1.0 - pb_pct), 2))
                     if current_p <= stop_lvl:
                         self.execute_killer2_sell(pos)
 
@@ -3420,7 +3529,7 @@ class UltraQuantSpotBot:
             return
         ref_p = min(float(p["entryPrice"]) for p in self.killer2_positions)
         self.killer2_last_ref_price = ref_p
-        req_dip = 0.50 if self.whale_dump_alert else 0.30
+        req_dip = round((0.50 if self.whale_dump_alert else 0.30) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3600,9 +3709,10 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
-                pb_pct = 0.0030 if gain_pct >= 0.0210 else (0.0022 if gain_pct >= 0.0135 else (0.0015 if gain_pct >= 0.0075 else 0.0))
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                pb_pct = (0.0032 if gain_pct >= 0.0275 else (0.0025 if gain_pct >= 0.0175 else (0.0018 if gain_pct >= 0.0100 else 0.0))) * t_mult
                 if pb_pct > 0.0:
-                    stop_lvl = max(round(entry_p * 1.0045, 2), round(peak * (1.0 - pb_pct), 2))
+                    stop_lvl = max(round(entry_p * 1.0070, 2), round(peak * (1.0 - pb_pct), 2))
                     if current_p <= stop_lvl:
                         self.execute_killer3_sell(pos)
 
@@ -3617,7 +3727,7 @@ class UltraQuantSpotBot:
             return
         ref_p = min(float(p["entryPrice"]) for p in self.killer3_positions)
         self.killer3_last_ref_price = ref_p
-        req_dip = 0.90 if self.whale_dump_alert else 0.60
+        req_dip = round((0.90 if self.whale_dump_alert else 0.60) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -3789,9 +3899,10 @@ class UltraQuantSpotBot:
                     pos["ts_high"] = round(current_p, 2)
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
-                pb_pct = 0.0038 if gain_pct >= 0.0300 else (0.0028 if gain_pct >= 0.0200 else (0.0020 if gain_pct >= 0.0115 else 0.0))
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                pb_pct = (0.0042 if gain_pct >= 0.0380 else (0.0032 if gain_pct >= 0.0250 else (0.0024 if gain_pct >= 0.0145 else 0.0))) * t_mult
                 if pb_pct > 0.0:
-                    stop_lvl = max(round(entry_p * 1.0065, 2), round(peak * (1.0 - pb_pct), 2))
+                    stop_lvl = max(round(entry_p * 1.0100, 2), round(peak * (1.0 - pb_pct), 2))
                     if current_p <= stop_lvl:
                         self.execute_singularity_sell(pos)
 
@@ -3806,7 +3917,7 @@ class UltraQuantSpotBot:
             return
         ref_p = min(float(p["entryPrice"]) for p in self.singularity_positions)
         self.singularity_last_ref_price = ref_p
-        req_dip = 1.60 if self.whale_dump_alert else 1.20
+        req_dip = round((1.60 if self.whale_dump_alert else 1.20) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = ref_p - self.live_price
         if dip_usd >= req_dip:
@@ -4122,6 +4233,7 @@ class UltraQuantSpotBot:
             return
 
         self.live_price = new_price
+        self.update_quant_indicators(new_price)
         self.update_commodity_market_tick()
         self.price_history.append(new_price)
         if len(self.price_history) > 50:
@@ -4634,7 +4746,7 @@ class UltraQuantSpotBot:
                 self.execute_buy(is_sub_trade=False, escalate_round=False)
             return
         last_entry = min(float(p["entryPrice"]) for p in regular_positions)
-        req_dip = 0.50 if self.whale_dump_alert else 0.30
+        req_dip = round((0.50 if self.whale_dump_alert else 0.30) * getattr(self, "quant_dip_mult", 1.0), 3)
 
         dip_usd = last_entry - self.live_price
         if dip_usd < req_dip:
@@ -4671,21 +4783,22 @@ class UltraQuantSpotBot:
                 peak = float(pos["ts_high"])
                 gain_pct = (peak - entry_p) / entry_p
 
-                if gain_pct >= 0.0140:
-                    pb_pct = 0.0022
+                t_mult = getattr(self, "quant_trail_mult", 1.0)
+                if gain_pct >= 0.0200:
+                    pb_pct = 0.0026 * t_mult
                     self.ts_stage = "STAGE_3"
-                elif gain_pct >= 0.0090:
-                    pb_pct = 0.0015
+                elif gain_pct >= 0.0120:
+                    pb_pct = 0.0020 * t_mult
                     self.ts_stage = "STAGE_2"
-                elif gain_pct >= 0.0050:
-                    pb_pct = 0.0010
+                elif gain_pct >= 0.0070:
+                    pb_pct = 0.0014 * t_mult
                     self.ts_stage = "STAGE_1"
                 else:
                     pb_pct = 0.0
 
                 if pb_pct > 0.0:
                     calc_stop = round(peak * (1.0 - pb_pct), 2)
-                    min_allowed_stop = round(entry_p * 1.0030, 2)
+                    min_allowed_stop = round(entry_p * 1.0048, 2)
                     if calc_stop < min_allowed_stop:
                         calc_stop = min_allowed_stop
                     if "ts_low" not in pos or calc_stop > float(pos.get("ts_low", 0.0)):
@@ -5373,8 +5486,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
 async def run_backend_price_feed():
     endpoints = [
-        "wss://stream.binance.com:9443/ws/solusdt@trade",
-        "wss://data-stream.binance.vision/ws/solusdt@trade"
+        "wss://stream.binance.com:9443/stream?streams=solusdt@trade/solusdt@bookTicker",
+        "wss://data-stream.binance.vision/stream?streams=solusdt@trade/solusdt@bookTicker"
     ]
     ep_idx = 0
     last_broadcast_ts = 0.0
@@ -5385,7 +5498,14 @@ async def run_backend_price_feed():
                 async with session.ws_connect(url, timeout=10.0) as ws:
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(msg.data)
+                            raw_msg = json.loads(msg.data)
+                            stream_name = raw_msg.get("stream", "")
+                            data = raw_msg.get("data", raw_msg)
+                            if "bookTicker" in stream_name or ("B" in data and "A" in data and "p" not in data):
+                                bid_q = float(data.get("B", 0.0))
+                                ask_q = float(data.get("A", 0.0))
+                                bot.process_book_ticker(bid_q, ask_q)
+                                continue
                             p = 0.0
                             if "p" in data:
                                 p = float(data["p"])
