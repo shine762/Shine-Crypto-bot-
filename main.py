@@ -131,8 +131,8 @@ class UltraQuantSpotBot:
         self.charity_tb_lowest = 0.0
         self.charity_last_ref_price = 0.0
         self.round_allocations = {
-            1: 0.12, 2: 0.12, 3: 0.13, 4: 0.13, 5: 0.14,
-            6: 0.14, 7: 0.12, 8: 0.10, 9: 0.0, 10: 0.0
+            1: 0.02, 2: 0.04, 3: 0.06, 4: 0.08, 5: 0.10,
+            6: 0.20, 7: 0.25, 8: 0.25, 9: 0.0, 10: 0.0
         }
         self.home_pool_users = 1
         self.home_round_spent = {r: 0.0 for r in range(1, 11)}
@@ -285,6 +285,8 @@ class UltraQuantSpotBot:
         return self.http_session
 
     async def db_save_showcase_state(self):
+        if not getattr(self, "db_loaded", False):
+            return
         try:
             session = await self.get_http_session()
             state_row = {
@@ -298,7 +300,14 @@ class UltraQuantSpotBot:
                 "is_macro": False,
                 "target_price": round(self.showcase_macro_target, 2)
             }
-            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
+            for _ in range(3):
+                try:
+                    async with session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row) as resp:
+                        if resp.status in (200, 201, 204):
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
         except Exception:
             pass
 
@@ -321,7 +330,14 @@ class UltraQuantSpotBot:
                 "is_macro": False,
                 "target_price": 0.0
             }
-            await session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row)
+            for _ in range(3):
+                try:
+                    async with session.post(f"{SUPABASE_URL}/rest/v1/active_positions?on_conflict=id", json=state_row) as resp:
+                        if resp.status in (200, 201, 204):
+                            break
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
         except Exception:
             pass
 
@@ -489,8 +505,9 @@ class UltraQuantSpotBot:
             if cur_p >= (r_top - 1.0) or cur_rnd < r_chk:
                 for p in list(self.showcase_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= 0.01:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(0.005, round(inv_val * 0.0005, 4)):
                             self.execute_showcase_sell(p)
 
         elig_pct = self.get_round_eligible_pct(cur_rnd)
@@ -521,9 +538,10 @@ class UltraQuantSpotBot:
                     peak = float(pos["ts_high"])
                     gain_pct = (peak - ent) / ent
                     pb_pct = 0.0
+                    t_mult = getattr(self, "quant_trail_mult", 1.0)
                     for g_req, pb_val in ts_rules:
                         if gain_pct >= g_req:
-                            pb_pct = pb_val
+                            pb_pct = pb_val * t_mult
                             break
                     if pb_pct > 0.0:
                         stop_lvl = max(round(ent * floor_mult, 2), round(peak * (1.0 - pb_pct), 2))
@@ -540,7 +558,8 @@ class UltraQuantSpotBot:
                 continue
             tb = self.showcase_tb_state.setdefault(b_tag, {"active": False, "lowest": 0.0})
             last_ent = min(float(p["entryPrice"]) for p in b_positions)
-            if (last_ent - cur_p) >= dip_usd and len(b_positions) < 4 and self.showcase_usdt >= trade_amt:
+            eff_dip = round((dip_usd * (1.5 if self.whale_dump_alert else 1.0)) * getattr(self, "quant_dip_mult", 1.0), 3)
+            if (last_ent - cur_p) >= eff_dip and len(b_positions) < 4 and self.showcase_usdt >= trade_amt:
                 if not tb["active"]:
                     tb["active"] = True
                     tb["lowest"] = cur_p
@@ -604,7 +623,7 @@ class UltraQuantSpotBot:
         return 10.0
 
     def get_round_eligible_pct(self, round_num):
-        elig_map = {1: 0.12, 2: 0.24, 3: 0.37, 4: 0.50, 5: 0.64, 6: 0.78, 7: 0.90, 8: 1.00}
+        elig_map = {1: 0.02, 2: 0.06, 3: 0.12, 4: 0.20, 5: 0.30, 6: 0.50, 7: 0.75, 8: 1.00}
         return elig_map.get(round_num, 0.0)
 
     def get_tier_config(self, capital=None):
@@ -1305,7 +1324,7 @@ class UltraQuantSpotBot:
                 session.post(f"{SUPABASE_URL}/rest/v1/trades_history", json=db_trade_row),
                 return_exceptions=True
             )
-            await self.db_sync_state()
+            await self.db_sync_state(force=True)
         except Exception:
             pass
 
@@ -1373,27 +1392,52 @@ class UltraQuantSpotBot:
                     "time": now_ts
                 })
 
-        self.whale_trades_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 120.0]
+        cutoff_120 = now_ts - 120.0
+        cutoff_15 = now_ts - 15.0
+        cutoff_5 = now_ts - 5.0
+        kept = []
+        buy_vol = 0.0
+        sell_vol = 0.0
+        f_buy = 0.0
+        f_sell = 0.0
+        b5_buy = 0.0
+        b5_sell = 0.0
+        for x in self.whale_trades_window:
+            xt = x["time"]
+            if xt >= cutoff_120:
+                kept.append(x)
+                xv = x["val"]
+                if x["isBuy"]:
+                    buy_vol += xv
+                    if xt >= cutoff_15:
+                        f_buy += xv
+                        if xt >= cutoff_5:
+                            b5_buy += xv
+                else:
+                    sell_vol += xv
+                    if xt >= cutoff_15:
+                        f_sell += xv
+                        if xt >= cutoff_5:
+                            b5_sell += xv
+        self.whale_trades_window = kept
 
-        if len(self.whale_trades_window) > 0:
-            buy_vol = sum(x["val"] for x in self.whale_trades_window if x["isBuy"])
-            sell_vol = sum(x["val"] for x in self.whale_trades_window if not x["isBuy"])
+        if len(kept) > 0:
             total_vol = buy_vol + sell_vol
             self.cvd_net_volume = round(buy_vol - sell_vol, 2)
-            fast_window = [x for x in self.whale_trades_window if (now_ts - x["time"]) <= 15.0]
-            f_buy = sum(x["val"] for x in fast_window if x["isBuy"])
-            f_sell = sum(x["val"] for x in fast_window if not x["isBuy"])
             f_tot = f_buy + f_sell
             self.whale_fast_cvd = round(f_buy - f_sell, 2)
             self.whale_fast_ratio = round((f_buy / f_tot) * 100.0, 1) if f_tot > 0 else 50.0
+            b5_cvd = b5_buy - b5_sell
+            b5_tot = b5_buy + b5_sell
+            b5_ratio = (b5_buy / b5_tot) * 100.0 if b5_tot > 0 else 50.0
             if total_vol > 0:
                 ratio = round((buy_vol / total_vol) * 100.0, 1)
                 self.whale_orderflow_ratio = ratio
-                if (ratio >= 58.0 and self.cvd_net_volume > 4000.0) or (self.whale_fast_ratio >= 66.0 and self.whale_fast_cvd > 3000.0):
+                if (ratio >= 58.0 and self.cvd_net_volume > 4000.0) or (self.whale_fast_ratio >= 66.0 and self.whale_fast_cvd > 3000.0) or (b5_ratio >= 72.0 and b5_cvd > 1500.0):
                     self.whale_sentiment = "BULLISH"
                     self.whale_boost_multiplier = 1.30
                     self.whale_dump_alert = False
-                elif (ratio <= 40.0 and self.cvd_net_volume < -4000.0) or (self.whale_fast_ratio <= 34.0 and self.whale_fast_cvd < -3000.0):
+                elif (ratio <= 40.0 and self.cvd_net_volume < -4000.0) or (self.whale_fast_ratio <= 34.0 and self.whale_fast_cvd < -3000.0) or (b5_ratio <= 28.0 and b5_cvd < -1500.0):
                     self.whale_sentiment = "BEARISH"
                     self.whale_boost_multiplier = 0.80
                     self.whale_dump_alert = True
@@ -1406,7 +1450,7 @@ class UltraQuantSpotBot:
         if new_price <= 0:
             return
         now_ts = datetime.now(timezone.utc).timestamp()
-        if (now_ts - self.quant_last_sample_ts) >= 2.0 or len(self.quant_prices) == 0:
+        if (now_ts - self.quant_last_sample_ts) >= 0.5 or len(self.quant_prices) == 0:
             self.quant_last_sample_ts = now_ts
             self.quant_prices.append(float(new_price))
             if len(self.quant_prices) > 100:
@@ -1788,32 +1832,32 @@ class UltraQuantSpotBot:
             "singularityTrailingStage": sng_stg,
             "microPoolUsers": getattr(self, "micro_pool_users", 1),
             "microPoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.micro_positions), 2),
-            "microUserInvestment": 10.0,
+            "microUserInvestment": round(self.total_user_capital, 2),
             "microUserDailyPnl": round(self.micro_realized_pnl / max(1, getattr(self, "micro_pool_users", 1)), 4),
             "microPositions": self.micro_positions,
             "microRealizedPnl": round(self.micro_realized_pnl, 4),
             "microTotalTrades": self.micro_total_trades,
-            "microIdleFundAvail": round(self.get_scavenged_idle_fund(), 2),
+            "microIdleFundAvail": round(self.usdt_balance if self.usdt_balance >= self.get_min_order_size() else 0.0, 2),
             "microTbLowest": round(self.micro_tb_lowest, 2),
             "killer2TbLowest": round(self.killer2_tb_lowest, 2),
             "killer3TbLowest": round(self.killer3_tb_lowest, 2),
             "hyperTbLowest": round(self.hyper_tb_lowest, 2),
             "killer2PoolUsers": getattr(self, "killer2_pool_users", 1),
             "killer2PoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.killer2_positions), 2),
-            "killer2UserInvestment": 10.0,
+            "killer2UserInvestment": round(self.total_user_capital, 2),
             "killer2UserDailyPnl": round(self.killer2_realized_pnl / max(1, getattr(self, "killer2_pool_users", 1)), 4),
             "killer2Positions": self.killer2_positions,
             "killer2RealizedPnl": round(self.killer2_realized_pnl, 4),
             "killer2TotalTrades": self.killer2_total_trades,
-            "killer2IdleFundAvail": round(self.get_killer2_idle_fund(), 2),
+            "killer2IdleFundAvail": round(self.usdt_balance if self.usdt_balance >= self.get_min_order_size() else 0.0, 2),
             "killer3PoolUsers": getattr(self, "killer3_pool_users", 1),
             "killer3PoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.killer3_positions), 2),
-            "killer3UserInvestment": 10.0,
+            "killer3UserInvestment": round(self.total_user_capital, 2),
             "killer3UserDailyPnl": round(self.killer3_realized_pnl / max(1, getattr(self, "killer3_pool_users", 1)), 4),
             "killer3Positions": self.killer3_positions,
             "killer3RealizedPnl": round(self.killer3_realized_pnl, 4),
             "killer3TotalTrades": self.killer3_total_trades,
-            "killer3IdleFundAvail": round(self.get_killer3_idle_fund(), 2),
+            "killer3IdleFundAvail": round(self.usdt_balance if self.usdt_balance >= self.get_min_order_size() else 0.0, 2),
             "singularityActive": self.total_user_capital >= 500.0,
             "singularityUsers": 1,
             "singularityPoolBalance": round(self.usdt_balance + sum(p.get("invested", 0.0) for p in self.singularity_positions), 2),
@@ -1852,7 +1896,7 @@ class UltraQuantSpotBot:
         donors = self.get_eligible_donor_rounds(cur_rnd)
         eligible_rounds = [cur_rnd] + donors
         total_elig_cap = sum(self.round_allocations.get(r, 0.0) * total_pool_budget for r in eligible_rounds)
-        if total_elig_cap < target_size and cur_rnd in [1, 2, 3, 4]:
+        if total_elig_cap < target_size and cur_rnd in [1, 2, 3, 4, 5]:
             total_elig_cap = max(total_elig_cap, min(total_pool_budget, target_size))
         total_elig_spent = sum(spent_dict.get(r, 0.0) for r in eligible_rounds)
         if (total_elig_cap - total_elig_spent + 0.05) < target_size:
@@ -1895,33 +1939,39 @@ class UltraQuantSpotBot:
             if cur_p >= (r_top - 1.0) or cur_rnd < r_chk:
                 for p in list(self.active_positions):
                     if not p.get("isMacro", False) and p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_sell_individual(p)
                 for p in list(self.micro_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_micro_sell(p)
                 for p in list(self.killer2_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_killer2_sell(p)
                 for p in list(self.killer3_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_killer3_sell(p)
                 for p in list(self.hyper_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_hyper_sell(p)
                 for p in list(self.singularity_positions):
                     if p.get("round") == r_chk and p.get("borrowedFrom", 0) > 0:
-                        est_p = (float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - float(p["invested"])
-                        if est_p >= self.min_net_profit_usdt:
+                        inv_val = float(p["invested"])
+                        est_p = round((float(p["solAmount"]) * cur_p * (1.0 - self.taker_fee_pct)) - inv_val, 4)
+                        if est_p >= max(self.min_net_profit_usdt, round(inv_val * 0.0002, 4)):
                             self.execute_singularity_sell(p)
 
     def execute_buy(self, is_sub_trade=False, escalate_round=False):
@@ -5601,6 +5651,9 @@ async def self_keep_alive_ping():
                     bot.check_and_trigger_fund_tiers()
         except Exception:
             pass
+        if getattr(bot, "db_loaded", False):
+            await bot.db_save_showcase_state()
+            await bot.db_sync_state(force=True)
         await bot.db_save_commodity_state()
         for u in ping_urls:
             try:
@@ -5613,7 +5666,7 @@ async def self_keep_alive_ping():
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(bot.load_from_database())
+    await bot.load_from_database()
     asyncio.create_task(self_keep_alive_ping())
     asyncio.create_task(run_backend_price_feed())
     asyncio.create_task(cleanup_all_bots_24h_history())
